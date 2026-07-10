@@ -1,0 +1,17 @@
+# Docky - Configuration globale
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+llm:
+  endpoint: ""       # URL de l'API compatible OpenAI (ex: http://localhost:11434/v1 pour Ollama)
+  api_key: ""        # Clé API (si nécessaire)
+  model: ""          # Nom du modèle (ex: llama3.1, deepseek-chat, etc.)
+
+firecrawl:
+  api_key: ""        # Clé API Firecrawl
+
+security:
+  jwt_secret: "CHANGE_ME"  # Secret pour signer les tokens JWT
+  jwt_algorithm: "HS256"
+  jwt_expire_minutes: 1440  # 24h

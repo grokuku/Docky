@@ -1,0 +1,6 @@
+# Docky - Utilisateurs
+# Le mot de passe est hashé en bcrypt
+# Pour générer un hash: python -c "import bcrypt; print(bcrypt.hashpw(b'ton_password', bcrypt.gensalt(12)).decode())"
+users:
+  - username: "admin"
+    password_hash: "$2b$12$dU1ogQ3mxqicON4heX0EDOUktidC52PuYAHqA0YLpBgaVCGUmdNtm"  # docky123

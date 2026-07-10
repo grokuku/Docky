@@ -1,0 +1,3 @@
+# Docky - Clés API pour agents externes
+# Structure: clé API -> { ip_whitelist: [list of IPs], description: string }
+api_keys: {}

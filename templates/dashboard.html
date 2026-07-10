@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Docky 🐳 - Dashboard</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body class="app-body">
+    <!-- Top bar -->
+    <header class="topbar">
+        <div class="topbar-left">
+            <span class="topbar-logo">Docky 🐳</span>
+        </div>
+        <div class="topbar-right">
+            <button class="btn btn-ghost btn-sm" id="ports-btn" onclick="DockyApp.togglePorts()">🔌 Ports</button>
+            <span class="topbar-user">👤 {{ username }}</span>
+            <button class="btn btn-ghost btn-sm" onclick="window.location.href='/logout'">Déconnexion</button>
+        </div>
+    </header>
+
+    <!-- Ports panel (hidden by default) -->
+    <div id="ports-panel" class="ports-panel hidden">
+        <div class="ports-panel-header">
+            <h3>🔌 Ports utilisés sur le serveur</h3>
+            <button class="btn btn-ghost btn-sm" onclick="DockyApp.togglePorts()">✕</button>
+        </div>
+        <div class="ports-panel-body" id="ports-list">
+            <p class="placeholder-hint">Chargement…</p>
+        </div>
+    </div>
+
+    <!-- Main layout -->
+    <div class="app-layout">
+        <!-- Left column: Dashboard (top) + Chat (bottom) -->
+        <div class="left-column">
+            <section class="panel dashboard-panel">
+                <div class="panel-header">
+                    <h2>📊 Dashboard</h2>
+                    <div class="dashboard-controls">
+                        <label class="auto-refresh">
+                            <input type="checkbox" id="auto-refresh" checked>
+                            <span>Auto-refresh</span>
+                        </label>
+                        <button class="btn btn-sm" onclick="DockyApp.refreshStacks()">Rafraîchir</button>
+                    </div>
+                </div>
+                <div class="panel-body" id="dashboard-content">
+                    <div class="placeholder">
+                        <p>🔄 Chargement des stacks et containers…</p>
+                    </div>
+                </div>
+            </section>
+
+            <section class="panel chat-panel">
+                <div class="panel-header">
+                    <h2>Assistant Docky 🤖</h2>
+                    <div class="chat-header-controls">
+                        <button class="btn btn-ghost btn-sm" onclick="DockyApp.clearChat()" title="Vider la conversation">🗑</button>
+                        <button class="btn btn-ghost btn-sm" onclick="DockyApp.openSoulEditor()" title="Éditer SOUL.md">SOUL.md</button>
+                    </div>
+                </div>
+                <div class="panel-body chat-body" id="chat-content">
+                    <div class="chat-messages" id="chat-messages">
+                        <div class="chat-welcome" id="chat-welcome">
+                            <p>Pose une question ou demande une action sur tes containers.</p>
+                        </div>
+                    </div>
+                    <div class="chat-loading hidden" id="chat-loading">
+                        <span class="typing-indicator"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+                        <span>Docky réfléchit…</span>
+                    </div>
+                </div>
+                <div class="chat-input-area">
+                    <input type="text" id="chat-input" placeholder="Tapez un message…" autocomplete="off"
+                           onkeydown="DockyApp.onChatKeydown(event)">
+                    <button class="btn btn-primary" id="chat-send-btn" onclick="DockyApp.sendChatMessage()">Envoyer</button>
+                </div>
+            </section>
+        </div>
+
+        <!-- Right column: Compose editor -->
+        <div class="right-column">
+            <section class="panel compose-panel">
+                <div class="panel-header">
+                    <h2>📝 Éditeur Compose</h2>
+                    <div class="compose-header-controls">
+                        <button class="btn btn-sm" id="new-stack-btn" onclick="DockyApp.openNewStackModal()">➕ Nouvelle stack</button>
+                        <select id="stack-selector" class="stack-selector" onchange="DockyApp.onStackSelect(this.value)">
+                            <option value="">— Sélectionner —</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="panel-body compose-body" id="compose-body">
+                    <div class="placeholder">
+                        <p>Sélectionnez une stack pour éditer ses fichiers.</p>
+                        <p class="placeholder-hint">Cliquez sur une stack du dashboard ou choisissez-la dans la liste.</p>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <!-- Logs modal -->
+    <div id="logs-modal" class="modal hidden">
+        <div class="modal-content modal-logs">
+            <div class="modal-header">
+                <h3 id="logs-title">📋 Logs</h3>
+                <div class="modal-controls">
+                    <label class="stream-toggle">
+                        <input type="checkbox" id="logs-stream-toggle">
+                        <span>Stream temps réel</span>
+                    </label>
+                    <button class="btn btn-ghost btn-sm" onclick="DockyApp.closeLogs()">✕</button>
+                </div>
+            </div>
+            <div class="modal-body">
+                <div id="logs-output" class="terminal-output"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Console modal -->
+    <div id="console-modal" class="modal hidden">
+        <div class="modal-content modal-console">
+            <div class="modal-header">
+                <h3 id="console-title">🖥 Console</h3>
+                <button class="btn btn-ghost btn-sm" onclick="DockyApp.closeConsole()">✕</button>
+            </div>
+            <div class="modal-body">
+                <div id="console-output" class="terminal-output"></div>
+                <div class="console-input-area">
+                    <span id="console-prompt">$</span>
+                    <input type="text" id="console-input" placeholder="Tapez une commande…"
+                           autocomplete="off" spellcheck="false">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- New stack modal -->
+    <div id="new-stack-modal" class="modal hidden">
+        <div class="modal-content modal-small">
+            <div class="modal-header">
+                <h3>➕ Nouvelle stack</h3>
+                <button class="btn btn-ghost btn-sm" onclick="DockyApp.closeNewStackModal()">✕</button>
+            </div>
+            <div class="modal-body modal-body-pad">
+                <div class="form-group">
+                    <label for="new-stack-name">Nom de la stack</label>
+                    <input type="text" id="new-stack-name" placeholder="ma-stack" autocomplete="off">
+                    <p class="form-hint">Alphanumérique, tirets et underscores uniquement.</p>
+                </div>
+                <div class="form-group">
+                    <label for="new-stack-compose">docker-compose.yml</label>
+                    <textarea id="new-stack-compose" class="modal-textarea" rows="10" spellcheck="false"></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="new-stack-env">.env (optionnel)</label>
+                    <textarea id="new-stack-env" class="modal-textarea" rows="4" spellcheck="false"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" onclick="DockyApp.closeNewStackModal()">Annuler</button>
+                <button class="btn btn-primary" onclick="DockyApp.createStack()">Créer la stack</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Delete confirm modal -->
+    <div id="delete-stack-modal" class="modal hidden">
+        <div class="modal-content modal-small">
+            <div class="modal-header">
+                <h3>🗑 Supprimer la stack</h3>
+                <button class="btn btn-ghost btn-sm" onclick="DockyApp.closeDeleteStackModal()">✕</button>
+            </div>
+            <div class="modal-body modal-body-pad">
+                <p>Es-tu sûr de vouloir supprimer la stack <strong id="delete-stack-name"></strong> ?</p>
+                <p class="form-hint danger-text">⚠ Tous les fichiers seront perdus. Cette action est irréversible.</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" onclick="DockyApp.closeDeleteStackModal()">Annuler</button>
+                <button class="btn btn-danger" onclick="DockyApp.confirmDeleteStack()">Confirmer la suppression</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Permissions modal -->
+    <div id="perms-modal" class="modal hidden">
+        <div class="modal-content modal-small">
+            <div class="modal-header">
+                <h3>🔒 Permissions du fichier</h3>
+                <button class="btn btn-ghost btn-sm" onclick="DockyApp.closePermsModal()">✕</button>
+            </div>
+            <div class="modal-body modal-body-pad">
+                <p>Fichier : <strong id="perms-filename"></strong></p>
+                <div class="form-group">
+                    <label for="perms-mode">Mode (octal)</label>
+                    <input type="text" id="perms-mode" placeholder="644" autocomplete="off">
+                    <p class="form-hint">Ex: 644 (lecture/écriture), 600 (privé), 755 (exécutable).</p>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" onclick="DockyApp.closePermsModal()">Annuler</button>
+                <button class="btn btn-primary" onclick="DockyApp.applyPermissions()">Appliquer</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- SOUL.md editor modal -->
+    <div id="soul-modal" class="modal hidden">
+        <div class="modal-content modal-soul">
+            <div class="modal-header">
+                <h3>📄 SOUL.md</h3>
+                <button class="btn btn-ghost btn-sm" onclick="DockyApp.closeSoulEditor()">✕</button>
+            </div>
+            <div class="modal-body modal-body-pad">
+                <p class="form-hint" style="margin-bottom:10px;">Instructions de personnalité/contexte du LLM. Ce contenu est injecté dans le system prompt.</p>
+                <textarea id="soul-editor" class="modal-textarea" rows="18" spellcheck="false"></textarea>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" onclick="DockyApp.closeSoulEditor()">Annuler</button>
+                <button class="btn btn-primary" onclick="DockyApp.saveSoul()">Sauvegarder</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast" class="toast hidden"></div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
