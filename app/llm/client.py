@@ -324,10 +324,18 @@ async def build_system_prompt() -> str:
         "paramètre ``agent_name`` indiquant le serveur (agent) ciblé:\n"
         "- start_container / stop_container / restart_container\n"
         "- start_stack / stop_stack / restart_stack\n"
+        "- update_stack (pull + up -d pour mettre à jour les images)\n"
         "- get_container_logs\n"
+        "- get_container_details / get_container_stats\n"
+        "- list_containers (utilise 'all' pour tous les agents)\n"
+        "- get_stack_status\n"
+        "- get_agent_status (vérifie online/offline)\n"
         "- exec_in_container (⚠ nécessite validation humaine — propose la "
         "commande, ne l'exécute pas automatiquement)\n"
+        "- clean_agent (⚠ nécessite validation humaine — docker system prune, "
+        "action destructive)\n"
         "- create_stack / modify_stack_file / delete_stack / deploy_stack\n"
+        "- get_stack_files / read_stack_file\n"
         "- set_file_permissions\n"
         "- get_used_ports / check_ports_available\n"
         "- web_search / web_scrape / web_map (via Firecrawl)\n"
@@ -338,9 +346,15 @@ async def build_system_prompt() -> str:
         "les ports nécessaires sont disponibles avec check_ports_available.\n"
         "- Pour exec_in_container, NE l'exécute jamais toi-même. Retourne la "
         "commande proposée pour validation humaine.\n"
+        "- Pour clean_agent, NE l'exécute jamais toi-même. C'est une action "
+        "destructive qui nécessite validation humaine.\n"
         "- Utilise update_soul pour mémiser des préférences ou informations "
         "importantes que l'utilisateur te demande de retenir.\n"
         "- Sois transparent: explique brièvement les actions que tu effectues.\n"
+        "- Tu peux lister les fichiers d'une stack avec get_stack_files et lire\n"
+        "  le contenu d'un fichier avec read_stack_file. Utilise-les pour\n"
+        "  diagnostiquer les problèmes de déploiement en lisant le\n"
+        "  docker-compose.yml, le .env et les logs des containers.\n"
         "- IMPORTANT: Sois efficace avec les tool calls. Prépare le "
         "docker-compose.yml complet en une seule modification plutôt que de "
         "faire plusieurs modifications. Limite le nombre d'actions tool calls "
@@ -574,6 +588,37 @@ TOOLS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "get_stack_files",
+            "description": "Liste tous les fichiers présents dans le dossier d'une stack (docker-compose.yml, .env, fichiers de config, etc.)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agent_name": {"type": "string", "description": "Nom de l'agent (serveur)"},
+                    "stack_name": {"type": "string", "description": "Nom de la stack"}
+                },
+                "required": ["agent_name", "stack_name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_stack_file",
+            "description": "Lit le contenu d'un fichier dans le dossier d'une stack. Permet de voir le docker-compose.yml, le .env, ou n'importe quel fichier de config.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agent_name": {"type": "string", "description": "Nom de l'agent (serveur)"},
+                    "stack_name": {"type": "string", "description": "Nom de la stack"},
+                    "filename": {"type": "string", "description": "Nom du fichier à lire (ex: docker-compose.yml, .env)"}
+                },
+                "required": ["agent_name", "stack_name", "filename"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "delete_stack",
             "description": "Supprime entièrement un stack et tous ses fichiers sur un agent spécifique.",
             "parameters": {
@@ -745,6 +790,108 @@ TOOLS: List[Dict[str, Any]] = [
             "description": "Lit et retourne le contenu actuel de la mémoire persistante (soul.md).",
             "parameters": {"type": "object", "properties": {}},
         },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_stack",
+            "description": "Met à jour une stack: docker compose pull (récupère les dernières images) puis docker compose up -d (redémarre avec les nouvelles images)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agent_name": {"type": "string", "description": "Nom de l'agent (serveur)"},
+                    "stack_name": {"type": "string", "description": "Nom de la stack à mettre à jour"}
+                },
+                "required": ["agent_name", "stack_name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "clean_agent",
+            "description": "Nettoie un agent: supprime les containers arrêtés, images orphelines, volumes inutilisés (docker system prune). ATTENTION: action destructive qui nécessite validation humaine.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agent_name": {"type": "string", "description": "Nom de l'agent (serveur) à nettoyer"}
+                },
+                "required": ["agent_name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_container_details",
+            "description": "Récupère les détails d'un container: image, ports, état, variables d'environnement, etc.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agent_name": {"type": "string", "description": "Nom de l'agent"},
+                    "container_id": {"type": "string", "description": "ID du container"}
+                },
+                "required": ["agent_name", "container_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_container_stats",
+            "description": "Récupère les métriques temps réel d'un container: CPU%, mémoire utilisée, réseau I/O",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agent_name": {"type": "string", "description": "Nom de l'agent"},
+                    "container_id": {"type": "string", "description": "ID du container"}
+                },
+                "required": ["agent_name", "container_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_stack_status",
+            "description": "Récupère l'état d'une stack: liste des containers, leur état, ports exposés",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agent_name": {"type": "string", "description": "Nom de l'agent"},
+                    "stack_name": {"type": "string", "description": "Nom de la stack"}
+                },
+                "required": ["agent_name", "stack_name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_containers",
+            "description": "Liste tous les containers d'un agent (running et stopped) avec leur état, image et ports",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agent_name": {"type": "string", "description": "Nom de l'agent. Utilise 'all' pour lister les containers de tous les agents."}
+                },
+                "required": ["agent_name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_agent_status",
+            "description": "Vérifie le statut d'un agent (online/offline) et retourne ses informations",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agent_name": {"type": "string", "description": "Nom de l'agent à vérifier"}
+                },
+                "required": ["agent_name"]
+            }
+        }
     },
 ]
 
@@ -999,6 +1146,25 @@ async def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
                 return f"Fichier '{filename}' du stack '{stack_name}' (agent '{agent_name}') mis à jour."
             return f"[error] Échec de la mise à jour du fichier '{filename}' sur l'agent '{agent_name}'."
 
+        elif tool_name == "get_stack_files":
+            agent_name = arguments.get("agent_name")
+            stack_name = arguments.get("stack_name")
+            try:
+                result = await agent_manager.get_stack_files(agent_name, stack_name)
+                return json.dumps({"files": result})
+            except Exception as e:
+                return json.dumps({"error": str(e)})
+
+        elif tool_name == "read_stack_file":
+            agent_name = arguments.get("agent_name")
+            stack_name = arguments.get("stack_name")
+            filename = arguments.get("filename")
+            try:
+                result = await agent_manager.get_stack_file(agent_name, stack_name, filename)
+                return json.dumps({"filename": filename, "content": result})
+            except Exception as e:
+                return json.dumps({"error": str(e)})
+
         elif tool_name == "delete_stack":
             agent_name = arguments["agent_name"]
             stack_name = arguments["stack_name"]
@@ -1082,6 +1248,82 @@ async def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
         elif tool_name == "read_soul":
             content = read_soul()
             return content if content else "soul.md est vide."
+
+        elif tool_name == "update_stack":
+            agent_name = arguments.get("agent_name")
+            stack_name = arguments.get("stack_name")
+            try:
+                result = await agent_manager.update_stack(agent_name, stack_name)
+                return json.dumps(result)
+            except Exception as e:
+                return json.dumps({"error": str(e)})
+
+        elif tool_name == "clean_agent":
+            # Do NOT execute — return marker for human validation
+            agent_name = arguments.get("agent_name", "?")
+            return (
+                f"{HUMAN_VALIDATION_MARKER}\n"
+                f"Type: clean_agent\n"
+                f"Agent: {agent_name}\n"
+                f"Command: docker system prune -f"
+            )
+
+        elif tool_name == "get_container_details":
+            agent_name = arguments.get("agent_name")
+            container_id = arguments.get("container_id")
+            try:
+                result = await agent_manager.get_container(agent_name, container_id)
+                return json.dumps(result)
+            except Exception as e:
+                return json.dumps({"error": str(e)})
+
+        elif tool_name == "get_container_stats":
+            agent_name = arguments.get("agent_name")
+            container_id = arguments.get("container_id")
+            try:
+                result = await agent_manager.get_container_stats(agent_name, container_id)
+                return json.dumps(result)
+            except Exception as e:
+                return json.dumps({"error": str(e)})
+
+        elif tool_name == "get_stack_status":
+            agent_name = arguments.get("agent_name")
+            stack_name = arguments.get("stack_name")
+            try:
+                stacks = await agent_manager.get_stacks(agent_name)
+                containers = await agent_manager.get_containers(agent_name)
+                stack_info = [s for s in stacks if s.get("name") == stack_name]
+                stack_containers = [
+                    c for c in containers
+                    if c.get("stack") == stack_name
+                    or stack_name in (c.get("names", [""]) if isinstance(c.get("names"), list) else [c.get("name", "")])
+                ]
+                return json.dumps({"stack": stack_info, "containers": stack_containers})
+            except Exception as e:
+                return json.dumps({"error": str(e)})
+
+        elif tool_name == "list_containers":
+            agent_name = arguments.get("agent_name")
+            try:
+                if agent_name == "all":
+                    result = await agent_manager.get_all_containers()
+                else:
+                    result = await agent_manager.get_containers(agent_name)
+                return json.dumps(result)
+            except Exception as e:
+                return json.dumps({"error": str(e)})
+
+        elif tool_name == "get_agent_status":
+            agent_name = arguments.get("agent_name")
+            try:
+                online = await agent_manager.ping_agent(agent_name)
+                return json.dumps({
+                    "agent_name": agent_name,
+                    "online": online,
+                    "url": agent_manager.agents.get(agent_name, {}).get("url", ""),
+                })
+            except Exception as e:
+                return json.dumps({"error": str(e)})
 
         else:
             return f"[error] Outil inconnu: {tool_name}"
@@ -1220,13 +1462,21 @@ async def run_chat(
                         "id": tool_call_id,
                     })
                     # Tell the LLM that this command needs human validation
-                    tool_result_msg = (
-                        f"Cette commande nécessite une validation humaine avant exécution. "
-                        f"Agent: {tool_args.get('agent_name', '')}, "
-                        f"container: {tool_args.get('container_id', '')}, "
-                        f"commande proposée: {tool_args.get('command', '')}. "
-                        f"Informe l'utilisateur que la commande est en attente de validation."
-                    )
+                    if tool_name == "clean_agent":
+                        tool_result_msg = (
+                            f"Cette action nécessite une validation humaine avant exécution. "
+                            f"Agent: {tool_args.get('agent_name', '')}, "
+                            f"action: docker system prune -f. "
+                            f"Informe l'utilisateur que le nettoyage est en attente de validation."
+                        )
+                    else:
+                        tool_result_msg = (
+                            f"Cette commande nécessite une validation humaine avant exécution. "
+                            f"Agent: {tool_args.get('agent_name', '')}, "
+                            f"container: {tool_args.get('container_id', '')}, "
+                            f"commande proposée: {tool_args.get('command', '')}. "
+                            f"Informe l'utilisateur que la commande est en attente de validation."
+                        )
                 else:
                     tool_result_msg = tool_result
 

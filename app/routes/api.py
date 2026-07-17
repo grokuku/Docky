@@ -952,6 +952,9 @@ async def validate_exec_endpoint(request: Request):
 
     The command is executed on the agent specified by the ``agent`` query
     parameter; the orchestrator never talks to Docker directly.
+
+    If the request body contains ``"type": "clean"``, the endpoint performs
+    a ``docker system prune`` on the agent instead of an exec command.
     """
     username = _check_auth(request)
     if username is None:
@@ -964,6 +967,22 @@ async def validate_exec_endpoint(request: Request):
         data = await request.json()
     except Exception:
         return JSONResponse(status_code=400, content={"detail": "Invalid JSON body"})
+
+    req_type = data.get("type", "exec")
+
+    if req_type == "clean":
+        try:
+            result = await agent_manager.clean_agent(agent_name)
+            if isinstance(result, dict) and not result.get("success", True):
+                return JSONResponse(
+                    status_code=500,
+                    content={"detail": f"Clean error: {result.get('error', 'unknown')}"},
+                )
+            return result
+        except Exception as exc:
+            return JSONResponse(status_code=500, content={"detail": f"Clean error: {exc}"})
+
+    # Default: exec in container
     container_id = data.get("container_id")
     command = data.get("command")
     if not container_id or not command:
@@ -1133,12 +1152,20 @@ async def chat_stream_ws(websocket: WebSocket):
                             "arguments": tool_args,
                             "id": tool_call_id,
                         })
-                        tool_result_msg = (
-                            f"Cette commande nécessite une validation humaine avant exécution. "
-                            f"Commande proposée: {tool_args.get('command', '')} "
-                            f"sur le container {tool_args.get('container_id', '')}. "
-                            f"Informe l'utilisateur que la commande est en attente de validation."
-                        )
+                        if tool_name == "clean_agent":
+                            tool_result_msg = (
+                                f"Cette action nécessite une validation humaine avant exécution. "
+                                f"Agent: {tool_args.get('agent_name', '')}, "
+                                f"action: docker system prune -f. "
+                                f"Informe l'utilisateur que le nettoyage est en attente de validation."
+                            )
+                        else:
+                            tool_result_msg = (
+                                f"Cette commande nécessite une validation humaine avant exécution. "
+                                f"Commande proposée: {tool_args.get('command', '')} "
+                                f"sur le container {tool_args.get('container_id', '')}. "
+                                f"Informe l'utilisateur que la commande est en attente de validation."
+                            )
                     else:
                         tool_result_msg = tool_result
 

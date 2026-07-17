@@ -389,6 +389,58 @@ async def compose_restart(stack_name: str) -> Dict[str, Any]:
     return await _run_compose(stack_name, "restart")
 
 
+async def compose_pull(name: str) -> Dict[str, Any]:
+    """Pull images for a stack."""
+    stack_dir = _stack_dir(name)
+    if not stack_dir.exists():
+        raise FileNotFoundError(f"Stack '{name}' not found")
+    return await _run_compose(name, "pull")
+
+
+async def update_stack(name: str) -> Dict[str, Any]:
+    """Update a stack: ``docker compose pull`` then ``docker compose up -d``.
+
+    Returns a dict with ``success`` and ``output``.
+    Raises ``FileNotFoundError`` if the stack directory does not exist.
+    """
+    stack_dir = _stack_dir(name)
+    if not stack_dir.exists():
+        raise FileNotFoundError(f"Stack '{name}' not found")
+    pull_result = await _run_compose(name, "pull")
+    up_result = await _run_compose(name, "up -d")
+    success = pull_result.get("success", False) and up_result.get("success", False)
+    output_parts: list[str] = []
+    if pull_result.get("output"):
+        output_parts.append("--- docker compose pull ---\n" + pull_result["output"])
+    if pull_result.get("error"):
+        output_parts.append("--- docker compose pull (stderr) ---\n" + pull_result["error"])
+    if up_result.get("output"):
+        output_parts.append("--- docker compose up -d ---\n" + up_result["output"])
+    if up_result.get("error"):
+        output_parts.append("--- docker compose up -d (stderr) ---\n" + up_result["error"])
+    return {
+        "success": success,
+        "output": "\n".join(output_parts),
+    }
+
+
+async def system_prune() -> Dict[str, Any]:
+    """Docker system prune - remove unused containers, images, volumes, networks."""
+    proc = await asyncio.create_subprocess_exec(
+        "docker", "system", "prune", "-f",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout_bytes, stderr_bytes = await proc.communicate()
+    success = proc.returncode == 0
+    output = ""
+    if stdout_bytes:
+        output += stdout_bytes.decode("utf-8", errors="replace")
+    if stderr_bytes:
+        output += stderr_bytes.decode("utf-8", errors="replace")
+    return {"success": success, "output": output}
+
+
 # ---------------------------------------------------------------------------
 # Stack file management
 # ---------------------------------------------------------------------------

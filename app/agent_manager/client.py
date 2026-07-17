@@ -325,6 +325,15 @@ class AgentManager:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    async def update_stack(self, agent_name: str, stack_name: str) -> Dict[str, Any]:
+        """Update a stack (pull + up -d) on an agent."""
+        try:
+            return await self._request(
+                agent_name, "POST", f"/agent/stacks/{stack_name}/update", timeout=300
+            )
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     async def set_permissions(
         self,
         agent_name: str,
@@ -353,6 +362,15 @@ class AgentManager:
         except Exception as exc:
             logger.error("get_ports failed for agent '%s': %s", agent_name, exc)
             return []
+
+    async def clean_agent(self, agent_name: str) -> Dict[str, Any]:
+        """Clean unused Docker resources on an agent (docker system prune)."""
+        try:
+            return await self._request(
+                agent_name, "POST", "/agent/system/prune", timeout=120
+            )
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     # ------------------------------------------------------------------
     # Cache management

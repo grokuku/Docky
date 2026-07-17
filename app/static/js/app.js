@@ -1255,6 +1255,28 @@ const DockyApp = {
         if (!container) return;
 
         const args = item.arguments || {};
+        const toolName = item.name || "";
+
+        // clean_agent validation
+        if (toolName === "clean_agent") {
+            const agentName = args.agent_name || item.agent_name || "?";
+            const div = document.createElement("div");
+            div.className = "chat-validation";
+            div.innerHTML =
+                '<div class="chat-validation-label">⚠ Le LLM veut nettoyer l\'agent:</div>' +
+                '<code class="chat-validation-cmd">docker system prune -f</code>' +
+                '<div class="chat-validation-container">sur l\'agent <strong>' + this.escapeHtml(agentName) + '</strong></div>' +
+                '<div class="chat-validation-buttons">' +
+                '<button class="btn btn-success btn-sm chat-btn-allow" onclick="DockyApp.authorizeClean(\'' +
+                    this.escapeHtml(agentName) + '\', this)">Autoriser</button>' +
+                '<button class="btn btn-danger btn-sm chat-btn-refuse" onclick="DockyApp.refuseExec(this)">Refuser</button>' +
+                '</div>';
+            container.appendChild(div);
+            this.scrollChatToBottom();
+            return;
+        }
+
+        // Default: exec_in_container validation
         const containerId = args.container_id || item.container_id || "?";
         const command = args.command || item.command || "?";
 
@@ -1314,6 +1336,41 @@ const DockyApp = {
         const box = btn.closest(".chat-validation");
         if (box) box.remove();
         this.renderChatMessage("system", "🚫 Commande refusée par l'utilisateur.");
+    },
+
+    async authorizeClean(agentName, btn) {
+        if (!btn) return;
+        // Disable buttons
+        const parent = btn.closest(".chat-validation-buttons");
+        if (parent) {
+            parent.querySelectorAll("button").forEach(b => b.disabled = true);
+        }
+        btn.textContent = "Exécution…";
+
+        try {
+            const resp = await fetch("/api/chat/validate-exec?agent=" + encodeURIComponent(agentName), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ type: "clean" }),
+                credentials: "same-origin",
+            });
+            if (resp.status === 401) {
+                window.location.href = "/login";
+                return;
+            }
+            const data = await resp.json();
+            if (resp.ok && data.success) {
+                this.renderChatMessage("system", "✅ Nettoyage effectué.\nSortie:\n" + (data.output || "(vide)"));
+            } else {
+                this.renderChatMessage("error", "Échec du nettoyage: " + (data.detail || data.output || "erreur inconnue"));
+            }
+        } catch (e) {
+            this.renderChatMessage("error", "Erreur réseau: " + e.message);
+        } finally {
+            // Remove the validation box
+            const box = btn.closest(".chat-validation");
+            if (box) box.remove();
+        }
     },
 
     clearChat() {

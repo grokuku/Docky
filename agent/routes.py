@@ -291,6 +291,22 @@ async def restart_stack(request: Request, name: str):
     return await docker_manager.compose_restart(name)
 
 
+@router.post("/stacks/{name}/update")
+async def update_stack(request: Request, name: str):
+    auth_err = require_api_key(request)
+    if auth_err:
+        return auth_err
+    try:
+        result = await docker_manager.update_stack(name)
+        return result
+    except FileNotFoundError:
+        return JSONResponse(status_code=404, content={"error": "Stack not found"})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
 # ---------------------------------------------------------------------------
 # Stack files
 # ---------------------------------------------------------------------------
@@ -378,3 +394,19 @@ async def get_ports(request: Request):
     if auth_err:
         return auth_err
     return docker_manager.get_used_ports()
+
+
+# ---------------------------------------------------------------------------
+# System
+# ---------------------------------------------------------------------------
+
+@router.post("/system/prune")
+async def system_prune(request: Request):
+    auth_err = require_api_key(request)
+    if auth_err:
+        return auth_err
+    try:
+        result = await docker_manager.system_prune()
+        return result
+    except Exception as e:
+        return {"success": False, "error": str(e)}
