@@ -47,8 +47,14 @@
                     </ul>
                 </div>
                 <div class="form-group">
-                    <label for="llm-model">Model</label>
-                    <input type="text" id="llm-model" placeholder="llama3.1, deepseek-chat, gpt-4o…" autocomplete="off">
+                    <label for="llm-model">Modèle</label>
+                    <div class="model-input-group">
+                        <select id="llm-model" class="form-input">
+                            <option value="">-- Configurer l'endpoint puis scanner --</option>
+                        </select>
+                        <button type="button" class="btn btn-info" onclick="SettingsApp.scanModels()" id="scan-models-btn">🔍 Scanner</button>
+                    </div>
+                    <p class="form-hint">Cliquez sur « Scanner » pour récupérer la liste des modèles disponibles sur l'endpoint.</p>
                 </div>
                 <div class="form-group">
                     <label for="firecrawl-api-key">Firecrawl API Key</label>

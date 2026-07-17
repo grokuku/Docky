@@ -17,12 +17,15 @@ All network calls are performed asynchronously with ``httpx``.
 """
 
 import asyncio
+import logging
 import time
 from typing import Any, Dict, List, Optional
 
 import httpx
 
 from app.config import load_settings
+
+logger = logging.getLogger(__name__)
 
 
 class AgentManager:
@@ -78,8 +81,8 @@ class AgentManager:
                     agent["status"] = "online"
                     agent["last_check"] = time.time()
                     return True
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("ping_agent failed for '%s': %s", name, exc)
         agent["status"] = "offline"
         agent["last_check"] = time.time()
         return False
@@ -124,7 +127,8 @@ class AgentManager:
         """List all containers on an agent."""
         try:
             return await self._request(agent_name, "GET", "/agent/containers")
-        except Exception:
+        except Exception as exc:
+            logger.error("get_containers failed for agent '%s': %s", agent_name, exc)
             return []
 
     async def get_container(self, agent_name: str, container_id: str) -> Optional[Dict[str, Any]]:
@@ -222,7 +226,8 @@ class AgentManager:
         """List all stacks on an agent."""
         try:
             return await self._request(agent_name, "GET", "/agent/stacks")
-        except Exception:
+        except Exception as exc:
+            logger.error("get_stacks failed for agent '%s': %s", agent_name, exc)
             return []
 
     async def get_stack_files(self, agent_name: str, stack_name: str) -> List[Dict[str, Any]]:
@@ -345,7 +350,8 @@ class AgentManager:
         """Return all ports in use on an agent host."""
         try:
             return await self._request(agent_name, "GET", "/agent/ports")
-        except Exception:
+        except Exception as exc:
+            logger.error("get_ports failed for agent '%s': %s", agent_name, exc)
             return []
 
     # ------------------------------------------------------------------

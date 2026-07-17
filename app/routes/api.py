@@ -10,6 +10,7 @@ parameter or, for POST bodies, the ``agent`` field). The special value
 import json
 from typing import Optional
 
+import httpx
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import JSONResponse, PlainTextResponse
 
@@ -234,6 +235,57 @@ async def api_update_llm_settings(request: Request):
     settings["firecrawl"] = {"api_key": firecrawl_key}
     save_settings(settings)
     return {"success": True}
+
+
+@router.post("/settings/llm/models")
+async def scan_llm_models(request: Request):
+    """Scan the LLM endpoint for available models (OpenAI-compatible /models)."""
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"detail": "Invalid JSON body"})
+
+    endpoint = (data.get("endpoint") or "").strip()
+    api_key = data.get("api_key", "")
+
+    if not endpoint:
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "models": [], "error": "endpoint is required"},
+        )
+
+    # If api_key is masked/empty, fall back to the stored value.
+    if not api_key or api_key.startswith("****"):
+        settings = load_settings()
+        api_key = settings.get("llm", {}).get("api_key", "")
+
+    # Build the /models URL. Most OpenAI-compatible APIs expose /v1/models,
+    # but some (e.g. LM Studio, certain proxies) expose /models directly.
+    base = endpoint.rstrip("/")
+    if base.endswith("/models"):
+        url = base
+    elif base.endswith("/v1"):
+        url = base + "/models"
+    else:
+        url = base + "/v1/models"
+
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            payload = resp.json()
+        # OpenAI format: { "data": [{ "id": "model-name", ... }, ...] }
+        models = [m["id"] for m in payload.get("data", []) if m.get("id")]
+        return {"success": True, "models": models}
+    except Exception as exc:
+        return {"success": False, "models": [], "error": str(exc)}
 
 
 @router.post("/settings/llm/test")

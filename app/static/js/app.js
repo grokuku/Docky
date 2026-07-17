@@ -1113,8 +1113,9 @@ const DockyApp = {
         this.renderChatMessage("user", message);
         input.value = "";
 
-        // Store in history
-        this.chatHistory.push({ role: "user", content: message });
+        // Build history to send (without the current message — the backend
+        // appends user_message separately to avoid duplication).
+        const historyToSend = [...this.chatHistory];
 
         // Show loading
         this.chatBusy = true;
@@ -1125,7 +1126,7 @@ const DockyApp = {
             const resp = await fetch("/api/chat", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ message, history: this.chatHistory }),
+                body: JSON.stringify({ message, history: historyToSend }),
                 credentials: "same-origin",
             });
             if (resp.status === 401) {
@@ -1151,11 +1152,26 @@ const DockyApp = {
                 this.renderToolCalls(data.tool_calls);
             }
 
+            // Now that the exchange succeeded, add the user message to the
+            // local history (it was excluded from the request payload to
+            // avoid duplication with the backend).
+            this.chatHistory.push({ role: "user", content: message });
+
             // LLM response bubble
             const responseText = data.response || "";
-            if (responseText) {
-                this.renderChatMessage("assistant", responseText);
-                this.chatHistory.push({ role: "assistant", content: responseText });
+            if (responseText || (data.tool_calls && data.tool_calls.length > 0)) {
+                this.renderChatMessage("assistant", responseText || "");
+
+                // Include tool calls in the content saved to history so the
+                // LLM sees what actions were taken in previous turns.
+                let historyContent = responseText || "";
+                if (data.tool_calls && data.tool_calls.length > 0) {
+                    const toolSummary = data.tool_calls.map(tc =>
+                        `[Action: ${tc.name}]`
+                    ).join(" ");
+                    historyContent = (historyContent + "\n" + toolSummary).trim();
+                }
+                this.chatHistory.push({ role: "assistant", content: historyContent });
             }
 
             // Human validation requests

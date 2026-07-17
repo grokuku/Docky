@@ -86,7 +86,23 @@ const SettingsApp = {
         document.getElementById("llm-endpoint").value = data.endpoint || "";
         document.getElementById("llm-api-key").value = "";
         document.getElementById("llm-api-key").placeholder = data.api_key || "••••••••";
-        document.getElementById("llm-model").value = data.model || "";
+        const modelSelect = document.getElementById("llm-model");
+        const currentModel = data.model || "";
+        if (modelSelect) {
+            modelSelect.innerHTML = '';
+            if (currentModel) {
+                const opt = document.createElement("option");
+                opt.value = currentModel;
+                opt.textContent = currentModel + " (non scanné)";
+                modelSelect.appendChild(opt);
+                modelSelect.value = currentModel;
+            } else {
+                const opt = document.createElement("option");
+                opt.value = "";
+                opt.textContent = "-- Configurer l'endpoint puis scanner --";
+                modelSelect.appendChild(opt);
+            }
+        }
         document.getElementById("firecrawl-api-key").value = "";
         document.getElementById("firecrawl-api-key").placeholder = data.firecrawl_key || "••••••••";
     },
@@ -124,6 +140,48 @@ const SettingsApp = {
         } else {
             this.setLLMStatus("offline", "Échec ✗");
             this.showToast(data.detail || "Connexion LLM échouée.", "error");
+        }
+    },
+
+    async scanModels() {
+        const endpoint = document.getElementById("llm-endpoint").value.trim();
+        const apiKey = document.getElementById("llm-api-key").value.trim();
+
+        if (!endpoint) {
+            this.showToast("Veuillez configurer l'endpoint d'abord.", "error");
+            return;
+        }
+
+        const modelSelect = document.getElementById("llm-model");
+        const previousValue = modelSelect ? modelSelect.value : "";
+        if (modelSelect) {
+            modelSelect.innerHTML = '<option value="">Scan en cours…</option>';
+            modelSelect.disabled = true;
+        }
+        const btn = document.getElementById("scan-models-btn");
+        if (btn) btn.disabled = true;
+
+        const data = await this.apiPost("/api/settings/llm/models", { endpoint, api_key: apiKey });
+
+        if (btn) btn.disabled = false;
+        if (!modelSelect) return;
+
+        if (data && data.success && data.models && data.models.length > 0) {
+            modelSelect.innerHTML = '<option value="">-- Choisir un modèle --</option>';
+            data.models.forEach((m) => {
+                const opt = document.createElement("option");
+                opt.value = m;
+                opt.textContent = m;
+                if (m === previousValue) opt.selected = true;
+                modelSelect.appendChild(opt);
+            });
+            modelSelect.disabled = false;
+            this.showToast(data.models.length + " modèle(s) disponible(s).", "success");
+        } else {
+            modelSelect.innerHTML = '<option value="">Aucun modèle trouvé</option>';
+            modelSelect.disabled = false;
+            const err = (data && data.error) ? data.error : "Aucun modèle trouvé.";
+            this.showToast(err, "error");
         }
     },
 

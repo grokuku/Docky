@@ -1744,6 +1744,39 @@ body {
     margin-top: 8px;
 }
 
+/* Model selector + scan button */
+
+.model-input-group {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.model-input-group select {
+    flex: 1;
+    padding: 10px 12px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: 0.875rem;
+}
+
+.model-input-group select:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.model-input-group select:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+#scan-models-btn {
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
 /* Status indicators */
 
 .status-indicator {
