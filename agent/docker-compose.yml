@@ -11,3 +11,8 @@ services:
     environment:
       - DOCKY_AGENT_API_KEY=change-this-to-a-secret-key
       - DOCKY_DATA_DIR=/data
+
+networks:
+  default:
+    external: true
+    name: docky-network

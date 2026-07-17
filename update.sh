@@ -58,6 +58,9 @@ if [ "$STASHED_SOMETHING" = true ]; then
     fi
 fi
 
+# 4.5. S'assurer que le réseau Docker partagé existe
+docker network create docky-network 2>/dev/null || true
+
 # 5. Rebuild agent
 echo ""
 echo -e "${YELLOW}🔨 Rebuild de l'agent...${NC}"
