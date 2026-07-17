@@ -94,10 +94,13 @@ class AgentManager:
     # Low-level request helper
     # ------------------------------------------------------------------
 
-    async def _request(self, agent_name: str, method: str, path: str, **kwargs) -> Any:
+    async def _request(self, agent_name: str, method: str, path: str, timeout: float = 30, **kwargs) -> Any:
         """Perform an HTTP request toward a specific agent.
 
         Automatically injects the ``Authorization: Bearer <key>`` header.
+        *timeout* defaults to 30 seconds but should be raised (e.g. 300) for
+        long-running operations such as stack deployments that may pull
+        container images.
         """
         if agent_name not in self.agents:
             raise ValueError(f"Agent '{agent_name}' not found")
@@ -105,7 +108,7 @@ class AgentManager:
         url = f"{agent['url']}{path}"
         headers = kwargs.pop("headers", {})
         headers["Authorization"] = f"Bearer {agent['api_key']}"
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.request(method, url, headers=headers, **kwargs)
             resp.raise_for_status()
             content_type = resp.headers.get("content-type", "")
@@ -285,7 +288,7 @@ class AgentManager:
         """Deploy (down + up) a stack on an agent."""
         try:
             return await self._request(
-                agent_name, "POST", f"/agent/stacks/{stack_name}/deploy"
+                agent_name, "POST", f"/agent/stacks/{stack_name}/deploy", timeout=300
             )
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -294,7 +297,7 @@ class AgentManager:
         """Start (compose up) a stack on an agent."""
         try:
             return await self._request(
-                agent_name, "POST", f"/agent/stacks/{stack_name}/start"
+                agent_name, "POST", f"/agent/stacks/{stack_name}/start", timeout=300
             )
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -303,7 +306,7 @@ class AgentManager:
         """Stop (compose stop) a stack on an agent."""
         try:
             return await self._request(
-                agent_name, "POST", f"/agent/stacks/{stack_name}/stop"
+                agent_name, "POST", f"/agent/stacks/{stack_name}/stop", timeout=300
             )
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -312,7 +315,7 @@ class AgentManager:
         """Restart (compose restart) a stack on an agent."""
         try:
             return await self._request(
-                agent_name, "POST", f"/agent/stacks/{stack_name}/restart"
+                agent_name, "POST", f"/agent/stacks/{stack_name}/restart", timeout=300
             )
         except Exception as e:
             return {"success": False, "error": str(e)}

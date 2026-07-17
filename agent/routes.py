@@ -257,7 +257,7 @@ async def deploy_stack(request: Request, name: str):
     if auth_err:
         return auth_err
     try:
-        result = docker_manager.deploy_stack(name)
+        result = await docker_manager.deploy_stack(name)
         return result
     except FileNotFoundError:
         return JSONResponse(status_code=404, content={"error": "Stack not found"})
@@ -272,7 +272,7 @@ async def start_stack(request: Request, name: str):
     auth_err = require_api_key(request)
     if auth_err:
         return auth_err
-    return docker_manager.compose_up(name)
+    return await docker_manager.compose_up(name)
 
 
 @router.post("/stacks/{name}/stop")
@@ -280,7 +280,7 @@ async def stop_stack(request: Request, name: str):
     auth_err = require_api_key(request)
     if auth_err:
         return auth_err
-    return docker_manager.compose_stop(name)
+    return await docker_manager.compose_stop(name)
 
 
 @router.post("/stacks/{name}/restart")
@@ -288,7 +288,7 @@ async def restart_stack(request: Request, name: str):
     auth_err = require_api_key(request)
     if auth_err:
         return auth_err
-    return docker_manager.compose_restart(name)
+    return await docker_manager.compose_restart(name)
 
 
 # ---------------------------------------------------------------------------

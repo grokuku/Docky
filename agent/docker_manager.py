@@ -5,6 +5,7 @@ needed by the agent: container management, stack management, file editing,
 ports scanning and update checks.
 """
 
+import asyncio
 import os
 import re
 import shutil
@@ -317,63 +318,75 @@ def get_stack_ports(stack_name: str) -> List[str]:
     return sorted(ports, key=lambda x: int(x) if x.isdigit() else 0)
 
 
-def _compose_file_arg(stack_path: Path) -> str:
-    """Return the -f argument for docker compose, detecting the compose file."""
+def _compose_file_path(stack_path: Path) -> Optional[Path]:
+    """Return the path to the compose file for a stack, or ``None``."""
     for name in ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"]:
         candidate = stack_path / name
         if candidate.exists():
-            return f"-f {candidate}"
-    return ""
+            return candidate
+    return None
 
 
-def _run_compose(stack_name: str, command: str) -> Dict[str, Any]:
-    """Run a docker compose subcommand for a stack."""
+async def _run_compose(stack_name: str, command: str) -> Dict[str, Any]:
+    """Run a docker compose subcommand for a stack (non-blocking).
+
+    Uses :func:`asyncio.create_subprocess_exec` so the FastAPI event loop
+    is not blocked while Docker pulls images or starts containers.
+    """
     stack_path = get_stacks_dir() / stack_name
     if not stack_path.exists():
         return {"success": False, "error": f"Stack '{stack_name}' not found"}
 
-    file_arg = _compose_file_arg(stack_path)
-    if not file_arg:
+    compose_file = _compose_file_path(stack_path)
+    if compose_file is None:
         return {"success": False, "error": "No compose file found in stack directory"}
 
-    full_cmd = f"docker compose {file_arg} {command}"
+    args = ["docker", "compose", "-f", str(compose_file)] + command.split()
+    full_cmd = " ".join(args)
     try:
-        result = subprocess.run(
-            full_cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
+        proc = await asyncio.create_subprocess_exec(
+            *args,
             cwd=str(stack_path),
-            timeout=120,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-        if result.returncode == 0:
-            return {"success": True, "output": result.stdout, "command": full_cmd}
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            proc.communicate(), timeout=300
+        )
+        stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
+        stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+        if proc.returncode == 0:
+            return {"success": True, "output": stdout, "command": full_cmd}
         else:
-            return {"success": False, "error": result.stderr or result.stdout, "command": full_cmd}
-    except subprocess.TimeoutExpired:
+            return {"success": False, "error": stderr or stdout, "command": full_cmd}
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except Exception:
+            pass
         return {"success": False, "error": "Command timed out", "command": full_cmd}
     except Exception as e:
         return {"success": False, "error": str(e), "command": full_cmd}
 
 
-def compose_up(stack_name: str) -> Dict[str, Any]:
+async def compose_up(stack_name: str) -> Dict[str, Any]:
     """Run ``docker compose up -d`` for the given stack."""
-    return _run_compose(stack_name, "up -d")
+    return await _run_compose(stack_name, "up -d")
 
 
-def compose_down(stack_name: str) -> Dict[str, Any]:
+async def compose_down(stack_name: str) -> Dict[str, Any]:
     """Run ``docker compose down`` for the given stack."""
-    return _run_compose(stack_name, "down")
+    return await _run_compose(stack_name, "down")
 
 
-def compose_stop(stack_name: str) -> Dict[str, Any]:
+async def compose_stop(stack_name: str) -> Dict[str, Any]:
     """Run ``docker compose stop`` for the given stack."""
-    return _run_compose(stack_name, "stop")
+    return await _run_compose(stack_name, "stop")
 
 
-def compose_restart(stack_name: str) -> Dict[str, Any]:
+async def compose_restart(stack_name: str) -> Dict[str, Any]:
     """Run ``docker compose restart`` for the given stack."""
-    return _run_compose(stack_name, "restart")
+    return await _run_compose(stack_name, "restart")
 
 
 # ---------------------------------------------------------------------------
@@ -508,7 +521,7 @@ def delete_stack(name: str) -> Dict[str, Any]:
     return {"name": name, "deleted": True}
 
 
-def deploy_stack(name: str) -> Dict[str, Any]:
+async def deploy_stack(name: str) -> Dict[str, Any]:
     """Deploy a stack: ``docker compose down`` then ``docker compose up -d``.
 
     Returns a dict with ``success``, ``output`` and ``error``.
@@ -517,8 +530,8 @@ def deploy_stack(name: str) -> Dict[str, Any]:
     base = _stack_dir(name)
     if not base.exists():
         raise FileNotFoundError(f"Stack '{name}' not found")
-    down_result = compose_down(name)
-    up_result = compose_up(name)
+    down_result = await compose_down(name)
+    up_result = await compose_up(name)
     success = up_result.get("success", False)
     output_parts = []
     if down_result.get("output"):
