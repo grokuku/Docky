@@ -56,43 +56,21 @@ echo -e "${GREEN}✅ Clé API agent générée${NC}"
 echo -e "${YELLOW}⚙️  Configuration de settings.yaml...${NC}"
 # Met à jour settings.yaml avec la clé de l'agent
 # La section agents doit pointer vers http://docky-agent:8080 avec la clé générée
-python3 -c "
-import yaml
-import os
-
-settings_path = 'data/settings.yaml'
-with open(settings_path, 'r') as f:
-    settings = yaml.safe_load(f) or {}
-
-settings['agents'] = [{
-    'name': 'Serveur Local',
-    'url': 'http://docky-agent:8080',
-    'api_key': '$AGENT_API_KEY'
-}]
-
-with open(settings_path, 'w') as f:
-    yaml.dump(settings, f, default_flow_style=False, sort_keys=False)
-"
+# Supprime l'ancienne section agents si elle existe
+sed -i '/^agents:/,$d' data/settings.yaml
+# Ajoute la nouvelle section agents
+cat >> data/settings.yaml << EOF
+agents:
+  - name: "Serveur Local"
+    url: "http://docky-agent:8080"
+    api_key: "${AGENT_API_KEY}"
+EOF
 echo -e "${GREEN}✅ settings.yaml configuré${NC}"
 
 # 7. Configurer agent/docker-compose.yml avec la clé
 echo -e "${YELLOW}⚙️  Configuration de l'agent...${NC}"
-# Met à jour DOCKY_AGENT_API_KEY dans agent/docker-compose.yml
-python3 -c "
-import yaml
-
-compose_path = 'agent/docker-compose.yml'
-with open(compose_path, 'r') as f:
-    compose = yaml.safe_load(f)
-
-compose['services']['docky-agent']['environment'] = {
-    'DOCKY_AGENT_API_KEY': '$AGENT_API_KEY',
-    'DOCKY_DATA_DIR': '/data'
-}
-
-with open(compose_path, 'w') as f:
-    yaml.dump(compose, f, default_flow_style=False, sort_keys=False)
-"
+# Remplace la clé API dans agent/docker-compose.yml
+sed -i "s|DOCKY_AGENT_API_KEY=.*|DOCKY_AGENT_API_KEY=${AGENT_API_KEY}|" agent/docker-compose.yml
 echo -e "${GREEN}✅ agent/docker-compose.yml configuré${NC}"
 
 # 8. Créer le réseau Docker partagé
