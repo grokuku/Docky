@@ -165,6 +165,21 @@ body {
     color: var(--text-primary);
 }
 
+.topbar-center {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding: 0 12px;
+}
+
+.topbar-center::-webkit-scrollbar {
+    display: none;
+}
+
 .topbar-right {
     display: flex;
     align-items: center;
@@ -174,6 +189,80 @@ body {
 .topbar-user {
     color: var(--text-secondary);
     font-size: 0.875rem;
+}
+
+/* Agent selector */
+
+.agent-selector {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: nowrap;
+}
+
+.agent-selector-loading {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.agent-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 12px;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 20px;
+    color: var(--text-secondary);
+    font-size: 0.8125rem;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all var(--transition);
+}
+
+.agent-btn:hover {
+    border-color: var(--accent);
+    color: var(--text-primary);
+}
+
+.agent-btn.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: white;
+    font-weight: 600;
+}
+
+.agent-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    background: var(--text-muted);
+}
+
+.agent-status-dot.online {
+    background: var(--success);
+    box-shadow: 0 0 4px rgba(74, 222, 128, 0.6);
+}
+
+.agent-status-dot.offline {
+    background: var(--danger);
+}
+
+.agent-btn.active .agent-status-dot.online {
+    box-shadow: 0 0 4px rgba(74, 222, 128, 0.8);
+}
+
+/* Agent badge on stack cards (global view) */
+
+.stack-agent-badge {
+    font-size: 0.7rem;
+    padding: 2px 7px;
+    border-radius: 4px;
+    background: rgba(96, 165, 250, 0.12);
+    color: var(--info);
+    white-space: nowrap;
+    margin-left: 4px;
 }
 
 .app-layout {
@@ -1038,6 +1127,12 @@ body {
     font-size: 0.75rem;
 }
 
+.port-agent {
+    color: var(--info);
+    font-size: 0.7rem;
+    margin-left: auto;
+}
+
 /* ============================================================
    Modals
    ============================================================ */
@@ -1555,6 +1650,15 @@ body {
 @media (max-width: 480px) {
     .topbar {
         padding: 0 12px;
+    }
+
+    .topbar-center {
+        justify-content: flex-start;
+    }
+
+    .agent-btn {
+        padding: 4px 8px;
+        font-size: 0.75rem;
     }
 
     .topbar-user {

@@ -3,11 +3,14 @@
 Provides:
 - ``LLMClient``: async client for OpenAI-compatible chat completions (with
   streaming support).
-- ``build_system_prompt``: assembles a system prompt embedding live Docker
-  context (containers, stacks, ports) and the persistent ``soul.md`` memory.
+- ``build_system_prompt``: assembles a system prompt embedding live
+  multi-agent Docker context (agents, containers, stacks, ports) and the
+  persistent ``soul.md`` memory.
 - ``TOOLS``: OpenAI function-calling tool definitions for all Docker / stack
-  / web / soul operations.
-- ``execute_tool``: dispatches a tool call to the appropriate function.
+  / web / soul operations.  Every Docker-related tool requires an
+  ``agent_name`` parameter so the LLM can target a specific remote agent.
+- ``execute_tool``: dispatches a tool call to the appropriate function via
+  ``agent_manager``.
 - ``run_chat``: full agentic loop — call LLM, execute tools, feed results
   back, repeat until a final textual answer is produced.
 - Firecrawl helpers: ``firecrawl_search``, ``firecrawl_scrape``,
@@ -18,12 +21,12 @@ Provides:
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import httpx
 
 from app.config import get_data_dir, load_settings
-from app.docker_manager import client as docker
+from app.agent_manager.client import agent_manager
 
 logger = logging.getLogger(__name__)
 
@@ -172,92 +175,153 @@ def update_soul(content: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def build_system_prompt() -> str:
-    """Build the system prompt with live Docker context and soul.md memory.
+def _format_container_ports(container: Dict[str, Any]) -> str:
+    """Format the ports list of a container into a compact string."""
+    ports = container.get("ports") or []
+    host_ports: List[str] = []
+    for p in ports:
+        if not p:
+            continue
+        hp = p.get("host_port") or p.get("public_port") or p.get("container")
+        if hp:
+            host_ports.append(str(hp))
+    return ", ".join(host_ports) if host_ports else "aucun"
+
+
+async def build_system_prompt() -> str:
+    """Build the system prompt with live multi-agent Docker context and
+    ``soul.md`` memory.
 
     Includes:
     1. Docky identity.
-    2. Current container states.
-    3. Current stacks.
-    4. Used ports.
-    5. Content of soul.md.
-    6. Instructions about available tools.
+    2. The list of configured agents with their online/offline status.
+    3. Containers grouped by agent.
+    4. Stacks grouped by agent.
+    5. Used ports grouped by agent.
+    6. Content of soul.md.
+    7. Instructions about available tools.
     """
     parts: List[str] = []
 
     # 1. Identity
     parts.append(
-        "Tu es Docky, un assistant de gestion de stacks Docker Compose. "
-        "Tu aides l'utilisateur à gérer ses containers, créer et déployer des "
-        "stacks, vérifier les ports, chercher des informations sur le web et "
-        "maintenir une mémoire persistante. "
+        "Tu es Docky, un assistant de gestion de stacks Docker Compose "
+        "multi-agents. Tu peux interagir avec plusieurs serveurs (agents) "
+        "distant, chacun exécutant son propre Docker. Pour chaque action "
+        "Docker, tu dois spécifier l'agent (serveur) ciblé via le paramètre "
+        "``agent_name``. Tu aides l'utilisateur à gérer ses containers, créer "
+        "et déployer des stacks, vérifier les ports, chercher des "
+        "informations sur le web et maintenir une mémoire persistante. "
         "Tu réponds en français par défaut, de manière concise et utile."
     )
 
-    # 2. Current containers
+    # 2. Refresh agent statuses
     try:
-        containers = docker.list_containers(all=True)
-        if containers:
+        await agent_manager.ping_all()
+    except Exception as exc:
+        logger.warning("ping_all failed while building system prompt: %s", exc)
+
+    agents = agent_manager.list_agents()
+
+    # Agents disponibles
+    if agents:
+        agent_lines = []
+        for a in agents:
+            status = str(a.get("status", "unknown")).upper()
+            agent_lines.append(f"- {a['name']} ({a['url']}) [{status}]")
+        parts.append("## Agents disponibles\n" + "\n".join(agent_lines))
+    else:
+        parts.append("## Agents disponibles\nAucun agent configuré.")
+
+    # 3. Fetch containers, stacks, ports across all agents
+    try:
+        all_containers = await agent_manager.get_all_containers()
+    except Exception as exc:
+        all_containers = []
+        logger.warning("get_all_containers failed: %s", exc)
+    try:
+        all_stacks = await agent_manager.get_all_stacks()
+    except Exception as exc:
+        all_stacks = []
+        logger.warning("get_all_stacks failed: %s", exc)
+    try:
+        all_ports = await agent_manager.get_all_ports()
+    except Exception as exc:
+        all_ports = []
+        logger.warning("get_all_ports failed: %s", exc)
+
+    # Containers grouped by agent
+    for a in agents:
+        name = a["name"]
+        cts = [c for c in all_containers if c.get("agent_name") == name]
+        if cts:
             lines = []
-            for c in containers:
-                ports_str = ", ".join(
-                    p.get("host_port", "") or p.get("container", "")
-                    for p in c.get("ports", [])
-                    if p
-                ) or "aucun"
+            for c in cts:
+                cname = c.get("name") or c.get("id", "?")
+                status = c.get("status", "?")
+                image = c.get("image", "?")
+                ports_str = _format_container_ports(c)
+                stack = c.get("stack", "-")
                 lines.append(
-                    f"  - {c['name']} ({c['id']}) | image: {c['image']} | "
-                    f"status: {c['status']} | stack: {c.get('stack', '-')} | ports: {ports_str}"
+                    f"  - {cname} ({status}) - image: {image} - "
+                    f"stack: {stack} - ports: {ports_str}"
                 )
-            parts.append("## Containers actuels\n" + "\n".join(lines))
+            parts.append(f"## Containers ({name})\n" + "\n".join(lines))
         else:
-            parts.append("## Containers actuels\nAucun container détecté.")
-    except Exception as exc:
-        parts.append(f"## Containers actuels\nErreur lors de la récupération: {exc}")
+            parts.append(f"## Containers ({name})\nAucun container détecté.")
 
-    # 3. Current stacks
-    try:
-        stacks = docker.list_stacks()
-        if stacks:
+    # Stacks grouped by agent
+    for a in agents:
+        name = a["name"]
+        stks = [s for s in all_stacks if s.get("agent_name") == name]
+        if stks:
             lines = []
-            for s in stacks:
-                lines.append(
-                    f"  - {s['name']} (compose: {s.get('has_compose')}, env: {s.get('has_env')})"
+            for s in stks:
+                sname = s.get("name", "?")
+                # Compute container count from the containers list when possible
+                count = sum(
+                    1
+                    for c in all_containers
+                    if c.get("agent_name") == name and c.get("stack") == sname
                 )
-            parts.append("## Stacks disponibles\n" + "\n".join(lines))
+                extra = []
+                if s.get("has_compose") is not None:
+                    extra.append(f"compose: {s.get('has_compose')}")
+                if s.get("has_env") is not None:
+                    extra.append(f"env: {s.get('has_env')}")
+                extra_str = f" - {', '.join(extra)}" if extra else ""
+                lines.append(f"  - {sname} ({count} containers){extra_str}")
+            parts.append(f"## Stacks ({name})\n" + "\n".join(lines))
         else:
-            parts.append("## Stacks disponibles\nAucun stack trouvé.")
-    except Exception as exc:
-        parts.append(f"## Stacks disponibles\nErreur: {exc}")
+            parts.append(f"## Stacks ({name})\nAucun stack trouvé.")
 
-    # 4. Used ports
-    try:
-        used_ports = docker.get_used_ports()
-        if used_ports:
-            port_lines = [
-                f"  - {p['port']} ({p.get('source', '?')}"
-                + (f", container: {p.get('container', '')}" if p.get("container") else "")
-                + ")"
-                for p in used_ports
-            ]
-            parts.append("## Ports utilisés\n" + "\n".join(port_lines))
+    # Ports grouped by agent
+    for a in agents:
+        name = a["name"]
+        prts = [p for p in all_ports if p.get("agent_name") == name]
+        if prts:
+            port_lines = []
+            for p in prts:
+                port = p.get("port", "?")
+                container = p.get("container") or p.get("source", "?")
+                port_lines.append(f"  - {port} ({container})")
+            parts.append(f"## Ports utilisés ({name})\n" + "\n".join(port_lines))
         else:
-            parts.append("## Ports utilisés\nAucun port en écoute détecté.")
-    except Exception as exc:
-        parts.append(f"## Ports utilisés\nErreur: {exc}")
+            parts.append(f"## Ports utilisés ({name})\nAucun port en écoute détecté.")
 
-    # 5. Soul.md
+    # 6. Soul.md
     soul = read_soul().strip()
     if soul:
         parts.append(f"## Mémoire persistante (soul.md)\n{soul}")
     else:
         parts.append("## Mémoire persistante (soul.md)\n(vide)")
 
-    # 6. Tool instructions
+    # 7. Tool instructions
     parts.append(
         "## Outils disponibles\n"
         "Tu peux utiliser les outils (function calls) suivants pour agir sur "
-        "l'environnement Docker:\n"
+        "l'environnement Docker. Tous les outils Docker nécessitent un "
+        "paramètre ``agent_name`` indiquant le serveur (agent) ciblé:\n"
         "- start_container / stop_container / restart_container\n"
         "- start_stack / stop_stack / restart_stack\n"
         "- get_container_logs\n"
@@ -269,6 +333,7 @@ def build_system_prompt() -> str:
         "- web_search / web_scrape / web_map (via Firecrawl)\n"
         "- update_soul / read_soul\n\n"
         "Règles:\n"
+        "- Spécifie toujours le bon ``agent_name`` pour chaque action Docker.\n"
         "- Avant de créer un stack ou d'exposer un port, vérifie toujours que "
         "les ports nécessaires sont disponibles avec check_ports_available.\n"
         "- Pour exec_in_container, NE l'exécute jamais toi-même. Retourne la "
@@ -285,21 +350,29 @@ def build_system_prompt() -> str:
 # Tool definitions (OpenAI function-calling format)
 # ---------------------------------------------------------------------------
 
+_TOOLS_DOCKER_AGENT_PARAM = {
+    "agent_name": {
+        "type": "string",
+        "description": "Nom de l'agent (serveur) sur lequel agir",
+    }
+}
+
 TOOLS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
             "name": "start_container",
-            "description": "Démarre un container Docker.",
+            "description": "Démarre un container Docker sur un agent spécifique.",
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "agent_name": _TOOLS_DOCKER_AGENT_PARAM["agent_name"],
                     "container_id": {
                         "type": "string",
                         "description": "ID ou nom du container à démarrer",
-                    }
+                    },
                 },
-                "required": ["container_id"],
+                "required": ["agent_name", "container_id"],
             },
         },
     },
@@ -307,16 +380,17 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "stop_container",
-            "description": "Arrête un container Docker.",
+            "description": "Arrête un container Docker sur un agent spécifique.",
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "agent_name": _TOOLS_DOCKER_AGENT_PARAM["agent_name"],
                     "container_id": {
                         "type": "string",
                         "description": "ID ou nom du container à arrêter",
-                    }
+                    },
                 },
-                "required": ["container_id"],
+                "required": ["agent_name", "container_id"],
             },
         },
     },
@@ -324,16 +398,17 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "restart_container",
-            "description": "Redémarre un container Docker.",
+            "description": "Redémarre un container Docker sur un agent spécifique.",
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "agent_name": _TOOLS_DOCKER_AGENT_PARAM["agent_name"],
                     "container_id": {
                         "type": "string",
                         "description": "ID ou nom du container à redémarrer",
-                    }
+                    },
                 },
-                "required": ["container_id"],
+                "required": ["agent_name", "container_id"],
             },
         },
     },
@@ -341,16 +416,17 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "start_stack",
-            "description": "Démarre un stack Docker Compose (docker compose up -d).",
+            "description": "Démarre un stack Docker Compose (docker compose up -d) sur un agent spécifique.",
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "agent_name": _TOOLS_DOCKER_AGENT_PARAM["agent_name"],
                     "stack_name": {
                         "type": "string",
                         "description": "Nom du stack à démarrer",
-                    }
+                    },
                 },
-                "required": ["stack_name"],
+                "required": ["agent_name", "stack_name"],
             },
         },
     },
@@ -358,16 +434,17 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "stop_stack",
-            "description": "Arrête un stack Docker Compose (docker compose stop).",
+            "description": "Arrête un stack Docker Compose (docker compose stop) sur un agent spécifique.",
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "agent_name": _TOOLS_DOCKER_AGENT_PARAM["agent_name"],
                     "stack_name": {
                         "type": "string",
                         "description": "Nom du stack à arrêter",
-                    }
+                    },
                 },
-                "required": ["stack_name"],
+                "required": ["agent_name", "stack_name"],
             },
         },
     },
@@ -375,16 +452,17 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "restart_stack",
-            "description": "Redémarre un stack Docker Compose (docker compose restart).",
+            "description": "Redémarre un stack Docker Compose (docker compose restart) sur un agent spécifique.",
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "agent_name": _TOOLS_DOCKER_AGENT_PARAM["agent_name"],
                     "stack_name": {
                         "type": "string",
                         "description": "Nom du stack à redémarrer",
-                    }
+                    },
                 },
-                "required": ["stack_name"],
+                "required": ["agent_name", "stack_name"],
             },
         },
     },
@@ -392,10 +470,11 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "get_container_logs",
-            "description": "Récupère les derniers logs d'un container.",
+            "description": "Récupère les derniers logs d'un container sur un agent spécifique.",
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "agent_name": _TOOLS_DOCKER_AGENT_PARAM["agent_name"],
                     "container_id": {
                         "type": "string",
                         "description": "ID ou nom du container",
@@ -405,7 +484,7 @@ TOOLS: List[Dict[str, Any]] = [
                         "description": "Nombre de lignes de logs à récupérer (défaut: 100)",
                     },
                 },
-                "required": ["container_id"],
+                "required": ["agent_name", "container_id"],
             },
         },
     },
@@ -414,7 +493,7 @@ TOOLS: List[Dict[str, Any]] = [
         "function": {
             "name": "exec_in_container",
             "description": (
-                "Exécute une commande dans un container. "
+                "Exécute une commande dans un container sur un agent spécifique. "
                 "⚠ ATTENTION: cet outil nécessite une validation humaine. "
                 "Le LLM doit proposer la commande mais elle ne sera pas exécutée "
                 "automatiquement."
@@ -422,6 +501,7 @@ TOOLS: List[Dict[str, Any]] = [
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "agent_name": _TOOLS_DOCKER_AGENT_PARAM["agent_name"],
                     "container_id": {
                         "type": "string",
                         "description": "ID ou nom du container",
@@ -431,7 +511,7 @@ TOOLS: List[Dict[str, Any]] = [
                         "description": "Commande shell à exécuter dans le container",
                     },
                 },
-                "required": ["container_id", "command"],
+                "required": ["agent_name", "container_id", "command"],
             },
         },
     },
@@ -439,10 +519,11 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "create_stack",
-            "description": "Crée un nouveau stack avec un docker-compose.yml et optionnellement un .env.",
+            "description": "Crée un nouveau stack avec un docker-compose.yml et optionnellement un .env sur un agent spécifique.",
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "agent_name": _TOOLS_DOCKER_AGENT_PARAM["agent_name"],
                     "name": {
                         "type": "string",
                         "description": "Nom du stack (alphanumérique, tirets, underscores)",
@@ -456,7 +537,7 @@ TOOLS: List[Dict[str, Any]] = [
                         "description": "Contenu optionnel du fichier .env",
                     },
                 },
-                "required": ["name", "compose_content"],
+                "required": ["agent_name", "name", "compose_content"],
             },
         },
     },
@@ -464,10 +545,11 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "modify_stack_file",
-            "description": "Modifie ou crée un fichier dans un stack existant.",
+            "description": "Modifie ou crée un fichier dans un stack existant sur un agent spécifique.",
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "agent_name": _TOOLS_DOCKER_AGENT_PARAM["agent_name"],
                     "stack_name": {
                         "type": "string",
                         "description": "Nom du stack",
@@ -481,7 +563,7 @@ TOOLS: List[Dict[str, Any]] = [
                         "description": "Nouveau contenu du fichier",
                     },
                 },
-                "required": ["stack_name", "filename", "content"],
+                "required": ["agent_name", "stack_name", "filename", "content"],
             },
         },
     },
@@ -489,16 +571,17 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "delete_stack",
-            "description": "Supprime entièrement un stack et tous ses fichiers.",
+            "description": "Supprime entièrement un stack et tous ses fichiers sur un agent spécifique.",
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "agent_name": _TOOLS_DOCKER_AGENT_PARAM["agent_name"],
                     "stack_name": {
                         "type": "string",
                         "description": "Nom du stack à supprimer",
-                    }
+                    },
                 },
-                "required": ["stack_name"],
+                "required": ["agent_name", "stack_name"],
             },
         },
     },
@@ -506,16 +589,17 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "deploy_stack",
-            "description": "Déploie un stack: docker compose down puis docker compose up -d.",
+            "description": "Déploie un stack (docker compose down puis up -d) sur un agent spécifique.",
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "agent_name": _TOOLS_DOCKER_AGENT_PARAM["agent_name"],
                     "stack_name": {
                         "type": "string",
                         "description": "Nom du stack à déployer",
-                    }
+                    },
                 },
-                "required": ["stack_name"],
+                "required": ["agent_name", "stack_name"],
             },
         },
     },
@@ -523,10 +607,11 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "set_file_permissions",
-            "description": "Définit les permissions (chmod) d'un fichier dans un stack.",
+            "description": "Définit les permissions (chmod) d'un fichier dans un stack sur un agent spécifique.",
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "agent_name": _TOOLS_DOCKER_AGENT_PARAM["agent_name"],
                     "stack_name": {
                         "type": "string",
                         "description": "Nom du stack",
@@ -540,7 +625,7 @@ TOOLS: List[Dict[str, Any]] = [
                         "description": "Permissions en octal (ex: 644, 755, 600)",
                     },
                 },
-                "required": ["stack_name", "filename", "mode"],
+                "required": ["agent_name", "stack_name", "filename", "mode"],
             },
         },
     },
@@ -548,25 +633,32 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "get_used_ports",
-            "description": "Retourne la liste des ports actuellement en écoute sur l'hôte.",
-            "parameters": {"type": "object", "properties": {}},
+            "description": "Retourne la liste des ports actuellement en écoute sur l'hôte d'un agent spécifique.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agent_name": _TOOLS_DOCKER_AGENT_PARAM["agent_name"],
+                },
+                "required": ["agent_name"],
+            },
         },
     },
     {
         "type": "function",
         "function": {
             "name": "check_ports_available",
-            "description": "Vérifie si une liste de ports est disponible (non utilisés).",
+            "description": "Vérifie si une liste de ports est disponible (non utilisés) sur un agent spécifique.",
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "agent_name": _TOOLS_DOCKER_AGENT_PARAM["agent_name"],
                     "ports": {
                         "type": "array",
                         "items": {"type": "integer"},
                         "description": "Liste des ports à vérifier",
-                    }
+                    },
                 },
-                "required": ["ports"],
+                "required": ["agent_name", "ports"],
             },
         },
     },
@@ -795,115 +887,178 @@ async def firecrawl_map(url: str) -> str:
 HUMAN_VALIDATION_MARKER = "__NEEDS_HUMAN_VALIDATION__"
 
 
+def _format_stack_result(success_msg: str, result: Dict[str, Any]) -> str:
+    """Format a stack operation result dict into a readable string.
+
+    The ``agent_manager`` returns dicts of the form ``{"success": bool,
+    "output": str}`` or ``{"success": false, "error": str}``.
+    """
+    if isinstance(result, dict) and result.get("success"):
+        text = success_msg + "."
+        output = result.get("output", "")
+        if output:
+            text += f"\n--- output ---\n{output.strip()}"
+        return text
+    if isinstance(result, dict):
+        error = result.get("error") or result.get("output", "")
+        return f"Échec: {error}" if error else "Échec."
+    if result:
+        return success_msg + "."
+    return "Échec."
+
+
 async def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
     """Execute a single tool call and return the result as a string.
 
-    For ``exec_in_container``, a special marker is returned so the calling
-    loop can add it to the ``needs_human_validation`` list instead of
-    executing the command.
+    Docker-related operations are delegated to ``agent_manager`` and require
+    an ``agent_name`` argument.  For ``exec_in_container``, a special marker
+    is returned so the calling loop can add it to the
+    ``needs_human_validation`` list instead of executing the command.
     """
     try:
         if tool_name == "start_container":
-            ok = docker.start_container(arguments["container_id"])
+            agent_name = arguments["agent_name"]
+            ok = await agent_manager.start_container(agent_name, arguments["container_id"])
             return "Container démarré." if ok else "Échec du démarrage du container."
 
         elif tool_name == "stop_container":
-            ok = docker.stop_container(arguments["container_id"])
+            agent_name = arguments["agent_name"]
+            ok = await agent_manager.stop_container(agent_name, arguments["container_id"])
             return "Container arrêté." if ok else "Échec de l'arrêt du container."
 
         elif tool_name == "restart_container":
-            ok = docker.restart_container(arguments["container_id"])
+            agent_name = arguments["agent_name"]
+            ok = await agent_manager.restart_container(agent_name, arguments["container_id"])
             return "Container redémarré." if ok else "Échec du redémarrage du container."
 
         elif tool_name == "start_stack":
-            result = docker.compose_up(arguments["stack_name"])
-            return _format_compose_result("Stack démarré", result)
+            agent_name = arguments["agent_name"]
+            result = await agent_manager.start_stack(agent_name, arguments["stack_name"])
+            return _format_stack_result("Stack démarré", result)
 
         elif tool_name == "stop_stack":
-            result = docker.compose_stop(arguments["stack_name"])
-            return _format_compose_result("Stack arrêté", result)
+            agent_name = arguments["agent_name"]
+            result = await agent_manager.stop_stack(agent_name, arguments["stack_name"])
+            return _format_stack_result("Stack arrêté", result)
 
         elif tool_name == "restart_stack":
-            result = docker.compose_restart(arguments["stack_name"])
-            return _format_compose_result("Stack redémarré", result)
+            agent_name = arguments["agent_name"]
+            result = await agent_manager.restart_stack(agent_name, arguments["stack_name"])
+            return _format_stack_result("Stack redémarré", result)
 
         elif tool_name == "get_container_logs":
+            agent_name = arguments["agent_name"]
             tail = arguments.get("tail", 100)
-            logs = docker.get_container_logs(arguments["container_id"], tail=tail)
+            logs = await agent_manager.get_container_logs(
+                agent_name, arguments["container_id"], tail=tail
+            )
             if not logs:
                 return "Aucun log disponible."
             return "\n".join(logs)
 
         elif tool_name == "exec_in_container":
             # Do NOT execute — return marker for human validation
+            agent_name = arguments.get("agent_name", "?")
             container_id = arguments["container_id"]
             command = arguments["command"]
             return (
                 f"{HUMAN_VALIDATION_MARKER}\n"
+                f"Agent: {agent_name}\n"
                 f"Container: {container_id}\n"
                 f"Command: {command}"
             )
 
         elif tool_name == "create_stack":
+            agent_name = arguments["agent_name"]
             name = arguments["name"]
             compose_content = arguments["compose_content"]
-            env_content = arguments.get("env_content") or ""
-            result = docker.create_stack(name, compose_content, env_content)
-            return f"Stack '{name}' créé avec succès. Chemin: {result}"
+            env_content = arguments.get("env_content") or None
+            result = await agent_manager.create_stack(
+                agent_name, name, compose_content, env_content
+            )
+            if isinstance(result, dict) and result.get("success"):
+                path = result.get("path", name)
+                return f"Stack '{name}' créé avec succès sur l'agent '{agent_name}'. Chemin: {path}"
+            if isinstance(result, dict):
+                return f"[error] Échec de la création du stack: {result.get('error', 'erreur inconnue')}"
+            return f"Stack '{name}' créé sur l'agent '{agent_name}'."
 
         elif tool_name == "modify_stack_file":
+            agent_name = arguments["agent_name"]
             stack_name = arguments["stack_name"]
             filename = arguments["filename"]
             content = arguments["content"]
-            docker.save_stack_file(stack_name, filename, content)
-            return f"Fichier '{filename}' du stack '{stack_name}' mis à jour."
+            ok = await agent_manager.save_stack_file(
+                agent_name, stack_name, filename, content
+            )
+            if ok:
+                return f"Fichier '{filename}' du stack '{stack_name}' (agent '{agent_name}') mis à jour."
+            return f"[error] Échec de la mise à jour du fichier '{filename}' sur l'agent '{agent_name}'."
 
         elif tool_name == "delete_stack":
+            agent_name = arguments["agent_name"]
             stack_name = arguments["stack_name"]
-            docker.delete_stack(stack_name)
-            return f"Stack '{stack_name}' supprimé."
+            result = await agent_manager.delete_stack(agent_name, stack_name)
+            if isinstance(result, dict) and result.get("success"):
+                return f"Stack '{stack_name}' supprimé de l'agent '{agent_name}'."
+            if isinstance(result, dict):
+                return f"[error] Échec de la suppression: {result.get('error', 'erreur inconnue')}"
+            return f"Stack '{stack_name}' supprimé de l'agent '{agent_name}'."
 
         elif tool_name == "deploy_stack":
-            result = docker.deploy_stack(arguments["stack_name"])
-            success = result.get("success", False)
-            output = result.get("output", "")
+            agent_name = arguments["agent_name"]
+            stack_name = arguments["stack_name"]
+            result = await agent_manager.deploy_stack(agent_name, stack_name)
+            success = result.get("success", False) if isinstance(result, dict) else False
+            output = result.get("output", "") if isinstance(result, dict) else ""
+            error = result.get("error", "") if isinstance(result, dict) else ""
             status = "déployé avec succès" if success else "échec du déploiement"
-            text = f"Stack {status}."
+            text = f"Stack {status} sur l'agent '{agent_name}'."
             if output:
                 text += f"\n--- output ---\n{output}"
+            if not success and error:
+                text += f"\n--- error ---\n{error}"
             return text
 
         elif tool_name == "set_file_permissions":
-            docker.set_file_permissions(
-                arguments["stack_name"],
-                arguments["filename"],
-                arguments["mode"],
+            agent_name = arguments["agent_name"]
+            stack_name = arguments["stack_name"]
+            filename = arguments["filename"]
+            mode = arguments["mode"]
+            result = await agent_manager.set_permissions(
+                agent_name, stack_name, filename, mode
             )
-            return f"Permissions de '{arguments['filename']}' définies sur {arguments['mode']}."
+            if isinstance(result, dict) and result.get("success"):
+                return f"Permissions de '{filename}' (stack '{stack_name}', agent '{agent_name}') définies sur {mode}."
+            if isinstance(result, dict):
+                return f"[error] Échec chmod: {result.get('error', 'erreur inconnue')}"
+            return f"Permissions de '{filename}' définies sur {mode}."
 
         elif tool_name == "get_used_ports":
-            ports = docker.get_used_ports()
+            agent_name = arguments["agent_name"]
+            ports = await agent_manager.get_ports(agent_name)
             if not ports:
-                return "Aucun port en écoute détecté."
+                return f"Aucun port en écoute détecté sur l'agent '{agent_name}'."
             lines = []
             for p in ports:
                 extra = ""
                 if p.get("container"):
                     extra = f" (container: {p['container']}, stack: {p.get('stack', '')})"
                 lines.append(f"  {p['port']} [{p.get('source', '?')}]{extra}")
-            return "Ports utilisés:\n" + "\n".join(lines)
+            return f"Ports utilisés (agent '{agent_name}'):\n" + "\n".join(lines)
 
         elif tool_name == "check_ports_available":
+            agent_name = arguments["agent_name"]
             port_list = arguments.get("ports", [])
-            used = docker.get_used_ports()
+            used = await agent_manager.get_ports(agent_name)
             used_set = {str(p["port"]) for p in used}
             results = []
             for port in port_list:
                 port_s = str(port)
                 if port_s in used_set:
-                    results.append(f"  Port {port}: ❌ déjà utilisé")
+                    results.append(f"  Port {port}: ❌ déjà utilisé (agent '{agent_name}')")
                 else:
-                    results.append(f"  Port {port}: ✅ disponible")
+                    results.append(f"  Port {port}: ✅ disponible (agent '{agent_name}')")
             return "\n".join(results)
 
         elif tool_name == "web_search":
@@ -927,6 +1082,8 @@ async def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
         else:
             return f"[error] Outil inconnu: {tool_name}"
 
+    except KeyError as exc:
+        return f"[error] Argument manquant: {exc}"
     except FileNotFoundError as exc:
         return f"[error] {exc}"
     except FileExistsError as exc:
@@ -936,19 +1093,6 @@ async def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
     except Exception as exc:
         logger.exception("Unexpected error executing tool %s", tool_name)
         return f"[error] {type(exc).__name__}: {exc}"
-
-
-def _format_compose_result(success_msg: str, result: Dict[str, Any]) -> str:
-    """Format a compose command result dict into a readable string."""
-    if result.get("success"):
-        text = success_msg + "."
-        output = result.get("output", "")
-        if output:
-            text += f"\n--- output ---\n{output.strip()}"
-        return text
-    else:
-        error = result.get("error") or result.get("output", "")
-        return f"Échec: {error}"
 
 
 # ---------------------------------------------------------------------------
@@ -965,7 +1109,7 @@ async def run_chat(
     """Run a full chat interaction with an agentic tool-calling loop.
 
     Steps:
-    1. Build system prompt with live Docker context.
+    1. Build system prompt with live multi-agent Docker context.
     2. Call the LLM with messages + tools.
     3. If the LLM returns ``tool_calls``, execute them.
     4. Append tool results as ``tool`` role messages.
@@ -986,7 +1130,7 @@ async def run_chat(
         }
 
     # Build the full message list
-    system_prompt = build_system_prompt()
+    system_prompt = await build_system_prompt()
     messages: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
     messages.extend(conversation_history)
     messages.append({"role": "user", "content": user_message})
@@ -1052,8 +1196,9 @@ async def run_chat(
                     # Tell the LLM that this command needs human validation
                     tool_result_msg = (
                         f"Cette commande nécessite une validation humaine avant exécution. "
-                        f"Commande proposée: {tool_args.get('command', '')} "
-                        f"sur le container {tool_args.get('container_id', '')}. "
+                        f"Agent: {tool_args.get('agent_name', '')}, "
+                        f"container: {tool_args.get('container_id', '')}, "
+                        f"commande proposée: {tool_args.get('command', '')}. "
                         f"Informe l'utilisateur que la commande est en attente de validation."
                     )
                 else:

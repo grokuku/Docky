@@ -15,3 +15,8 @@ security:
   jwt_secret: "CHANGE_ME"  # Secret pour signer les tokens JWT
   jwt_algorithm: "HS256"
   jwt_expire_minutes: 1440  # 24h
+
+agents:
+  - name: "Serveur Local"
+    url: "http://localhost:8080"
+    api_key: "change-this-to-your-agent-key"

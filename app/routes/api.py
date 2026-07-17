@@ -1,14 +1,21 @@
-"""API endpoints for Docky (JSON, JWT-protected)."""
+"""API endpoints for Docky (JSON, JWT-protected).
+
+The orchestrator no longer talks to Docker directly: every Docker-related
+operation is delegated to a remote *agent* through ``agent_manager``. Each
+request must specify which agent it targets (via the ``agent`` query
+parameter or, for POST bodies, the ``agent`` field). The special value
+``all`` aggregates data from every configured agent.
+"""
 
 import json
 from typing import Optional
 
-from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, Query, Body
+from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from app.auth.router import COOKIE_NAME
 from app.auth.jwt_utils import verify_token
-from app.docker_manager import client as docker_client
+from app.agent_manager.client import agent_manager
 from app.llm.client import (
     LLMClient,
     run_chat,
@@ -24,7 +31,7 @@ router = APIRouter(prefix="/api")
 
 
 # ---------------------------------------------------------------------------
-# Auth helper
+# Auth helpers
 # ---------------------------------------------------------------------------
 
 def _check_auth(request: Request) -> Optional[str]:
@@ -48,42 +55,114 @@ def _unauthorized() -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
-# Stacks
+# Agent helpers
 # ---------------------------------------------------------------------------
 
-@router.get("/stacks")
-async def api_list_stacks(request: Request):
+def _agent_bad_request() -> JSONResponse:
+    return JSONResponse(
+        status_code=400, content={"detail": "agent parameter required"}
+    )
+
+
+def _agent_not_found(name: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=404, content={"detail": f"Agent '{name}' not found"}
+    )
+
+
+def _agent_offline(name: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=503, content={"detail": f"Agent '{name}' is offline"}
+    )
+
+
+def _agent_unreachable(detail: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=502,
+        content={"detail": f"Failed to communicate with agent: {detail}"},
+    )
+
+
+def _resolve_agent(agent_name: Optional[str]):
+    """Validate ``agent_name`` and return ``(agent_name, error_response)``.
+
+    On success ``error_response`` is ``None``; on failure ``agent_name`` is
+    ``None`` and a ready-to-return ``JSONResponse`` is provided.
+    """
+    if not agent_name:
+        return None, _agent_bad_request()
+    if agent_name not in agent_manager.agents:
+        return None, _agent_not_found(agent_name)
+    if agent_manager.agents[agent_name]["status"] == "offline":
+        return None, _agent_offline(agent_name)
+    return agent_name, None
+
+
+def _check_agent_error(result):
+    """If *result* is a dict reporting an agent-side error, return a 502."""
+    if isinstance(result, dict) and not result.get("success", True) and result.get("error"):
+        return _agent_unreachable(str(result["error"]))
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Agents management
+# ---------------------------------------------------------------------------
+
+@router.get("/agents")
+async def api_list_agents(request: Request):
+    """List all configured agents with their current status."""
     username = _check_auth(request)
     if username is None:
         return _unauthorized()
-
-    stacks = docker_client.list_stacks()
-    result = []
-    for s in stacks:
-        containers = docker_client.get_stack_containers(s["name"])
-        status = docker_client.get_stack_status(s["name"])
-        ports = docker_client.get_stack_ports(s["name"])
-        running = sum(1 for c in containers if c["status"] == "running")
-        result.append({
-            "name": s["name"],
-            "path": s["path"],
-            "has_compose": s["has_compose"],
-            "has_env": s["has_env"],
-            "container_count": len(containers),
-            "running_count": running,
-            "status": status,
-            "ports": ports,
-        })
-    return result
+    await agent_manager.ping_all()
+    return agent_manager.list_agents()
 
 
-@router.get("/stacks/{name}/containers")
-async def api_stack_containers(request: Request, name: str):
+@router.post("/agents/refresh")
+async def api_refresh_agents(request: Request):
+    """Force a status refresh (ping) of all agents."""
     username = _check_auth(request)
     if username is None:
         return _unauthorized()
-    containers = docker_client.get_stack_containers(name)
-    return containers
+    await agent_manager.ping_all()
+    return {"success": True, "agents": agent_manager.list_agents()}
+
+
+@router.get("/agents/{name}/containers")
+async def api_agent_containers(request: Request, name: str):
+    """List containers belonging to a specific agent."""
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    agent_name, err = _resolve_agent(name)
+    if err is not None:
+        return err
+    return await agent_manager.get_containers(agent_name)
+
+
+@router.get("/agents/{name}/stacks")
+async def api_agent_stacks(request: Request, name: str):
+    """List stacks belonging to a specific agent."""
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    agent_name, err = _resolve_agent(name)
+    if err is not None:
+        return err
+    return await agent_manager.get_stacks(agent_name)
+
+
+@router.get("/agents/{name}/ports")
+async def api_agent_ports(request: Request, name: str):
+    """List ports in use on a specific agent host."""
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    agent_name, err = _resolve_agent(name)
+    if err is not None:
+        return err
+    return await agent_manager.get_ports(agent_name)
 
 
 # ---------------------------------------------------------------------------
@@ -91,23 +170,32 @@ async def api_stack_containers(request: Request, name: str):
 # ---------------------------------------------------------------------------
 
 @router.get("/containers")
-async def api_list_containers(request: Request):
+async def api_list_containers(request: Request, agent: str = Query("all")):
     username = _check_auth(request)
     if username is None:
         return _unauthorized()
-    return docker_client.list_containers(all=True)
+    if agent == "all":
+        return await agent_manager.get_all_containers()
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    return await agent_manager.get_containers(agent_name)
 
 
 @router.get("/containers/{container_id}")
-async def api_get_container(request: Request, container_id: str):
+async def api_get_container(
+    request: Request, container_id: str, agent: str = Query(...)
+):
     username = _check_auth(request)
     if username is None:
         return _unauthorized()
-    c = docker_client.get_container(container_id)
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    c = await agent_manager.get_container(agent_name, container_id)
     if c is None:
         return JSONResponse(status_code=404, content={"detail": "Container not found"})
-    # Attach stats
-    c["stats"] = docker_client.get_container_stats(container_id)
+    c["stats"] = await agent_manager.get_container_stats(agent_name, container_id)
     return c
 
 
@@ -116,61 +204,45 @@ async def api_get_container(request: Request, container_id: str):
 # ---------------------------------------------------------------------------
 
 @router.post("/containers/{container_id}/start")
-async def api_start_container(request: Request, container_id: str):
+async def api_start_container(
+    request: Request, container_id: str, agent: str = Query(...)
+):
     username = _check_auth(request)
     if username is None:
         return _unauthorized()
-    ok = docker_client.start_container(container_id)
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    ok = await agent_manager.start_container(agent_name, container_id)
     return {"success": ok}
 
 
 @router.post("/containers/{container_id}/stop")
-async def api_stop_container(request: Request, container_id: str):
+async def api_stop_container(
+    request: Request, container_id: str, agent: str = Query(...)
+):
     username = _check_auth(request)
     if username is None:
         return _unauthorized()
-    ok = docker_client.stop_container(container_id)
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    ok = await agent_manager.stop_container(agent_name, container_id)
     return {"success": ok}
 
 
 @router.post("/containers/{container_id}/restart")
-async def api_restart_container(request: Request, container_id: str):
+async def api_restart_container(
+    request: Request, container_id: str, agent: str = Query(...)
+):
     username = _check_auth(request)
     if username is None:
         return _unauthorized()
-    ok = docker_client.restart_container(container_id)
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    ok = await agent_manager.restart_container(agent_name, container_id)
     return {"success": ok}
-
-
-# ---------------------------------------------------------------------------
-# Actions - Stacks
-# ---------------------------------------------------------------------------
-
-@router.post("/stacks/{name}/start")
-async def api_stack_start(request: Request, name: str):
-    username = _check_auth(request)
-    if username is None:
-        return _unauthorized()
-    result = docker_client.compose_up(name)
-    return result
-
-
-@router.post("/stacks/{name}/stop")
-async def api_stack_stop(request: Request, name: str):
-    username = _check_auth(request)
-    if username is None:
-        return _unauthorized()
-    result = docker_client.compose_stop(name)
-    return result
-
-
-@router.post("/stacks/{name}/restart")
-async def api_stack_restart(request: Request, name: str):
-    username = _check_auth(request)
-    if username is None:
-        return _unauthorized()
-    result = docker_client.compose_restart(name)
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -178,40 +250,39 @@ async def api_stack_restart(request: Request, name: str):
 # ---------------------------------------------------------------------------
 
 @router.get("/containers/{container_id}/logs")
-async def api_container_logs(request: Request, container_id: str, tail: int = Query(100)):
+async def api_container_logs(
+    request: Request, container_id: str, tail: int = Query(100),
+    agent: str = Query(...),
+):
     username = _check_auth(request)
     if username is None:
         return _unauthorized()
-    lines = docker_client.get_container_logs(container_id, tail=tail)
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    lines = await agent_manager.get_container_logs(agent_name, container_id, tail=tail)
     return {"lines": lines}
 
 
 @router.websocket("/containers/{container_id}/logs/stream")
 async def ws_container_logs(websocket: WebSocket, container_id: str):
-    """WebSocket for streaming container logs in real-time."""
+    """WebSocket for streaming container logs in real-time.
+
+    TODO: proxy this WebSocket toward the agent's own
+    ``/agent/containers/{id}/logs/stream`` endpoint. Implementing a full
+    bidirectional WebSocket proxy is deferred to a later iteration.
+    """
     username = _check_auth_ws(websocket)
     if username is None:
         await websocket.close(code=4401)
         return
 
     await websocket.accept()
-    try:
-        # Stream existing + new logs
-        import asyncio
-        for line in docker_client.get_container_logs_stream(container_id, tail=100):
-            await websocket.send_text(line)
-            await asyncio.sleep(0.01)
-    except WebSocketDisconnect:
-        pass
-    except Exception as e:
-        try:
-            await websocket.send_text(f"[error] {e}")
-        except Exception:
-            pass
-    try:
-        await websocket.close()
-    except Exception:
-        pass
+    await websocket.send_text(
+        "WebSocket proxy to agent not yet implemented. "
+        "Use the agent's WebSocket endpoint directly."
+    )
+    await websocket.close(code=1011)
 
 
 # ---------------------------------------------------------------------------
@@ -220,29 +291,23 @@ async def ws_container_logs(websocket: WebSocket, container_id: str):
 
 @router.websocket("/containers/{container_id}/exec")
 async def ws_container_exec(websocket: WebSocket, container_id: str):
-    """WebSocket for interactive exec in a container (bidirectional)."""
+    """WebSocket for interactive exec in a container (bidirectional).
+
+    TODO: proxy this WebSocket toward the agent's own
+    ``/agent/containers/{id}/exec`` endpoint. Implementing a full
+    bidirectional WebSocket proxy is deferred to a later iteration.
+    """
     username = _check_auth_ws(websocket)
     if username is None:
         await websocket.close(code=4401)
         return
 
     await websocket.accept()
-    try:
-        # Wait for commands from the client and execute them
-        while True:
-            command = await websocket.receive_text()
-            if not command.strip():
-                continue
-            # Execute one-shot command
-            output = docker_client.exec_in_container(container_id, command, tty=False)
-            await websocket.send_text(output)
-    except WebSocketDisconnect:
-        pass
-    except Exception as e:
-        try:
-            await websocket.send_text(f"[error] {e}")
-        except Exception:
-            pass
+    await websocket.send_text(
+        "WebSocket proxy to agent not yet implemented. "
+        "Use the agent's WebSocket endpoint directly."
+    )
+    await websocket.close(code=1011)
 
 
 # ---------------------------------------------------------------------------
@@ -250,12 +315,16 @@ async def ws_container_exec(websocket: WebSocket, container_id: str):
 # ---------------------------------------------------------------------------
 
 @router.get("/containers/{container_id}/stats")
-async def api_container_stats(request: Request, container_id: str):
+async def api_container_stats(
+    request: Request, container_id: str, agent: str = Query(...)
+):
     username = _check_auth(request)
     if username is None:
         return _unauthorized()
-    stats = docker_client.get_container_stats(container_id)
-    return stats
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    return await agent_manager.get_container_stats(agent_name, container_id)
 
 
 # ---------------------------------------------------------------------------
@@ -263,11 +332,16 @@ async def api_container_stats(request: Request, container_id: str):
 # ---------------------------------------------------------------------------
 
 @router.get("/ports")
-async def api_get_ports(request: Request):
+async def api_get_ports(request: Request, agent: str = Query("all")):
     username = _check_auth(request)
     if username is None:
         return _unauthorized()
-    return docker_client.get_used_ports()
+    if agent == "all":
+        return await agent_manager.get_all_ports()
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    return await agent_manager.get_ports(agent_name)
 
 
 # ---------------------------------------------------------------------------
@@ -275,51 +349,163 @@ async def api_get_ports(request: Request):
 # ---------------------------------------------------------------------------
 
 @router.get("/containers/{container_id}/update-check")
-async def api_update_check(request: Request, container_id: str):
+async def api_update_check(
+    request: Request, container_id: str, agent: str = Query(...)
+):
     username = _check_auth(request)
     if username is None:
         return _unauthorized()
-    result = docker_client.check_image_update(container_id)
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    return await agent_manager.check_update(agent_name, container_id)
+
+
+# ---------------------------------------------------------------------------
+# Stacks
+# ---------------------------------------------------------------------------
+
+@router.get("/stacks")
+async def api_list_stacks(request: Request, agent: str = Query("all")):
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    if agent == "all":
+        return await agent_manager.get_all_stacks()
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    return await agent_manager.get_stacks(agent_name)
+
+
+@router.get("/stacks/{name}/containers")
+async def api_stack_containers(
+    request: Request, name: str, agent: str = Query(...)
+):
+    """List containers belonging to a given stack on an agent.
+
+    The agent does not expose a dedicated stack-containers endpoint, so we
+    filter the agent's full container list by stack label/name.
+    """
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    containers = await agent_manager.get_containers(agent_name)
+    result = []
+    for c in containers:
+        labels = c.get("labels", {}) if isinstance(c, dict) else {}
+        stack_label = labels.get("com.docker.compose.project") or c.get("stack")
+        if stack_label and stack_label == name:
+            result.append(c)
     return result
 
 
 # ---------------------------------------------------------------------------
-# Stack files (Phase 3 - Editor)
+# Stack actions
 # ---------------------------------------------------------------------------
 
-def _safe_call(func):
-    """Helper to run a docker_client function and convert exceptions to 4xx."""
-    try:
-        return func()
-    except (FileNotFoundError, FileExistsError):
-        return JSONResponse(status_code=404, content={"detail": str(func)})
-    except ValueError as e:
-        return JSONResponse(status_code=400, content={"detail": str(e)})
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"detail": str(e)})
-
-
-@router.get("/stacks/{name}/files")
-async def api_list_stack_files(request: Request, name: str):
+@router.post("/stacks/{name}/start")
+async def api_stack_start(request: Request, name: str, agent: str = Query(...)):
     username = _check_auth(request)
     if username is None:
         return _unauthorized()
-    try:
-        files = docker_client.get_stack_files(name)
-        return {"files": files}
-    except FileNotFoundError:
-        return JSONResponse(status_code=404, content={"detail": f"Stack '{name}' not found"})
-    except ValueError as e:
-        return JSONResponse(status_code=400, content={"detail": str(e)})
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"detail": str(e)})
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    result = await agent_manager.start_stack(agent_name, name)
+    err = _check_agent_error(result)
+    return err if err is not None else result
+
+
+@router.post("/stacks/{name}/stop")
+async def api_stack_stop(request: Request, name: str, agent: str = Query(...)):
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    result = await agent_manager.stop_stack(agent_name, name)
+    err = _check_agent_error(result)
+    return err if err is not None else result
+
+
+@router.post("/stacks/{name}/restart")
+async def api_stack_restart(request: Request, name: str, agent: str = Query(...)):
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    result = await agent_manager.restart_stack(agent_name, name)
+    err = _check_agent_error(result)
+    return err if err is not None else result
+
+
+# ---------------------------------------------------------------------------
+# Stack files (editor)
+# ---------------------------------------------------------------------------
+
+@router.get("/stacks/{name}/files")
+async def api_list_stack_files(request: Request, name: str, agent: str = Query(...)):
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    files = await agent_manager.get_stack_files(agent_name, name)
+    return {"files": files}
+
+
+@router.get("/stacks/{name}/files/{filename:path}")
+async def api_get_stack_file(
+    request: Request, name: str, filename: str, agent: str = Query(...)
+):
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    content = await agent_manager.get_stack_file(agent_name, name, filename)
+    if content is None:
+        return JSONResponse(status_code=404, content={"detail": "File not found"})
+    return PlainTextResponse(content)
+
+
+@router.put("/stacks/{name}/files/{filename:path}")
+async def api_put_stack_file(
+    request: Request, name: str, filename: str, agent: str = Query(...)
+):
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    body = await request.body()
+    content = body.decode("utf-8")
+    ok = await agent_manager.save_stack_file(agent_name, name, filename, content)
+    if not ok:
+        return JSONResponse(status_code=502, content={"detail": "Failed to communicate with agent"})
+    return {"success": True, "name": filename}
 
 
 @router.put("/stacks/{name}/files/{filename}/permissions")
-async def api_set_file_permissions(request: Request, name: str, filename: str):
+async def api_set_file_permissions(
+    request: Request, name: str, filename: str, agent: str = Query(...)
+):
     username = _check_auth(request)
     if username is None:
         return _unauthorized()
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
     try:
         data = await request.json()
     except Exception:
@@ -327,124 +513,87 @@ async def api_set_file_permissions(request: Request, name: str, filename: str):
     mode = data.get("mode")
     if mode is None:
         return JSONResponse(status_code=400, content={"detail": "mode is required"})
-    try:
-        result = docker_client.set_file_permissions(name, filename, mode)
-        return result
-    except FileNotFoundError:
-        return JSONResponse(status_code=404, content={"detail": "File not found"})
-    except ValueError as e:
-        return JSONResponse(status_code=400, content={"detail": str(e)})
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"detail": str(e)})
+    result = await agent_manager.set_permissions(agent_name, name, filename, mode)
+    err = _check_agent_error(result)
+    return err if err is not None else result
 
 
-@router.get("/stacks/{name}/files/{filename:path}")
-async def api_get_stack_file(request: Request, name: str, filename: str):
-    username = _check_auth(request)
-    if username is None:
-        return _unauthorized()
-    try:
-        content = docker_client.get_stack_file(name, filename)
-        return PlainTextResponse(content)
-    except FileNotFoundError:
-        return JSONResponse(status_code=404, content={"detail": "File not found"})
-    except ValueError as e:
-        return JSONResponse(status_code=400, content={"detail": str(e)})
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"detail": str(e)})
-
-
-@router.put("/stacks/{name}/files/{filename:path}")
-async def api_put_stack_file(request: Request, name: str, filename: str):
-    username = _check_auth(request)
-    if username is None:
-        return _unauthorized()
-    body = await request.body()
-    content = body.decode("utf-8")
-    try:
-        docker_client.save_stack_file(name, filename, content)
-        return {"success": True, "name": filename}
-    except FileNotFoundError:
-        return JSONResponse(status_code=404, content={"detail": "Stack not found"})
-    except ValueError as e:
-        return JSONResponse(status_code=400, content={"detail": str(e)})
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"detail": str(e)})
-
+# ---------------------------------------------------------------------------
+# Compose / env shortcuts
+# ---------------------------------------------------------------------------
 
 @router.get("/stacks/{name}/compose")
-async def api_get_compose(request: Request, name: str):
+async def api_get_compose(request: Request, name: str, agent: str = Query(...)):
     username = _check_auth(request)
     if username is None:
         return _unauthorized()
-    try:
-        content = docker_client.get_stack_file(name, "docker-compose.yml")
-        return PlainTextResponse(content)
-    except FileNotFoundError:
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    content = await agent_manager.get_stack_file(agent_name, name, "docker-compose.yml")
+    if content is None:
         return JSONResponse(status_code=404, content={"detail": "Compose file not found"})
-    except ValueError as e:
-        return JSONResponse(status_code=400, content={"detail": str(e)})
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"detail": str(e)})
+    return PlainTextResponse(content)
 
 
 @router.put("/stacks/{name}/compose")
-async def api_put_compose(request: Request, name: str):
+async def api_put_compose(request: Request, name: str, agent: str = Query(...)):
     username = _check_auth(request)
     if username is None:
         return _unauthorized()
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
     body = await request.body()
     content = body.decode("utf-8")
-    try:
-        docker_client.save_stack_file(name, "docker-compose.yml", content)
-        return {"success": True}
-    except FileNotFoundError:
-        return JSONResponse(status_code=404, content={"detail": "Stack not found"})
-    except ValueError as e:
-        return JSONResponse(status_code=400, content={"detail": str(e)})
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"detail": str(e)})
+    ok = await agent_manager.save_stack_file(agent_name, name, "docker-compose.yml", content)
+    if not ok:
+        return JSONResponse(status_code=502, content={"detail": "Failed to communicate with agent"})
+    return {"success": True}
 
 
 @router.get("/stacks/{name}/env")
-async def api_get_env(request: Request, name: str):
+async def api_get_env(request: Request, name: str, agent: str = Query(...)):
     username = _check_auth(request)
     if username is None:
         return _unauthorized()
-    try:
-        content = docker_client.get_stack_file(name, ".env")
-        return PlainTextResponse(content)
-    except FileNotFoundError:
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    content = await agent_manager.get_stack_file(agent_name, name, ".env")
+    if content is None:
         return JSONResponse(status_code=404, content={"detail": ".env file not found"})
-    except ValueError as e:
-        return JSONResponse(status_code=400, content={"detail": str(e)})
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"detail": str(e)})
+    return PlainTextResponse(content)
 
 
 @router.put("/stacks/{name}/env")
-async def api_put_env(request: Request, name: str):
+async def api_put_env(request: Request, name: str, agent: str = Query(...)):
     username = _check_auth(request)
     if username is None:
         return _unauthorized()
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
     body = await request.body()
     content = body.decode("utf-8")
-    try:
-        docker_client.save_stack_file(name, ".env", content)
-        return {"success": True}
-    except FileNotFoundError:
-        return JSONResponse(status_code=404, content={"detail": "Stack not found"})
-    except ValueError as e:
-        return JSONResponse(status_code=400, content={"detail": str(e)})
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"detail": str(e)})
+    ok = await agent_manager.save_stack_file(agent_name, name, ".env", content)
+    if not ok:
+        return JSONResponse(status_code=502, content={"detail": "Failed to communicate with agent"})
+    return {"success": True}
 
+
+# ---------------------------------------------------------------------------
+# Stack lifecycle
+# ---------------------------------------------------------------------------
 
 @router.post("/stacks")
-async def api_create_stack(request: Request):
+async def api_create_stack(request: Request, agent: str = Query(...)):
     username = _check_auth(request)
     if username is None:
         return _unauthorized()
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
     try:
         data = await request.json()
     except Exception:
@@ -454,47 +603,35 @@ async def api_create_stack(request: Request):
     env = data.get("env", "")
     if not name:
         return JSONResponse(status_code=400, content={"detail": "name is required"})
-    try:
-        result = docker_client.create_stack(name, compose, env)
-        return result
-    except FileExistsError:
-        return JSONResponse(status_code=409, content={"detail": "Stack already exists"})
-    except ValueError as e:
-        return JSONResponse(status_code=400, content={"detail": str(e)})
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"detail": str(e)})
+    result = await agent_manager.create_stack(agent_name, name, compose, env)
+    err = _check_agent_error(result)
+    return err if err is not None else result
 
 
 @router.delete("/stacks/{name}")
-async def api_delete_stack(request: Request, name: str):
+async def api_delete_stack(request: Request, name: str, agent: str = Query(...)):
     username = _check_auth(request)
     if username is None:
         return _unauthorized()
-    try:
-        result = docker_client.delete_stack(name)
-        return result
-    except FileNotFoundError:
-        return JSONResponse(status_code=404, content={"detail": "Stack not found"})
-    except ValueError as e:
-        return JSONResponse(status_code=400, content={"detail": str(e)})
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"detail": str(e)})
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    result = await agent_manager.delete_stack(agent_name, name)
+    err = _check_agent_error(result)
+    return err if err is not None else result
 
 
 @router.post("/stacks/{name}/deploy")
-async def api_deploy_stack(request: Request, name: str):
+async def api_deploy_stack(request: Request, name: str, agent: str = Query(...)):
     username = _check_auth(request)
     if username is None:
         return _unauthorized()
-    try:
-        result = docker_client.deploy_stack(name)
-        return result
-    except FileNotFoundError:
-        return JSONResponse(status_code=404, content={"detail": "Stack not found"})
-    except ValueError as e:
-        return JSONResponse(status_code=400, content={"detail": str(e)})
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"detail": str(e)})
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    result = await agent_manager.deploy_stack(agent_name, name)
+    err = _check_agent_error(result)
+    return err if err is not None else result
 
 
 # ---------------------------------------------------------------------------
@@ -537,10 +674,18 @@ async def chat_endpoint(request: Request):
 
 @router.post("/chat/validate-exec")
 async def validate_exec_endpoint(request: Request):
-    """Execute a command in a container after human validation."""
+    """Execute a command in a container after human validation.
+
+    The command is executed on the agent specified by the ``agent`` query
+    parameter; the orchestrator never talks to Docker directly.
+    """
     username = _check_auth(request)
     if username is None:
         return _unauthorized()
+    agent = request.query_params.get("agent")
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
     try:
         data = await request.json()
     except Exception:
@@ -553,8 +698,13 @@ async def validate_exec_endpoint(request: Request):
             content={"detail": "container_id and command are required"},
         )
     try:
-        output = docker_client.exec_in_container(container_id, command, tty=False)
-        return {"success": True, "output": output}
+        result = await agent_manager.exec_container(agent_name, container_id, command)
+        if isinstance(result, dict) and not result.get("success", True):
+            return JSONResponse(
+                status_code=500,
+                content={"detail": f"Exec error: {result.get('error', 'unknown')}"},
+            )
+        return result
     except Exception as exc:
         return JSONResponse(status_code=500, content={"detail": f"Exec error: {exc}"})
 
@@ -622,7 +772,7 @@ async def chat_stream_ws(websocket: WebSocket):
             return
 
         # Build the full message list
-        system_prompt = build_system_prompt()
+        system_prompt = await build_system_prompt()
         messages: list = [{"role": "system", "content": system_prompt}]
         messages.extend(history)
         messages.append({"role": "user", "content": message})

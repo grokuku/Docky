@@ -1,0 +1,13 @@
+services:
+  docky-agent:
+    build: .
+    container_name: docky-agent
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data:/data
+    environment:
+      - DOCKY_AGENT_API_KEY=change-this-to-a-secret-key
+      - DOCKY_DATA_DIR=/data

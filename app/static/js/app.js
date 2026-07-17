@@ -12,6 +12,17 @@ const DockyApp = {
     refreshInterval: null,
     refreshTimer: 5000,
 
+    // Multi-agent
+    currentAgentFilter: "all",   // "all" or agent name
+    agentsList: [],              // [{name, status, ...}]
+    agentsRefreshInterval: null,
+    agentsRefreshTimer: 30000,
+    stackAgentMap: {},           // stackName -> agentName
+    selectedStackAgent: null,    // agent for the currently edited stack
+    expandedStackAgent: null,    // agent for the currently expanded stack
+    logsContainerAgent: null,    // agent for the container whose logs are open
+    consoleContainerAgent: null, // agent for the container whose console is open
+
     // WebSockets
     logsWs: null,
     logsStreamMode: false,
@@ -81,13 +92,108 @@ const DockyApp = {
     },
 
     // -------------------------------------------------------
+    // Multi-agent management
+    // -------------------------------------------------------
+
+    /** Build the ?agent= query string for the current filter. */
+    agentQueryParam() {
+        return "?agent=" + encodeURIComponent(this.currentAgentFilter);
+    },
+
+    /** Build a ?agent= query string for a specific agent. */
+    agentQuery(agentName) {
+        if (!agentName || agentName === "all") return "";
+        return "?agent=" + encodeURIComponent(agentName);
+    },
+
+    async loadAgents() {
+        const data = await this.apiFetch("/api/agents");
+        if (data === null) return;
+        // Expecting an array or {agents: [...]}
+        this.agentsList = Array.isArray(data) ? data : (data.agents || []);
+        this.renderAgentSelector();
+    },
+
+    async refreshAgents() {
+        await this.apiPost("/api/agents/refresh");
+        await this.loadAgents();
+    },
+
+    renderAgentSelector() {
+        const container = document.getElementById("agent-selector");
+        if (!container) return;
+
+        if (this.agentsList.length === 0) {
+            container.innerHTML = '<span class="agent-selector-loading">Aucun agent</span>';
+            return;
+        }
+
+        let html = '';
+        // "Tous" button
+        const allActive = this.currentAgentFilter === "all" ? " active" : "";
+        html += '<button class="agent-btn' + allActive + '" onclick="DockyApp.setAgentFilter(\'all\')" title="Tous les agents">'
+            + '🌍 Tous'
+            + '</button>';
+
+        for (const agent of this.agentsList) {
+            const name = agent.name || agent;
+            const status = agent.status || "offline";
+            const isOnline = status === "online" || status === "connected" || status === true;
+            const dotClass = isOnline ? "online" : "offline";
+            const active = this.currentAgentFilter === name ? " active" : "";
+            html += '<button class="agent-btn' + active + '" onclick="DockyApp.setAgentFilter(' + JSON.stringify(name) + ')" title="' + this.escapeHtml(name) + ' — ' + this.escapeHtml(status) + '">'
+                + '<span class="agent-status-dot ' + dotClass + '"></span>'
+                + this.escapeHtml(name)
+                + '</button>';
+        }
+
+        container.innerHTML = html;
+    },
+
+    setAgentFilter(agentName) {
+        if (this.currentAgentFilter === agentName) return;
+        this.currentAgentFilter = agentName;
+        this.expandedStack = null;
+        this.renderAgentSelector();
+        this.refreshStacks();
+        // Refresh ports if panel is open
+        const portsPanel = document.getElementById("ports-panel");
+        if (portsPanel && !portsPanel.classList.contains("hidden")) {
+            this.loadPorts();
+        }
+    },
+
+    startAgentsRefresh() {
+        this.stopAgentsRefresh();
+        this.agentsRefreshInterval = setInterval(() => {
+            this.loadAgents();
+        }, this.agentsRefreshTimer);
+    },
+
+    stopAgentsRefresh() {
+        if (this.agentsRefreshInterval) {
+            clearInterval(this.agentsRefreshInterval);
+            this.agentsRefreshInterval = null;
+        }
+    },
+
+    // -------------------------------------------------------
     // Stacks
     // -------------------------------------------------------
 
     async refreshStacks() {
-        const data = await this.apiFetch("/api/stacks");
+        const data = await this.apiFetch("/api/stacks" + this.agentQueryParam());
         if (data === null) return;
         this.stacks = data;
+        // Build stackName -> agentName map
+        this.stackAgentMap = {};
+        for (const s of data) {
+            if (s.agent_name) {
+                this.stackAgentMap[s.name] = s.agent_name;
+            } else if (this.currentAgentFilter !== "all") {
+                this.stackAgentMap[s.name] = this.currentAgentFilter;
+            }
+        }
         this.renderStacks();
         // Update compose selector
         this.updateStackSelector(data);
@@ -130,12 +236,16 @@ const DockyApp = {
             const portsInfo = stack.ports && stack.ports.length > 0
                 ? stack.ports.join(", ")
                 : "";
+            const agentBadge = (this.currentAgentFilter === "all" && stack.agent_name)
+                ? '<span class="stack-agent-badge">🖥 ' + this.escapeHtml(stack.agent_name) + '</span>'
+                : "";
 
             html += `
                 <div class="stack-card ${isExpanded ? "expanded" : ""}" data-stack="${this.escapeHtml(stack.name)}">
                     <div class="stack-card-header" onclick="DockyApp.toggleStack('${this.escapeHtml(stack.name)}')">
                         <div class="stack-card-info">
                             <span class="stack-name">${this.escapeHtml(stack.name)}</span>
+                            ${agentBadge}
                             ${statusBadge}
                         </div>
                         <div class="stack-card-meta">
@@ -198,18 +308,21 @@ const DockyApp = {
     async loadContainers(stackName) {
         const target = document.getElementById("containers-" + stackName);
         if (!target) return;
-        const data = await this.apiFetch("/api/stacks/" + encodeURIComponent(stackName) + "/containers");
+        const agent = this.stackAgentMap[stackName] || (this.currentAgentFilter !== "all" ? this.currentAgentFilter : null);
+        this.expandedStackAgent = agent;
+        const data = await this.apiFetch("/api/stacks/" + encodeURIComponent(stackName) + "/containers" + this.agentQuery(agent));
         if (data === null) return;
-        this.renderContainers(target, data, stackName);
+        this.renderContainers(target, data, stackName, agent);
     },
 
-    renderContainers(target, containers, stackName) {
+    renderContainers(target, containers, stackName, agent) {
         if (!containers || containers.length === 0) {
             target.innerHTML = '<div class="placeholder"><p>Aucun container pour cette stack</p></div>';
             return;
         }
 
         let html = '<div class="containers-list">';
+        const agt = agent ? encodeURIComponent(agent) : "";
         for (const c of containers) {
             const ports = (c.ports || [])
                 .filter(p => p.host_port)
@@ -245,11 +358,11 @@ const DockyApp = {
                         <span class="update-badge hidden" id="update-${this.escapeHtml(c.id)}">⬆ Update dispo</span>
                     </div>
                     <div class="container-actions">
-                        <button class="icon-btn btn-start" title="Start" onclick="DockyApp.containerAction('${this.escapeHtml(c.id)}', 'start')">▶</button>
-                        <button class="icon-btn btn-stop" title="Stop" onclick="DockyApp.containerAction('${this.escapeHtml(c.id)}', 'stop')">⏹</button>
-                        <button class="icon-btn btn-restart" title="Restart" onclick="DockyApp.containerAction('${this.escapeHtml(c.id)}', 'restart')">🔄</button>
-                        <button class="icon-btn btn-logs" title="Logs" onclick="DockyApp.openLogs('${this.escapeHtml(c.id)}', '${name}')">📋</button>
-                        <button class="icon-btn btn-console" title="Console" onclick="DockyApp.openConsole('${this.escapeHtml(c.id)}', '${name}')">🖥</button>
+                        <button class="icon-btn btn-start" title="Start" onclick="DockyApp.containerAction('${this.escapeHtml(c.id)}', 'start', '${agt}')">▶</button>
+                        <button class="icon-btn btn-stop" title="Stop" onclick="DockyApp.containerAction('${this.escapeHtml(c.id)}', 'stop', '${agt}')">⏹</button>
+                        <button class="icon-btn btn-restart" title="Restart" onclick="DockyApp.containerAction('${this.escapeHtml(c.id)}', 'restart', '${agt}')">🔄</button>
+                        <button class="icon-btn btn-logs" title="Logs" onclick="DockyApp.openLogs('${this.escapeHtml(c.id)}', '${name}', '${agt}')">📋</button>
+                        <button class="icon-btn btn-console" title="Console" onclick="DockyApp.openConsole('${this.escapeHtml(c.id)}', '${name}', '${agt}')">🖥</button>
                     </div>
                 </div>`;
         }
@@ -259,8 +372,8 @@ const DockyApp = {
         // Load resources for running containers
         for (const c of containers) {
             if (c.status === "running") {
-                this.loadContainerStats(c.id);
-                this.checkUpdate(c.id);
+                this.loadContainerStats(c.id, agent);
+                this.checkUpdate(c.id, agent);
             }
         }
     },
@@ -269,8 +382,8 @@ const DockyApp = {
     // Stats / Resources
     // -------------------------------------------------------
 
-    async loadContainerStats(containerId) {
-        const data = await this.apiFetch("/api/containers/" + containerId + "/stats");
+    async loadContainerStats(containerId, agent) {
+        const data = await this.apiFetch("/api/containers/" + containerId + "/stats" + this.agentQuery(agent));
         if (!data) return;
         this.renderStats(containerId, data);
     },
@@ -296,9 +409,9 @@ const DockyApp = {
     // Actions
     // -------------------------------------------------------
 
-    async containerAction(id, action) {
+    async containerAction(id, action, agent) {
         this.showToast(`${action} container…`, "info");
-        const result = await this.apiPost(`/api/containers/${id}/${action}`);
+        const result = await this.apiPost(`/api/containers/${id}/${action}` + this.agentQuery(agent));
         if (result && result.success) {
             this.showToast(`Container ${action} OK`, "success");
         } else {
@@ -310,7 +423,8 @@ const DockyApp = {
 
     async stackAction(name, action) {
         this.showToast(`${action} stack "${name}"…`, "info");
-        const result = await this.apiPost(`/api/stacks/${encodeURIComponent(name)}/${action}`);
+        const agent = this.stackAgentMap[name] || (this.currentAgentFilter !== "all" ? this.currentAgentFilter : null);
+        const result = await this.apiPost(`/api/stacks/${encodeURIComponent(name)}/${action}` + this.agentQuery(agent));
         if (result && result.success) {
             this.showToast(`Stack ${action} OK`, "success");
         } else {
@@ -324,8 +438,8 @@ const DockyApp = {
     // Update check
     // -------------------------------------------------------
 
-    async checkUpdate(containerId) {
-        const data = await this.apiFetch("/api/containers/" + containerId + "/update-check");
+    async checkUpdate(containerId, agent) {
+        const data = await this.apiFetch("/api/containers/" + containerId + "/update-check" + this.agentQuery(agent));
         if (!data) return;
         if (data.update_available) {
             const badge = document.getElementById("update-" + containerId);
@@ -337,8 +451,9 @@ const DockyApp = {
     // Logs
     // -------------------------------------------------------
 
-    async openLogs(containerId, name) {
+    async openLogs(containerId, name, agent) {
         this.logsContainerId = containerId;
+        this.logsContainerAgent = agent;
         this.logsStreamMode = false;
         const title = document.getElementById("logs-title");
         if (title) title.textContent = `📋 Logs - ${name}`;
@@ -348,7 +463,8 @@ const DockyApp = {
         output.innerHTML = '<div class="terminal-line">Chargement…</div>';
 
         // Fetch static logs
-        const data = await this.apiFetch(`/api/containers/${containerId}/logs?tail=200`);
+        const agentParam = agent ? "\u0026agent=" + encodeURIComponent(agent) : "";
+        const data = await this.apiFetch(`/api/containers/${containerId}/logs?tail=200${agentParam}`);
         if (data && data.lines) {
             this.renderLogs(data.lines);
         }
@@ -431,8 +547,9 @@ const DockyApp = {
     // Console (exec)
     // -------------------------------------------------------
 
-    async openConsole(containerId, name) {
+    async openConsole(containerId, name, agent) {
         this.consoleContainerId = containerId;
+        this.consoleContainerAgent = agent;
         const title = document.getElementById("console-title");
         if (title) title.textContent = `🖥 Console - ${name}`;
         const modal = document.getElementById("console-modal");
@@ -516,7 +633,7 @@ const DockyApp = {
         const target = document.getElementById("ports-list");
         if (!target) return;
         target.innerHTML = '<p class="placeholder-hint">Chargement…</p>';
-        const data = await this.apiFetch("/api/ports");
+        const data = await this.apiFetch("/api/ports" + this.agentQueryParam());
         if (!data) return;
         if (data.length === 0) {
             target.innerHTML = '<p class="placeholder-hint">Aucun port détecté</p>';
@@ -525,12 +642,16 @@ const DockyApp = {
         let html = '<div class="ports-grid">';
         for (const p of data) {
             const srcClass = p.source === "docker" ? "port-docker" : "port-system";
+            const agentBadge = (this.currentAgentFilter === "all" && p.agent_name)
+                ? `<span class="port-agent">🖥 ${this.escapeHtml(p.agent_name)}</span>`
+                : "";
             html += `
                 <div class="port-item ${srcClass}">
                     <span class="port-number">:${this.escapeHtml(p.port)}</span>
                     <span class="port-source">${p.source === "docker" ? "🐳" : "🖥"}</span>
                     ${p.container ? `<span class="port-container">${this.escapeHtml(p.container)}</span>` : ""}
                     ${p.stack ? `<span class="port-stack">(${this.escapeHtml(p.stack)})</span>` : ""}
+                    ${agentBadge}
                 </div>`;
         }
         html += "</div>";
@@ -589,13 +710,15 @@ const DockyApp = {
 
     async loadEditor(name) {
         this.selectedStack = name;
+        this.selectedStackAgent = this.stackAgentMap[name] || (this.currentAgentFilter !== "all" ? this.currentAgentFilter : null);
+        const agent = this.selectedStackAgent;
         this.editorLoading = true;
         this.currentFile = null;
         this.fileContents = {};
         this.savedContents = {};
         this.renderEditorLoading();
 
-        const filesData = await this.apiFetch("/api/stacks/" + encodeURIComponent(name) + "/files");
+        const filesData = await this.apiFetch("/api/stacks/" + encodeURIComponent(name) + "/files" + this.agentQuery(agent));
         if (!filesData || !filesData.files) {
             this.renderEditorPlaceholder("Impossible de charger les fichiers de la stack.");
             return;
@@ -606,8 +729,9 @@ const DockyApp = {
             return;
         }
         // Load all file contents
+        const agentParam = this.agentQuery(agent);
         for (const f of this.stackFiles) {
-            const resp = await fetch("/api/stacks/" + encodeURIComponent(name) + "/files/" + encodeURIComponent(f.name), { credentials: "same-origin" });
+            const resp = await fetch("/api/stacks/" + encodeURIComponent(name) + "/files/" + encodeURIComponent(f.name) + agentParam, { credentials: "same-origin" });
             if (resp.ok) {
                 const text = await resp.text();
                 this.fileContents[f.name] = text;
@@ -699,7 +823,7 @@ const DockyApp = {
         let statusHtml = '<div class="compose-status">';
         statusHtml += '<span class="status-dot' + (mod ? ' modified' : '') + '"></span>';
         statusHtml += '<span>' + (mod ? 'Modifié (non sauvegardé)' : 'Aucune modification') + '</span>';
-        statusHtml += '<span style="margin-left:auto;">' + this.escapeHtml(this.currentFile || '') + ' · ' + content.split("\n").length + ' lignes</span>';
+        statusHtml += '<span style="margin-left:auto;">' + (this.selectedStackAgent ? '🖥 ' + this.escapeHtml(this.selectedStackAgent) + ' · ' : '') + this.escapeHtml(this.currentFile || '') + ' · ' + content.split("\n").length + ' lignes</span>';
         statusHtml += '</div>';
 
         body.innerHTML = tabsHtml + toolbarHtml + editorHtml + statusHtml;
@@ -779,7 +903,8 @@ const DockyApp = {
     async saveCurrentFile() {
         if (!this.selectedStack || !this.currentFile) return;
         const content = this.fileContents[this.currentFile];
-        const resp = await fetch("/api/stacks/" + encodeURIComponent(this.selectedStack) + "/files/" + encodeURIComponent(this.currentFile), {
+        const agentParam = this.agentQuery(this.selectedStackAgent);
+        const resp = await fetch("/api/stacks/" + encodeURIComponent(this.selectedStack) + "/files/" + encodeURIComponent(this.currentFile) + agentParam, {
             method: "PUT",
             headers: { "Content-Type": "text/plain" },
             body: content,
@@ -800,11 +925,13 @@ const DockyApp = {
         if (!this.selectedStack) return;
         // Save all modified files
         const stack = this.selectedStack;
+        const agent = this.selectedStackAgent;
+        const agentParam = this.agentQuery(agent);
         this.showToast("Sauvegarde et déploiement…", "info");
         let allOk = true;
         for (const fname of Object.keys(this.fileContents)) {
             if (this.isModified(fname)) {
-                const resp = await fetch("/api/stacks/" + encodeURIComponent(stack) + "/files/" + encodeURIComponent(fname), {
+                const resp = await fetch("/api/stacks/" + encodeURIComponent(stack) + "/files/" + encodeURIComponent(fname) + agentParam, {
                     method: "PUT",
                     headers: { "Content-Type": "text/plain" },
                     body: this.fileContents[fname],
@@ -819,7 +946,7 @@ const DockyApp = {
             return;
         }
         // Deploy
-        const result = await this.apiPost("/api/stacks/" + encodeURIComponent(stack) + "/deploy");
+        const result = await this.apiPost("/api/stacks/" + encodeURIComponent(stack) + "/deploy" + agentParam);
         if (result && result.success) {
             this.showToast("Déploiement réussi ✅", "success");
         } else {
@@ -857,7 +984,8 @@ const DockyApp = {
             this.showToast("Le nom est requis", "error");
             return;
         }
-        const resp = await fetch("/api/stacks", {
+        const agentParam = this.agentQuery(this.currentAgentFilter !== "all" ? this.currentAgentFilter : this.selectedStackAgent);
+        const resp = await fetch("/api/stacks" + agentParam, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ name, compose, env }),
@@ -893,7 +1021,9 @@ const DockyApp = {
     async confirmDeleteStack() {
         const name = this.deleteTargetStack;
         if (!name) return;
-        const resp = await fetch("/api/stacks/" + encodeURIComponent(name), {
+        const agent = this.stackAgentMap[name] || (this.currentAgentFilter !== "all" ? this.currentAgentFilter : null);
+        const agentParam = this.agentQuery(agent);
+        const resp = await fetch("/api/stacks/" + encodeURIComponent(name) + agentParam, {
             method: "DELETE",
             credentials: "same-origin",
         });
@@ -941,7 +1071,8 @@ const DockyApp = {
             this.showToast("Mode invalide (ex: 644)", "error");
             return;
         }
-        const resp = await fetch("/api/stacks/" + encodeURIComponent(this.selectedStack) + "/files/" + encodeURIComponent(this.permsTargetFile) + "/permissions", {
+        const agentParam = this.agentQuery(this.selectedStackAgent);
+        const resp = await fetch("/api/stacks/" + encodeURIComponent(this.selectedStack) + "/files/" + encodeURIComponent(this.permsTargetFile) + "/permissions" + agentParam, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ mode }),
@@ -1267,6 +1398,8 @@ const DockyApp = {
     // -------------------------------------------------------
 
     init() {
+        this.loadAgents();
+        this.startAgentsRefresh();
         this.refreshStacks();
         this.startAutoRefresh();
 
