@@ -33,3 +33,16 @@ async def dashboard(request: Request):
         "dashboard.html",
         {"username": username},
     )
+
+
+@router.get("/settings")
+async def settings_page(request: Request):
+    """Show the settings page, or redirect to login if not authenticated."""
+    username = _is_authenticated(request)
+    if username is None:
+        return RedirectResponse(url="/login", status_code=303)
+    return templates.TemplateResponse(
+        request,
+        "settings.html",
+        {"username": username},
+    )

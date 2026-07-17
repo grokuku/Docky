@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Docky 🐳 - Settings</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body class="app-body">
+    <!-- Top bar -->
+    <header class="topbar">
+        <div class="topbar-left">
+            <span class="topbar-logo">Docky 🐳</span>
+        </div>
+        <div class="topbar-center">
+            <span class="settings-title">Settings</span>
+        </div>
+        <div class="topbar-right">
+            <a class="btn btn-ghost btn-sm" href="/dashboard">← Dashboard</a>
+            <span class="topbar-user">👤 {{ username }}</span>
+            <button class="btn btn-ghost btn-sm" onclick="window.location.href='/logout'">Déconnexion</button>
+        </div>
+    </header>
+
+    <!-- Main layout -->
+    <div class="settings-layout">
+        <!-- LLM configuration -->
+        <section class="panel settings-panel">
+            <div class="panel-header">
+                <h2>🤖 Configuration LLM</h2>
+                <span id="llm-status" class="status-indicator status-unknown">Non testé</span>
+            </div>
+            <div class="panel-body settings-body">
+                <div class="form-group">
+                    <label for="llm-endpoint">Endpoint</label>
+                    <input type="text" id="llm-endpoint" placeholder="http://localhost:11434/v1" autocomplete="off">
+                    <p class="form-hint">URL de l'API compatible OpenAI.</p>
+                </div>
+                <div class="form-group">
+                    <label for="llm-api-key">API Key</label>
+                    <input type="password" id="llm-api-key" placeholder="••••••••" autocomplete="off">
+                    <p class="form-hint">Laisser vide pour ne pas changer. Exemples d'endpoints :</p>
+                    <ul class="form-hint-list">
+                        <li>Ollama : <code>http://localhost:11434/v1</code></li>
+                        <li>Deepseek : <code>https://api.deepseek.com/v1</code></li>
+                        <li>OpenAI : <code>https://api.openai.com/v1</code></li>
+                    </ul>
+                </div>
+                <div class="form-group">
+                    <label for="llm-model">Model</label>
+                    <input type="text" id="llm-model" placeholder="llama3.1, deepseek-chat, gpt-4o…" autocomplete="off">
+                </div>
+                <div class="form-group">
+                    <label for="firecrawl-api-key">Firecrawl API Key</label>
+                    <input type="password" id="firecrawl-api-key" placeholder="••••••••" autocomplete="off">
+                    <p class="form-hint">Optionnel. Clé pour la recherche web via Firecrawl.</p>
+                </div>
+                <div class="settings-actions">
+                    <button class="btn btn-ghost" id="llm-test-btn" onclick="SettingsApp.testLLM()">Tester la connexion</button>
+                    <button class="btn btn-primary" onclick="SettingsApp.saveLLMConfig()">Sauvegarder</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Agents management -->
+        <section class="panel settings-panel">
+            <div class="panel-header">
+                <h2>🖥 Agents</h2>
+                <button class="btn btn-sm btn-primary" onclick="SettingsApp.showAgentForm(null)">➕ Ajouter un agent</button>
+            </div>
+            <div class="panel-body settings-body">
+                <div id="agents-list" class="agents-list">
+                    <p class="placeholder-hint">Chargement…</p>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <!-- Agent form modal -->
+    <div id="agent-modal" class="modal hidden">
+        <div class="modal-content modal-small">
+            <div class="modal-header">
+                <h3 id="agent-modal-title">➕ Ajouter un agent</h3>
+                <button class="btn btn-ghost btn-sm" onclick="SettingsApp.closeAgentForm()">✕</button>
+            </div>
+            <div class="modal-body modal-body-pad">
+                <div class="form-group">
+                    <label for="agent-name">Nom</label>
+                    <input type="text" id="agent-name" placeholder="Serveur Local" autocomplete="off">
+                </div>
+                <div class="form-group">
+                    <label for="agent-url">URL</label>
+                    <input type="text" id="agent-url" placeholder="http://docky-agent:8080" autocomplete="off">
+                </div>
+                <div class="form-group">
+                    <label for="agent-api-key">Clé API</label>
+                    <input type="password" id="agent-api-key" placeholder="••••••••" autocomplete="off">
+                    <p class="form-hint" id="agent-key-hint">Laisser vide pour ne pas changer.</p>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" onclick="SettingsApp.closeAgentForm()">Annuler</button>
+                <button class="btn btn-primary" id="agent-save-btn" onclick="SettingsApp.submitAgentForm()">Enregistrer</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Delete confirm modal -->
+    <div id="delete-agent-modal" class="modal hidden">
+        <div class="modal-content modal-small">
+            <div class="modal-header">
+                <h3>🗑 Supprimer l'agent</h3>
+                <button class="btn btn-ghost btn-sm" onclick="SettingsApp.closeDeleteAgent()">✕</button>
+            </div>
+            <div class="modal-body modal-body-pad">
+                <p>Supprimer l'agent <strong id="delete-agent-name"></strong> ?</p>
+                <p class="form-hint danger-text">⚠ Cette action est irréversible.</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" onclick="SettingsApp.closeDeleteAgent()">Annuler</button>
+                <button class="btn btn-danger" onclick="SettingsApp.confirmDeleteAgent()">Confirmer</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast" class="toast hidden"></div>
+
+    <script src="/static/js/settings.js"></script>
+</body>
+</html>

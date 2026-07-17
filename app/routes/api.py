@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from app.auth.router import COOKIE_NAME
 from app.auth.jwt_utils import verify_token
 from app.agent_manager.client import agent_manager
+from app.config import load_settings, save_settings
 from app.llm.client import (
     LLMClient,
     run_chat,
@@ -163,6 +164,227 @@ async def api_agent_ports(request: Request, name: str):
     if err is not None:
         return err
     return await agent_manager.get_ports(agent_name)
+
+
+# ---------------------------------------------------------------------------
+# Settings - LLM configuration
+# ---------------------------------------------------------------------------
+
+def _mask_api_key(key: str) -> str:
+    """Mask an API key, showing only the last 4 characters."""
+    if not key:
+        return ""
+    if len(key) <= 4:
+        return "****"
+    return "****" + key[-4:]
+
+
+@router.get("/settings/llm")
+async def api_get_llm_settings(request: Request):
+    """Return the LLM configuration with the API key partially masked."""
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    settings = load_settings()
+    llm = settings.get("llm", {}) or {}
+    firecrawl = settings.get("firecrawl", {}) or {}
+    return {
+        "endpoint": llm.get("endpoint", ""),
+        "api_key": _mask_api_key(llm.get("api_key", "")),
+        "model": llm.get("model", ""),
+        "firecrawl_key": _mask_api_key(firecrawl.get("api_key", "")),
+    }
+
+
+@router.put("/settings/llm")
+async def api_update_llm_settings(request: Request):
+    """Update the LLM (and firecrawl) configuration in settings.yaml.
+
+    If the provided ``api_key`` or ``firecrawl_key`` is empty or looks like a
+    masked value (``****xxxx``), the previously stored value is preserved.
+    """
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"detail": "Invalid JSON body"})
+
+    settings = load_settings()
+    llm = settings.get("llm") or {}
+    firecrawl = settings.get("firecrawl") or {}
+
+    endpoint = data.get("endpoint", llm.get("endpoint", ""))
+    model = data.get("model", llm.get("model", ""))
+
+    new_api_key = data.get("api_key", "")
+    if not new_api_key or new_api_key.startswith("****"):
+        api_key = llm.get("api_key", "")
+    else:
+        api_key = new_api_key
+
+    new_firecrawl_key = data.get("firecrawl_key", "")
+    if not new_firecrawl_key or new_firecrawl_key.startswith("****"):
+        firecrawl_key = firecrawl.get("api_key", "")
+    else:
+        firecrawl_key = new_firecrawl_key
+
+    settings["llm"] = {"endpoint": endpoint, "api_key": api_key, "model": model}
+    settings["firecrawl"] = {"api_key": firecrawl_key}
+    save_settings(settings)
+    return {"success": True}
+
+
+@router.post("/settings/llm/test")
+async def api_test_llm(request: Request):
+    """Test the LLM connection by sending a simple "Hello" chat request."""
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    llm = LLMClient()
+    if not llm.is_configured():
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "detail": "LLM is not configured (endpoint/model missing)."},
+        )
+    try:
+        result = await llm.chat([{"role": "user", "content": "Hello"}])
+        # The response may contain choices; just confirm we got something back.
+        choices = result.get("choices") if isinstance(result, dict) else None
+        if choices is not None:
+            return {"success": True, "detail": "Connection successful."}
+        return JSONResponse(
+            status_code=502,
+            content={"success": False, "detail": f"Unexpected response: {result}"},
+        )
+    except Exception as exc:
+        return JSONResponse(
+            status_code=502,
+            content={"success": False, "detail": f"LLM error: {exc}"},
+        )
+
+
+# ---------------------------------------------------------------------------
+# Settings - Agents management
+# ---------------------------------------------------------------------------
+
+def _save_agents(agents: list):
+    """Persist the agents list into settings.yaml."""
+    settings = load_settings()
+    settings["agents"] = agents
+    save_settings(settings)
+
+
+@router.get("/settings/agents")
+async def api_get_settings_agents(request: Request):
+    """List configured agents (name, url, masked api_key, status)."""
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    settings = load_settings()
+    agents = settings.get("agents", []) or []
+    result = []
+    for a in agents:
+        result.append({
+            "name": a.get("name", ""),
+            "url": a.get("url", ""),
+            "api_key": _mask_api_key(a.get("api_key", "")),
+            "status": agent_manager.agents.get(a.get("name", ""), {}).get("status", "unknown"),
+        })
+    return result
+
+
+@router.post("/settings/agents")
+async def api_add_settings_agent(request: Request):
+    """Add a new agent to settings.yaml and reload the agent manager."""
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"detail": "Invalid JSON body"})
+    name = (data.get("name") or "").strip()
+    url = (data.get("url") or "").strip()
+    api_key = data.get("api_key") or ""
+    if not name or not url:
+        return JSONResponse(status_code=400, content={"detail": "name and url are required"})
+    settings = load_settings()
+    agents = settings.get("agents", []) or []
+    if any(a.get("name") == name for a in agents):
+        return JSONResponse(status_code=409, content={"detail": f"Agent '{name}' already exists"})
+    agents.append({"name": name, "url": url, "api_key": api_key})
+    settings["agents"] = agents
+    save_settings(settings)
+    agent_manager.reload()
+    return {"success": True}
+
+
+@router.put("/settings/agents/{name}")
+async def api_update_settings_agent(request: Request, name: str):
+    """Modify an existing agent in settings.yaml and reload the agent manager."""
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"detail": "Invalid JSON body"})
+    settings = load_settings()
+    agents = settings.get("agents", []) or []
+    found = None
+    for a in agents:
+        if a.get("name") == name:
+            found = a
+            break
+    if found is None:
+        return JSONResponse(status_code=404, content={"detail": f"Agent '{name}' not found"})
+    new_name = (data.get("name") or name).strip()
+    new_url = (data.get("url") or found.get("url", "")).strip()
+    new_key = data.get("api_key")
+    if not new_key or new_key.startswith("****"):
+        new_key = found.get("api_key", "")
+    # If the name changed, make sure it does not collide with another agent.
+    if new_name != name and any(a.get("name") == new_name for a in agents):
+        return JSONResponse(status_code=409, content={"detail": f"Agent '{new_name}' already exists"})
+    found["name"] = new_name
+    found["url"] = new_url
+    found["api_key"] = new_key
+    save_settings(settings)
+    agent_manager.reload()
+    return {"success": True}
+
+
+@router.delete("/settings/agents/{name}")
+async def api_delete_settings_agent(request: Request, name: str):
+    """Remove an agent from settings.yaml and reload the agent manager."""
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    settings = load_settings()
+    agents = settings.get("agents", []) or []
+    new_agents = [a for a in agents if a.get("name") != name]
+    if len(new_agents) == len(agents):
+        return JSONResponse(status_code=404, content={"detail": f"Agent '{name}' not found"})
+    settings["agents"] = new_agents
+    save_settings(settings)
+    agent_manager.reload()
+    return {"success": True}
+
+
+@router.post("/settings/agents/{name}/test")
+async def api_test_settings_agent(request: Request, name: str):
+    """Ping an agent to verify the connection."""
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    # Make sure the manager has the latest configuration before pinging.
+    agent_manager.reload()
+    if name not in agent_manager.agents:
+        return JSONResponse(status_code=404, content={"detail": f"Agent '{name}' not found"})
+    online = await agent_manager.ping_agent(name)
+    return {"success": online, "status": agent_manager.agents[name]["status"]}
 
 
 # ---------------------------------------------------------------------------

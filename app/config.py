@@ -51,6 +51,16 @@ def load_settings() -> Dict[str, Any]:
     return _load_yaml(get_data_dir() / "settings.yaml")
 
 
+def save_settings(settings: Dict[str, Any]):
+    """Save ``settings.yaml`` to the data directory.
+
+    The file is written in block style, preserving key order.
+    """
+    settings_path = get_data_dir() / "settings.yaml"
+    with open(settings_path, "w", encoding="utf-8") as f:
+        yaml.dump(settings, f, default_flow_style=False, sort_keys=False)
+
+
 def load_users() -> Dict[str, Any]:
     """Load ``users.yaml`` from the data directory."""
     return _load_yaml(get_data_dir() / "users.yaml")

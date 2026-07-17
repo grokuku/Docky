@@ -1678,3 +1678,175 @@ body {
         padding: 28px 20px;
     }
 }
+
+/* ============================================================
+   Settings page
+   ============================================================ */
+
+.settings-title {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.settings-layout {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 24px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+}
+
+.settings-panel {
+    width: 100%;
+}
+
+.settings-body {
+    padding: 22px 24px;
+}
+
+.settings-body .form-group input[type="password"] {
+    width: 100%;
+    padding: 10px 12px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: 0.875rem;
+}
+
+.settings-body .form-group input[type="password"]:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.form-hint-list {
+    margin: 6px 0 0 18px;
+    padding: 0;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.form-hint-list li {
+    margin-bottom: 2px;
+}
+
+.form-hint-list code {
+    color: var(--info);
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+}
+
+.settings-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 8px;
+}
+
+/* Status indicators */
+
+.status-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 12px;
+    white-space: nowrap;
+}
+
+.status-indicator::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.status-online {
+    color: var(--success);
+    background: rgba(74, 222, 128, 0.12);
+}
+.status-online::before {
+    background: var(--success);
+}
+
+.status-offline {
+    color: var(--danger);
+    background: rgba(239, 68, 68, 0.12);
+}
+.status-offline::before {
+    background: var(--danger);
+}
+
+.status-unknown {
+    color: var(--text-muted);
+    background: rgba(160, 160, 184, 0.12);
+}
+.status-unknown::before {
+    background: var(--text-muted);
+}
+
+/* Agents list */
+
+.agents-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.agent-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 14px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+}
+
+.agent-row-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.agent-row-name {
+    font-weight: 600;
+    font-size: 0.9375rem;
+    color: var(--text-primary);
+}
+
+.agent-row-url {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.agent-row-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+/* Responsive */
+
+@media (max-width: 600px) {
+    .settings-layout {
+        padding: 16px 12px;
+    }
+    .agent-row {
+        flex-wrap: wrap;
+    }
+    .agent-row-actions {
+        width: 100%;
+        justify-content: flex-end;
+    }
+}
