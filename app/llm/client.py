@@ -340,7 +340,11 @@ async def build_system_prompt() -> str:
         "commande proposée pour validation humaine.\n"
         "- Utilise update_soul pour mémiser des préférences ou informations "
         "importantes que l'utilisateur te demande de retenir.\n"
-        "- Sois transparent: explique brièvement les actions que tu effectues."
+        "- Sois transparent: explique brièvement les actions que tu effectues.\n"
+        "- IMPORTANT: Sois efficace avec les tool calls. Prépare le "
+        "docker-compose.yml complet en une seule modification plutôt que de "
+        "faire plusieurs modifications. Limite le nombre d'actions tool calls "
+        "au strict nécessaire."
     )
 
     return "\n\n".join(parts)
@@ -1099,7 +1103,7 @@ async def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
 # Chat loop with tool calls
 # ---------------------------------------------------------------------------
 
-MAX_TOOL_ROUNDS = 10  # safety limit to avoid infinite loops
+MAX_TOOL_ROUNDS = 20  # safety limit to avoid infinite loops
 
 
 async def run_chat(
@@ -1139,7 +1143,19 @@ async def run_chat(
     needs_human_validation: List[Dict[str, Any]] = []
     final_response = ""
 
+    logger.info("run_chat start: %d rounds max", MAX_TOOL_ROUNDS)
+
     for round_idx in range(MAX_TOOL_ROUNDS):
+        round_num = round_idx + 1
+        logger.info("run_chat round %d/%d", round_num, MAX_TOOL_ROUNDS)
+        if round_num >= MAX_TOOL_ROUNDS - 3:
+            logger.warning(
+                "run_chat approaching round limit (%d/%d), "
+                "tool_calls so far: %s",
+                round_num,
+                MAX_TOOL_ROUNDS,
+                [tc["name"] for tc in tool_calls_made],
+            )
         try:
             result = await llm.chat(messages, tools=TOOLS, tool_choice="auto")
         except RuntimeError as exc:
@@ -1182,9 +1198,19 @@ async def run_chat(
                     "id": tool_call_id,
                 }
                 tool_calls_made.append(call_record)
+                logger.info(
+                    "run_chat tool call: %s args=%s",
+                    tool_name,
+                    {k: v for k, v in tool_args.items() if k != "compose_content"},
+                )
 
                 # Execute
                 tool_result = await execute_tool(tool_name, tool_args)
+                logger.info(
+                    "run_chat tool result (%s): %s",
+                    tool_name,
+                    tool_result[:200],
+                )
 
                 # Handle human-validation tools
                 if tool_result.startswith(HUMAN_VALIDATION_MARKER):
@@ -1221,11 +1247,21 @@ async def run_chat(
         break
 
     else:
-        # Round limit reached
+        # Round limit reached without a final textual response.
+        # Provide a clear summary of what was accomplished so far instead of
+        # returning an empty response.
+        logger.warning(
+            "run_chat reached round limit (%d) with %d tool calls",
+            MAX_TOOL_ROUNDS,
+            len(tool_calls_made),
+        )
         if not final_response:
+            tool_summary = "\n".join(
+                [f"- {tc['name']}" for tc in tool_calls_made]
+            ) or "(aucun outil appelé)"
             final_response = (
-                "J'ai atteint la limite d'interactions avec les outils. "
-                "Voici ce que j'ai jusqu'à présent."
+                "J'ai atteint la limite d'interactions pour cette requête. "
+                "Voici ce que j'ai fait jusqu'à présent:\n" + tool_summary
             )
 
     return {
