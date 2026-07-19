@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+
+# Environment
+.env
+.env.*
+*.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+agent-data/
+
+# Docky - Config sensible (NE PAS COMMITTER)
+data/settings.yaml
+data/users.yaml
+data/api_keys.yaml
+
+# Docky - Stacks utilisateur (NE PAS COMMITTER)
+data/stacks/
+
+# Docky - Garder ces fichiers (ne pas ignorer)
+!data/soul.md
+!data/compose_reference.md

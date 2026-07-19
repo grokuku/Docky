@@ -89,10 +89,12 @@ cd ..
 
 # 10. Build et démarrer l'orchestrateur
 echo -e "${YELLOW}🔨 Build de l'orchestrateur...${NC}"
+cd orchestrator
 docker compose down 2>/dev/null || true
 docker compose build
 echo -e "${YELLOW}🚀 Démarrage de l'orchestrateur...${NC}"
 docker compose up -d
+cd ..
 
 # 11. Connecter les deux containers au réseau partagé
 echo -e "${YELLOW}🌐 Connexion au réseau partagé...${NC}"
@@ -144,6 +146,6 @@ echo ""
 echo -e "${YELLOW}Commandes utiles:${NC}"
 echo "   docker logs docky        # Logs orchestrateur"
 echo "   docker logs docky-agent  # Logs agent"
-echo "   docker compose down      # Arrêter Docky"
-echo "   docker compose up -d     # Redémarrer Docky"
+echo "   cd orchestrator && docker compose down      # Arrêter Docky"
+echo "   cd orchestrator && docker compose up -d     # Redémarrer Docky"
 echo ""

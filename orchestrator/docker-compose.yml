@@ -1,0 +1,16 @@
+services:
+  docky:
+    build: .
+    container_name: docky
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../data:/data
+    environment:
+      - DOCKY_DATA_DIR=/data
+
+networks:
+  default:
+    external: true
+    name: docky-network

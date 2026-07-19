@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  ORCHESTRATOR_IMAGE: ${{ github.repository }}
+  AGENT_IMAGE: ${{ github.repository }}-agent
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(cat version.txt | tr -d '[:space:]')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Lowercase repository name
+        run: |
+          echo "ORCH_IMG=$(echo ${{ env.REGISTRY }}/${{ env.ORCHESTRATOR_IMAGE }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+          echo "AGENT_IMG=$(echo ${{ env.REGISTRY }}/${{ env.AGENT_IMAGE }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      - name: Build and push orchestrator
+        uses: docker/build-push-action@v5
+        with:
+          context: ./orchestrator
+          push: true
+          tags: |
+            ${{ env.ORCH_IMG }}:${{ steps.version.outputs.version }}
+            ${{ env.ORCH_IMG }}:latest
+
+      - name: Build and push agent
+        uses: docker/build-push-action@v5
+        with:
+          context: ./agent
+          push: true
+          tags: |
+            ${{ env.AGENT_IMG }}:${{ steps.version.outputs.version }}
+            ${{ env.AGENT_IMG }}:latest
+
+      - name: Increment version
+        run: |
+          CURRENT=$(cat version.txt | tr -d '[:space:]')
+          MAJOR=$(echo $CURRENT | cut -d. -f1)
+          MINOR=$(echo $CURRENT | cut -d. -f2)
+          PATCH=$(echo $CURRENT | cut -d. -f3)
+          NEW_PATCH=$((PATCH + 1))
+          NEW_VERSION="$MAJOR.$MINOR.$NEW_PATCH"
+          echo "$NEW_VERSION" > version.txt
+          echo "New version: $NEW_VERSION"
+
+      - name: Commit new version
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add version.txt
+          git commit -m "chore: bump version to $(cat version.txt)"
+          git push

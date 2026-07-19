@@ -1,0 +1,51 @@
+name: Test Build
+
+on:
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  ORCHESTRATOR_IMAGE: ${{ github.repository }}
+  AGENT_IMAGE: ${{ github.repository }}-agent
+
+jobs:
+  test-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Lowercase repository name
+        run: |
+          echo "ORCH_IMG=$(echo ${{ env.REGISTRY }}/${{ env.ORCHESTRATOR_IMAGE }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+          echo "AGENT_IMG=$(echo ${{ env.REGISTRY }}/${{ env.AGENT_IMAGE }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      - name: Build and push orchestrator (test)
+        uses: docker/build-push-action@v5
+        with:
+          context: ./orchestrator
+          push: true
+          tags: |
+            ${{ env.ORCH_IMG }}:test
+
+      - name: Build and push agent (test)
+        uses: docker/build-push-action@v5
+        with:
+          context: ./agent
+          push: true
+          tags: |
+            ${{ env.AGENT_IMG }}:test

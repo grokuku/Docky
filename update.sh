@@ -71,8 +71,10 @@ cd ..
 
 # 6. Rebuild orchestrateur
 echo -e "${YELLOW}🔨 Rebuild de l'orchestrateur...${NC}"
+cd orchestrator
 docker compose down 2>/dev/null || true
 docker compose up -d --build
+cd ..
 
 # 7. Attendre le démarrage
 echo -e "${YELLOW}⏳ Démarrage des services...${NC}"

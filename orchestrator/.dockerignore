@@ -1,0 +1,9 @@
+.git
+.github
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+node_modules
+.env
+*.md
