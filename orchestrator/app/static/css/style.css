@@ -2104,3 +2104,32 @@ body {
 .stack-context-no-compose { padding: 20px; text-align: center; color: var(--text-muted); }
 
 @media (max-width: 700px) { .grid-card-name { font-size: 0.72rem; } .grid-icon-btn { width: 22px; height: 22px; font-size: 0.65rem; } }
+
+/* Path mappings (agent settings) */
+
+.path-mapping-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+
+.path-mapping-row .form-input {
+    flex: 1;
+}
+
+.path-mapping-row span {
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+.path-mapping-row button {
+    width: 28px;
+    height: 28px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--danger);
+    cursor: pointer;
+    flex-shrink: 0;
+}

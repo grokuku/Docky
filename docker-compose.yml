@@ -23,6 +23,9 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./agent-data:/data
+      # Montez les dossiers de vos stacks externes (R/W pour que le LLM puisse créer des fichiers de config)
+      # - /opt/stacks:/opt/stacks
+      # - /mnt/user/appdata:/mnt/user/appdata
     environment:
       - DOCKY_AGENT_API_KEY=${DOCKY_AGENT_API_KEY}
       - DOCKY_DATA_DIR=/data

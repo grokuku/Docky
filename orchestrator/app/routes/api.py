@@ -343,6 +343,7 @@ async def api_get_settings_agents(request: Request):
             "name": a.get("name", ""),
             "url": a.get("url", ""),
             "api_key": _mask_api_key(a.get("api_key", "")),
+            "path_mappings": a.get("path_mappings", []) or [],
             "status": agent_manager.agents.get(a.get("name", ""), {}).get("status", "unknown"),
         })
     return result
@@ -367,7 +368,7 @@ async def api_add_settings_agent(request: Request):
     agents = settings.get("agents", []) or []
     if any(a.get("name") == name for a in agents):
         return JSONResponse(status_code=409, content={"detail": f"Agent '{name}' already exists"})
-    agents.append({"name": name, "url": url, "api_key": api_key})
+    agents.append({"name": name, "url": url, "api_key": api_key, "path_mappings": data.get("path_mappings", []) or []})
     settings["agents"] = agents
     save_settings(settings)
     agent_manager.reload()
@@ -404,6 +405,7 @@ async def api_update_settings_agent(request: Request, name: str):
     found["name"] = new_name
     found["url"] = new_url
     found["api_key"] = new_key
+    found["path_mappings"] = data.get("path_mappings", found.get("path_mappings", []) or [])
     save_settings(settings)
     agent_manager.reload()
     return {"success": True}
@@ -1013,7 +1015,9 @@ async def api_import_stack(request: Request, agent: str = Query(...)):
     if not source_path:
         return JSONResponse(status_code=400, content={"detail": "source_path is required"})
     try:
-        result = await agent_manager.import_stack(agent_name, source_path, stack_name, dry_run)
+        # Translate the source path using the agent's path mappings
+        translated_path = agent_manager.translate_path(agent_name, source_path)
+        result = await agent_manager.import_stack(agent_name, translated_path, stack_name, dry_run)
         return result
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})

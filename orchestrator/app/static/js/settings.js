@@ -254,6 +254,7 @@ const SettingsApp = {
             keyInput.value = "";
             keyInput.placeholder = agent.api_key || "••••••••";
             if (keyHint) keyHint.textContent = "Laisser vide pour ne pas changer.";
+            this.renderPathMappings(agent.path_mappings || []);
         } else {
             this.editingAgentName = null;
             title.textContent = "➕ Ajouter un agent";
@@ -262,6 +263,7 @@ const SettingsApp = {
             keyInput.value = "";
             keyInput.placeholder = "••••••••";
             if (keyHint) keyHint.textContent = "Clé API de l'agent.";
+            this.renderPathMappings([]);
         }
         modal.classList.remove("hidden");
     },
@@ -272,10 +274,62 @@ const SettingsApp = {
         this.editingAgentName = null;
     },
 
+    // -------------------------------------------------------
+    // Path mappings (host → local)
+    // -------------------------------------------------------
+
+    renderPathMappings(mappings) {
+        const list = document.getElementById('path-mappings-list');
+        if (!list) return;
+        mappings = mappings || [];
+        let html = '';
+        mappings.forEach((m) => {
+            html += '<div class="path-mapping-row">' +
+                '<input type="text" class="form-input path-mapping-host" placeholder="/chemin/hote" value="' + this.escapeHtml(m.host || '') + '">' +
+                '<span>→</span>' +
+                '<input type="text" class="form-input path-mapping-local" placeholder="/chemin/local" value="' + this.escapeHtml(m.local || '') + '">' +
+                '<button type="button" onclick="SettingsApp.removePathMapping(this)">✕</button>' +
+                '</div>';
+        });
+        list.innerHTML = html;
+    },
+
+    addPathMapping() {
+        const list = document.getElementById('path-mappings-list');
+        if (!list) return;
+        const div = document.createElement('div');
+        div.className = 'path-mapping-row';
+        div.innerHTML = '<input type="text" class="form-input path-mapping-host" placeholder="/chemin/hote">' +
+            '<span>→</span>' +
+            '<input type="text" class="form-input path-mapping-local" placeholder="/chemin/local">' +
+            '<button type="button" onclick="SettingsApp.removePathMapping(this)">✕</button>';
+        list.appendChild(div);
+    },
+
+    removePathMapping(btn) {
+        btn.parentElement.remove();
+    },
+
+    collectPathMappings() {
+        const list = document.getElementById('path-mappings-list');
+        if (!list) return [];
+        const rows = list.querySelectorAll('.path-mapping-row');
+        const mappings = [];
+        rows.forEach(row => {
+            const host = row.querySelector('.path-mapping-host').value.trim();
+            const local = row.querySelector('.path-mapping-local').value.trim();
+            if (host && local) {
+                mappings.push({ host, local });
+            }
+        });
+        return mappings;
+    },
+
     async submitAgentForm() {
         const name = document.getElementById("agent-name").value.trim();
         const url = document.getElementById("agent-url").value.trim();
         const apiKey = document.getElementById("agent-api-key").value;
+        const pathMappings = this.collectPathMappings();
         if (!name || !url) {
             this.showToast("Le nom et l'URL sont requis.", "error");
             return;
@@ -283,7 +337,7 @@ const SettingsApp = {
         if (this.editingAgentName) {
             const data = await this.apiPut(
                 "/api/settings/agents/" + encodeURIComponent(this.editingAgentName),
-                { name, url, api_key: apiKey }
+                { name, url, api_key: apiKey, path_mappings: pathMappings }
             );
             if (!data) return;
             if (data.success) {
@@ -294,7 +348,7 @@ const SettingsApp = {
                 this.showToast(data.detail || "Erreur lors de la mise à jour.", "error");
             }
         } else {
-            const data = await this.apiPost("/api/settings/agents", { name, url, api_key: apiKey });
+            const data = await this.apiPost("/api/settings/agents", { name, url, api_key: apiKey, path_mappings: pathMappings });
             if (!data) return;
             if (data.success) {
                 this.showToast("Agent ajouté.", "success");

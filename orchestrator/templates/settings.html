@@ -130,6 +130,14 @@
                     <input type="password" id="agent-api-key" placeholder="••••••••" autocomplete="off">
                     <p class="form-hint" id="agent-key-hint">Laisser vide pour ne pas changer.</p>
                 </div>
+                <div class="form-group">
+                    <label>Mappings de chemins (host → local)</label>
+                    <div id="path-mappings-list">
+                        <!-- Liste des mappings existants -->
+                    </div>
+                    <button type="button" class="btn btn-ghost btn-sm" onclick="SettingsApp.addPathMapping()">+ Ajouter un mapping</button>
+                    <p class="form-hint">Indiquez les correspondances entre les chemins de l'hôte et ceux visibles par l'agent (ex. /mnt/user/appdata → /mnt/user/appdata). L'orchestrateur appliquera ces mappings lors de l'import de stacks externes.</p>
+                </div>
             </div>
             <div class="modal-footer">
                 <button class="btn btn-ghost" onclick="SettingsApp.closeAgentForm()">Annuler</button>
