@@ -1883,3 +1883,23 @@ body {
         justify-content: flex-end;
     }
 }
+
+/* ============================================================
+   LLM warning banner (settings page)
+   ============================================================ */
+
+.llm-warning {
+    background: rgba(255, 193, 7, 0.1);
+    border: 1px solid rgba(255, 193, 7, 0.3);
+    border-left: 4px solid #ffc107;
+    padding: 12px 16px;
+    border-radius: 6px;
+    margin-bottom: 20px;
+    color: #ffc107;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.llm-warning strong {
+    color: #ffb300;
+}

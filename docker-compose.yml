@@ -1,38 +1,30 @@
 # Docky - Exemple de déploiement complet (Orchestrateur + Agent)
-# Ce fichier montre comment déployer les deux services sur un même serveur.
-# Pour un déploiement multi-serveurs, déployez l'agent séparément sur chaque serveur.
+# Copiez .env.example en .env et modifiez les valeurs avant de lancer.
+# Usage: docker compose up -d
 
 services:
   docky:
-    # Option 1: image pré-build (recommandé)
-    image: ghcr.io/grokuku/docky:latest
-    # Option 2: build local
-    # build: ./orchestrator
+    image: ghcr.io/grokuku/docky:${DOCKY_VERSION:-latest}
     container_name: docky
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "${DOCKY_PORT:-8000}:8000"
     volumes:
       - ./data:/data
     environment:
       - DOCKY_DATA_DIR=/data
-    depends_on:
-      - docky-agent
 
   docky-agent:
-    # Option 1: image pré-build (recommandé)
-    image: ghcr.io/grokuku/docky-agent:latest
-    # Option 2: build local
-    # build: ./agent
+    image: ghcr.io/grokuku/docky-agent:${DOCKY_VERSION:-latest}
     container_name: docky-agent
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "${DOCKY_AGENT_PORT:-8080}:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./agent-data:/data
     environment:
-      - DOCKY_AGENT_API_KEY=change-this-to-your-secret-key
+      - DOCKY_AGENT_API_KEY=${DOCKY_AGENT_API_KEY}
       - DOCKY_DATA_DIR=/data
 
 networks:

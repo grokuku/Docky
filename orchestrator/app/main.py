@@ -5,7 +5,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app.config import get_base_dir, load_settings
+from app.config import ensure_config_files, get_base_dir, load_settings
 from app.auth.router import router as auth_router
 from app.routes.dashboard import router as dashboard_router
 from app.routes.api import router as api_router
@@ -36,7 +36,8 @@ app.include_router(api_router)
 
 @app.on_event("startup")
 async def startup_event():
-    """Load settings on startup to surface config issues early."""
+    """Ensure config files exist, then load settings on startup."""
+    ensure_config_files()
     settings = load_settings()
     app.state.settings = settings
 

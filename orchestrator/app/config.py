@@ -94,3 +94,72 @@ def find_user(username: str) -> Dict[str, Any] | None:
         if user.get("username") == username:
             return user
     return None
+
+
+def ensure_config_files():
+    """Crée les fichiers de config par défaut s'ils n'existent pas."""
+    import os
+    from pathlib import Path
+
+    data_dir = Path(get_data_dir())
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    # settings.yaml
+    settings_path = data_dir / "settings.yaml"
+    if not settings_path.exists():
+        default_settings = {
+            "server": {"host": "0.0.0.0", "port": 8000},
+            "llm": {"endpoint": "", "api_key": "", "model": ""},
+            "firecrawl": {"api_key": ""},
+            "security": {
+                "jwt_secret": os.urandom(32).hex(),
+                "jwt_algorithm": "HS256",
+                "jwt_expire_minutes": 1440,
+            },
+            "agents": [],
+        }
+        with open(settings_path, "w", encoding="utf-8") as f:
+            yaml.dump(default_settings, f, default_flow_style=False, sort_keys=False)
+
+    # users.yaml — créer avec un user admin par défaut
+    users_path = data_dir / "users.yaml"
+    if not users_path.exists():
+        import bcrypt
+
+        default_hash = bcrypt.hashpw(b"docky123", bcrypt.gensalt()).decode()
+        default_users = {
+            "users": [
+                {"username": "admin", "password_hash": default_hash},
+            ],
+        }
+        with open(users_path, "w", encoding="utf-8") as f:
+            yaml.dump(default_users, f, default_flow_style=False, sort_keys=False)
+
+    # api_keys.yaml
+    api_keys_path = data_dir / "api_keys.yaml"
+    if not api_keys_path.exists():
+        with open(api_keys_path, "w", encoding="utf-8") as f:
+            yaml.dump({"api_keys": {}}, f, default_flow_style=False, sort_keys=False)
+
+    # soul.md
+    soul_path = data_dir / "soul.md"
+    if not soul_path.exists():
+        soul_path.write_text(
+            "# Docky - SOUL\n\n"
+            "Instructions et préférences accumulées au fil du temps.\n"
+            "Ce fichier est la mémoire persistante du LLM.\n",
+            encoding="utf-8",
+        )
+
+    # compose_reference.md — copier depuis l'app si pas dans /data/
+    ref_path = data_dir / "compose_reference.md"
+    if not ref_path.exists():
+        bundled = Path(__file__).parent / "compose_reference.md"
+        if bundled.exists():
+            ref_path.write_text(bundled.read_text(encoding="utf-8"), encoding="utf-8")
+        else:
+            ref_path.write_text(
+                "# Docker Compose Reference\n\n"
+                "Le champ version: est DEPRÉCIÉ. Ne PAS l'inclure.\n",
+                encoding="utf-8",
+            )
