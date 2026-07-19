@@ -464,126 +464,112 @@ const DockyApp = {
         
         const gap = 8;
         const minCell = 140;
-        const maxCell = 190;
-        let cellSize = Math.min(maxCell, Math.max(minCell, Math.floor(availWidth / 6)));
-        let cellW = cellSize, cellH = cellSize;
+        const maxCell = 220;
         
-        // Trier les stacks par nom (ordre stable pour l'affichage)
+        // Trier les stacks par nom (ordre stable)
         const sortedStacks = [...this.stacks].sort((a, b) => a.name.localeCompare(b.name));
         const allContainers = this._allContainersCache || [];
         
-        // Calculer les blocs pour chaque stack
-        const blocks = [];
+        // Grouper les containers par stack et calculer maxCols
+        const stackGroups = [];
+        let maxStackCols = 1;
         for (const stack of sortedStacks) {
             const containers = allContainers.filter(c => {
                 if (stack.name === 'Standalone') return !c.stack;
                 return c.stack === stack.name;
             });
             if (containers.length === 0) continue;
-            
             const n = containers.length;
-            const w = Math.max(1, Math.ceil(n / 2)); // largeur max = ceil(n/2)
-            const h = Math.ceil(n / w);               // hauteur
-            blocks.push({ stack, containers, w, h, n, color: this.stackColor(stack.name), order: blocks.length });
+            const cols = Math.max(1, Math.ceil(n / 2));
+            maxStackCols = Math.max(maxStackCols, cols);
+            stackGroups.push({ stack, containers, cols, n, color: this.stackColor(stack.name) });
         }
         
-        if (blocks.length === 0) {
+        if (stackGroups.length === 0) {
             container.innerHTML = '<div class="placeholder"><p>📭 Aucun container trouvé</p></div>';
             return;
         }
         
-        // Calculer la largeur de la grille (en nombre de cellules)
-        // On veut que la grille remplisse la largeur disponible
-        const totalContainers = blocks.reduce((s, b) => s + b.n, 0);
-        let gridCols = Math.max(3, Math.floor(availWidth / (cellW + gap)));
-        // Mais limiter pour ne pas avoir trop de colonnes si peu de containers
-        gridCols = Math.min(gridCols, Math.max(3, Math.ceil(totalContainers / 2)));
+        // Grid width = maxStackCols (garantit que chaque stack fait au max ceil(n/2) de large)
+        // Mais si on peut mettre un multiple de maxStackCols pour remplir la largeur, on le fait
+        const totalContainers = stackGroups.reduce((s, g) => s + g.n, 0);
         
-        // Skyline: hauteur de chaque colonne (commence à 0)
-        const skyline = new Array(gridCols).fill(0);
+        // Calculer combien de colonnes on peut mettre avec la taille de cellule minimale
+        const maxPossibleCols = Math.floor((availWidth + gap) / (minCell + gap));
         
-        // Trier les blocs par taille décroissante pour le packing (les gros d'abord pour que les petits remplissent les trous)
-        const packOrder = [...blocks].sort((a, b) => b.n - a.n);
+        // Utiliser un multiple de maxStackCols pour remplir la largeur
+        let gridCols;
+        if (maxPossibleCols >= maxStackCols * 2) {
+            gridCols = maxStackCols * Math.floor(maxPossibleCols / maxStackCols);
+        } else {
+            gridCols = maxStackCols;
+        }
+        gridCols = Math.max(2, gridCols);
         
-        // Placer chaque bloc avec l'algorithme skyline bottom-left
-        const placements = new Map(); // block.order -> {x, y, w, h}
+        // Calculer la taille de cellule pour remplir la largeur
+        let cellSize = Math.floor((availWidth - (gridCols - 1) * gap) / gridCols);
+        cellSize = Math.max(minCell, Math.min(maxCell, cellSize));
         
-        for (const block of packOrder) {
-            const bw = block.w;
-            const bh = block.h;
+        // Recalculer gridCols avec la taille de cellule finale
+        gridCols = Math.max(2, Math.floor((availWidth + gap) / (cellSize + gap)));
+        // Arrondir au multiple de maxStackCols le plus proche (mais pas plus petit)
+        if (gridCols >= maxStackCols) {
+            gridCols = Math.floor(gridCols / maxStackCols) * maxStackCols;
+            if (gridCols < maxStackCols) gridCols = maxStackCols;
+        }
+        
+        const cellW = cellSize, cellH = cellSize;
+        
+        // Flow layout boustrophedon
+        // Placer tous les containers à la suite, row by row
+        // Ligne paire: gauche→droite, ligne impaire: droite→gauche
+        const allCells = [];
+        let col = 0, row = 0;
+        
+        for (const group of stackGroups) {
+            const borderColor = group.color.stroke;
+            const bgColor = group.color.fill;
+            const stackName = group.stack.name;
             
-            // Trouver la meilleure position (bottom-left: la plus basse, puis la plus à gauche)
-            let bestX = -1;
-            let bestY = Infinity;
-            
-            for (let col = 0; col <= gridCols - bw; col++) {
-                // La hauteur à laquelle le bloc serait placé = max des hauteurs de skyline sur la largeur du bloc
-                let maxY = 0;
-                for (let c = col; c < col + bw; c++) {
-                    maxY = Math.max(maxY, skyline[c]);
-                }
+            for (let i = 0; i < group.containers.length; i++) {
+                // Position dans la grille
+                const actualCol = (row % 2 === 0) ? col : (gridCols - 1 - col);
+                allCells.push({
+                    col: actualCol,
+                    row: row,
+                    container: group.containers[i],
+                    stackName: stackName,
+                    borderColor: borderColor,
+                    bgColor: bgColor
+                });
                 
-                if (maxY < bestY || (maxY === bestY && col < bestX)) {
-                    bestY = maxY;
-                    bestX = col;
+                // Avancer le curseur
+                col++;
+                if (col >= gridCols) {
+                    col = 0;
+                    row++;
                 }
-            }
-            
-            if (bestX === -1) {
-                // Le bloc ne rentre pas, élargir la grille
-                // (ne devrait pas arriver si gridCols est bien calculé)
-                continue;
-            }
-            
-            // Placer le bloc
-            placements.set(block.order, { x: bestX, y: bestY, w: bw, h: bh });
-            
-            // Mettre à jour le skyline
-            for (let c = bestX; c < bestX + bw; c++) {
-                skyline[c] = bestY + bh;
             }
         }
         
-        // Dimensions du canvas
-        const maxSkyline = Math.max(...skyline);
-        let canvasW = gridCols * (cellW + gap) - gap;
-        // S'assurer que le canvas utilise toute la largeur disponible
-        if (canvasW < availWidth) canvasW = availWidth;
-        const canvasH = maxSkyline * (cellH + gap) - gap;
+        const totalRows = (col > 0) ? row + 1 : row;
+        const canvasW = gridCols * (cellW + gap) - gap;
+        const canvasH = totalRows * (cellH + gap) - gap;
         
-        // Construire le HTML — dans l'ordre alphabétique des stacks
+        // Build HTML
         let cardsHtml = '';
         const runningContainers = [];
         
-        for (let i = 0; i < blocks.length; i++) {
-            const block = blocks[i];
-            const placement = placements.get(block.order);
-            if (!placement) continue;
+        for (const cell of allCells) {
+            const cardX = cell.col * (cellW + gap);
+            const cardY = cell.row * (cellH + gap);
+            const agent = this.stackAgentMap[cell.stackName] || (this.currentAgentFilter !== "all" ? this.currentAgentFilter : null);
             
-            const { x: baseCol, y: baseRow, w: stackCols, h: stackRows } = placement;
-            const borderColor = block.color.stroke;
-            const bgColor = block.color.fill;
-            const agent = this.stackAgentMap[block.stack.name] || (this.currentAgentFilter !== "all" ? this.currentAgentFilter : null);
-            
-            // Placer les containers en boustrophedon dans le bloc
-            let leftToRight = true;
-            for (let j = 0; j < block.containers.length; j++) {
-                const localCol = j % stackCols;
-                const localRow = Math.floor(j / stackCols);
-                // Boustrophedon: flip direction à chaque ligne
-                const actualCol = (localRow % 2 === 0) ? localCol : (stackCols - 1 - localCol);
-                
-                const cardCol = baseCol + actualCol;
-                const cardRow = baseRow + localRow;
-                const cardX = cardCol * (cellW + gap);
-                const cardY = cardRow * (cellH + gap);
-                
-                cardsHtml += this.renderGridContainerCard(block.containers[j], cardX, cardY, cellW, cellH, agent, borderColor, bgColor, block.stack.name);
-                if (block.containers[j].status === "running") runningContainers.push({ id: block.containers[j].id, agent });
-            }
+            cardsHtml += this.renderGridContainerCard(cell.container, cardX, cardY, cellW, cellH, agent, cell.borderColor, cell.bgColor, cell.stackName);
+            if (cell.container.status === "running") runningContainers.push({ id: cell.container.id, agent });
         }
         
-        container.innerHTML = '<div class="docky-grid-canvas" style="position:relative;width:' + canvasW + 'px;height:' + canvasH + 'px;" onclick="DockyApp.clearStackSelection()">' + cardsHtml + '</div>';
+        container.innerHTML = '<div class="docky-grid-canvas" style="position:relative;width:' + canvasW + 'px;height:' + canvasH + 'px;margin:0 auto;" onclick="DockyApp.clearStackSelection()">' + cardsHtml + '</div>';
         
         for (const rc of runningContainers) {
             this.loadContainerStats(rc.id, rc.agent);
