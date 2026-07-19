@@ -20,6 +20,7 @@ Provides:
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -171,6 +172,25 @@ def update_soul(content: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Compose metadata parsing
+# ---------------------------------------------------------------------------
+
+
+def parse_compose_metadata(compose_content: str) -> dict:
+    """Parse Docky metadata comments from a docker-compose.yml file.
+
+    Extracts ``@key: value`` lines from the metadata comment block at the
+    top of the file.  Returns an empty dict if no metadata is found.
+    """
+    metadata = {}
+    pattern = r'#\s*@([\w]+):\s*(.+)'
+    matches = re.findall(pattern, compose_content)
+    for key, value in matches:
+        metadata[key] = value.strip()
+    return metadata
+
+
+# ---------------------------------------------------------------------------
 # System prompt builder
 # ---------------------------------------------------------------------------
 
@@ -290,7 +310,39 @@ async def build_system_prompt() -> str:
                 if s.get("has_env") is not None:
                     extra.append(f"env: {s.get('has_env')}")
                 extra_str = f" - {', '.join(extra)}" if extra else ""
-                lines.append(f"  - {sname} ({count} containers){extra_str}")
+
+                # Try to read compose metadata for richer context
+                meta_str = ""
+                try:
+                    compose_content = await agent_manager.get_stack_file(
+                        name, sname, "docker-compose.yml"
+                    )
+                    if compose_content:
+                        meta = parse_compose_metadata(compose_content)
+                        if meta:
+                            parts_list = []
+                            category = meta.get("category")
+                            if category:
+                                parts_list.append(f"[{category}]")
+                            description = meta.get("description")
+                            if description:
+                                parts_list.append(description)
+                            ports_meta = meta.get("ports")
+                            if ports_meta:
+                                parts_list.append(f"(ports: {ports_meta})")
+                            hardware = meta.get("hardware")
+                            if hardware:
+                                parts_list.append(f"(hardware: {hardware})")
+                            if parts_list:
+                                meta_str = " - " + " ".join(parts_list)
+                        else:
+                            meta_str = " - (aucune métadonnée)"
+                except Exception:
+                    pass
+
+                lines.append(
+                    f"  - {sname} ({count} containers){extra_str}{meta_str}"
+                )
             parts.append(f"## Stacks ({name})\n" + "\n".join(lines))
         else:
             parts.append(f"## Stacks ({name})\nAucun stack trouvé.")
@@ -316,6 +368,25 @@ async def build_system_prompt() -> str:
     else:
         parts.append("## Mémoire persistante (soul.md)\n(vide)")
 
+    # 6b. Règles importantes pour les docker-compose
+    parts.append(
+        "## Règles importantes\n"
+        "1. NE JAMAIS utiliser le champ `version:` dans les "
+        "docker-compose.yml — il est déprécié.\n"
+        "2. AVANT de créer ou modifier un docker-compose.yml, consulte la "
+        "référence avec read_compose_reference si tu n'es pas sûr de la "
+        "syntaxe.\n"
+        "3. CHAQUE docker-compose.yml créé DOIT commencer par un bloc de "
+        "métadonnées Docky (voir read_compose_reference pour le format).\n"
+        "4. Choisir une catégorie pertinente pour chaque stack.\n"
+        "5. Toujours utiliser `restart: unless-stopped` sauf raison "
+        "spécifique.\n"
+        "6. Utiliser le tag `latest` par défaut pour permettre les updates "
+        "via docker compose pull. Utiliser un tag précis (ex: "
+        "nginx:1.25) seulement si l'utilisateur demande une version "
+        "spécifique ou si la stabilité est critique."
+    )
+
     # 7. Tool instructions
     parts.append(
         "## Outils disponibles\n"
@@ -339,6 +410,7 @@ async def build_system_prompt() -> str:
         "- set_file_permissions\n"
         "- get_used_ports / check_ports_available\n"
         "- web_search / web_scrape / web_map (via Firecrawl)\n"
+        "- read_compose_reference (référence de syntaxe docker-compose)\n"
         "- update_soul / read_soul\n\n"
         "Règles:\n"
         "- Spécifie toujours le bon ``agent_name`` pour chaque action Docker.\n"
@@ -790,6 +862,18 @@ TOOLS: List[Dict[str, Any]] = [
             "description": "Lit et retourne le contenu actuel de la mémoire persistante (soul.md).",
             "parameters": {"type": "object", "properties": {}},
         },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_compose_reference",
+            "description": "Lit la documentation de référence pour la création de docker-compose.yml. À consulter avant de créer ou modifier un compose pour utiliser la syntaxe à jour.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
     },
     {
         "type": "function",
@@ -1248,6 +1332,18 @@ async def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
         elif tool_name == "read_soul":
             content = read_soul()
             return content if content else "soul.md est vide."
+
+        elif tool_name == "read_compose_reference":
+            try:
+                from pathlib import Path
+                from app.config import get_data_dir
+                ref_path = Path(get_data_dir()) / "compose_reference.md"
+                if ref_path.exists():
+                    return ref_path.read_text(encoding='utf-8')
+                else:
+                    return json.dumps({"error": "Reference file not found"})
+            except Exception as e:
+                return json.dumps({"error": str(e)})
 
         elif tool_name == "update_stack":
             agent_name = arguments.get("agent_name")
