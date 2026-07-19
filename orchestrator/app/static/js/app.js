@@ -8,6 +8,11 @@ const DockyApp = {
     // -------------------------------------------------------
     stacks: [],
     _allContainersCache: [],
+    _gridLayout: null,
+    _gridCellSize: 170,
+    _lastGridKey: null,
+    _gridResizeObserver: null,
+    _gridRenderTimer: null,
     expandedStack: null,
     autoRefresh: true,
     refreshInterval: null,
@@ -36,6 +41,7 @@ const DockyApp = {
     chatHistory: [],       // array of {role, content} sent to the API
     chatBusy: false,
     chatLLMConfigured: true,
+    chatVisible: true,      // whether the chat panel is shown (persisted in localStorage)
 
     // -------------------------------------------------------
     // Utilities
@@ -186,26 +192,15 @@ const DockyApp = {
         const data = await this.apiFetch("/api/stacks" + this.agentQueryParam());
         if (data === null) return;
         this.stacks = data;
-        // Build stackName -> agentName map
+        
+        // Build stackAgentMap
         this.stackAgentMap = {};
         for (const s of data) {
-            if (s.agent_name) {
-                this.stackAgentMap[s.name] = s.agent_name;
-            } else if (this.currentAgentFilter !== "all") {
-                this.stackAgentMap[s.name] = this.currentAgentFilter;
-            }
+            if (s.agent_name) this.stackAgentMap[s.name] = s.agent_name;
+            else if (this.currentAgentFilter !== "all") this.stackAgentMap[s.name] = this.currentAgentFilter;
         }
-        // Check if stacks have changed before re-rendering
-        const stacksKey = JSON.stringify(data);
-        if (this._lastStacksKey === stacksKey) {
-            return;
-        }
-        this._lastStacksKey = stacksKey;
-        this.renderStacks();
-        // Update compose selector
-        this.updateStackSelector(data);
-
-        // Pre-fetch all containers for instant display on stack click
+        
+        // Fetch all containers
         try {
             let containersUrl;
             if (this.currentAgentFilter === 'all') {
@@ -213,12 +208,21 @@ const DockyApp = {
             } else {
                 containersUrl = '/api/containers?agent=' + encodeURIComponent(this.currentAgentFilter);
             }
-            const containersResp = await fetch(containersUrl);
-            const containersData = await containersResp.json();
+            const resp = await fetch(containersUrl, { credentials: "same-origin" });
+            if (resp.status === 401) { window.location.href = "/login"; return; }
+            const containersData = await resp.json();
             this._allContainersCache = Array.isArray(containersData) ? containersData : [];
         } catch(e) {
             this._allContainersCache = [];
         }
+        
+        // Skip re-render if nothing changed
+        const gridKey = JSON.stringify(data) + '|' + JSON.stringify(this._allContainersCache);
+        if (this._lastGridKey === gridKey) return;
+        this._lastGridKey = gridKey;
+        
+        this.renderGridDashboard();
+        this.updateStackSelector(data);
     },
 
     updateStackSelector(stacks) {
@@ -278,6 +282,10 @@ const DockyApp = {
             const editBtn = isManaged
                 ? '<button class="icon-btn" title="Éditer" onclick="DockyApp.selectStackFromDashboard(\'' + this.escapeHtml(stack.name) + '\')">📝</button>'
                 : '';
+            // One-click import button for external stacks (not standalone)
+            const importBtn = (!isManaged && !isStandalone)
+                ? '<button class="icon-btn" title="Importer dans Docky" onclick="DockyApp.importExternal(\'' + this.escapeHtml(stack.source_path || '') + '\', \'' + this.escapeHtml(stack.name) + '\')">📥</button>'
+                : '';
             // Stack-level start/stop/restart only for real stacks (not standalone)
             const stackActionBtns = isStandalone
                 ? ''
@@ -301,6 +309,7 @@ const DockyApp = {
                         </div>
                         <div class="stack-card-actions" onclick="event.stopPropagation()">
                             ${editBtn}
+                            ${importBtn}
                             ${stackActionBtns}
                             <span class="stack-chevron">${isExpanded ? "▼" : "▶"}</span>
                         </div>
@@ -427,6 +436,239 @@ const DockyApp = {
     },
 
     // -------------------------------------------------------
+    // Grid Dashboard (Option B)
+    // -------------------------------------------------------
+
+    renderGridDashboard() {
+        const container = document.getElementById("dashboard-content");
+        if (!container) return;
+        
+        if (this.stacks.length === 0) {
+            container.innerHTML = '<div class="placeholder"><p>📭 Aucune stack trouvée</p></div>';
+            return;
+        }
+        
+        const availWidth = container.clientWidth - 36;
+        if (availWidth < 200) return;
+        
+        const gap = 8;
+        const minCell = 145;
+        const maxCell = 200;
+        let cols = Math.max(3, Math.min(10, Math.floor(availWidth / minCell)));
+        let cellSize = Math.floor((availWidth - (cols - 1) * gap) / cols);
+        cellSize = Math.max(140, Math.min(maxCell, cellSize));
+        cols = Math.max(3, Math.floor((availWidth + gap) / (cellSize + gap)));
+        
+        const layout = this.computeGridLayout(this.stacks, this._allContainersCache || [], cols);
+        this._gridLayout = layout;
+        this._gridCellSize = cellSize;
+        
+        const cellW = cellSize, cellH = cellSize;
+        const padX = 14, padY = 10, headerH = 32;
+        const padTop = padY + headerH + 8;
+        
+        const canvasW = layout.cols * (cellW + gap) - gap + 2 * padX;
+        const canvasH = layout.rows * (cellH + gap) - gap + padTop + padY;
+        
+        let svgPaths = '', headersHtml = '', cardsHtml = '';
+        const runningContainers = [];
+        
+        for (const placement of layout.placements) {
+            const { stack, containers, bbox } = placement;
+            const color = this.stackColor(stack.name);
+            const seed = this.hashString(stack.name);
+            
+            const bx = bbox.col * (cellW + gap);
+            const by = bbox.row * (cellH + gap);
+            const bw = bbox.colSpan * (cellW + gap) - gap + 2 * padX;
+            const bh = bbox.rowSpan * (cellH + gap) - gap + padTop + padY;
+            
+            const path = this.generateOrganicPath(bx, by, bw, bh, seed);
+            svgPaths += '<path d="' + path + '" fill="' + color.fill + '" stroke="' + color.stroke + '" stroke-width="1.5" opacity="0.9"/>';
+            
+            const hLeft = bx + padX, hTop = by + 8, hWidth = bw - 2 * padX;
+            headersHtml += this.renderGridStackHeader(stack, hLeft, hTop, hWidth);
+            
+            const agent = this.stackAgentMap[stack.name] || (this.currentAgentFilter !== "all" ? this.currentAgentFilter : null);
+            for (const cell of containers) {
+                const cLeft = cell.col * (cellW + gap) + padX;
+                const cTop = cell.row * (cellH + gap) + padTop;
+                cardsHtml += this.renderGridContainerCard(cell.container, cLeft, cTop, cellW, cellH, agent);
+                if (cell.container && cell.container.status === "running") runningContainers.push({ id: cell.container.id, agent });
+            }
+        }
+        
+        container.innerHTML = '<div class="docky-grid-canvas" style="position:relative;width:' + canvasW + 'px;height:' + canvasH + 'px;">'
+            + '<svg class="docky-bubbles-svg" width="' + canvasW + '" height="' + canvasH + '" style="position:absolute;top:0;left:0;pointer-events:none;z-index:1;">' + svgPaths + '</svg>'
+            + headersHtml + cardsHtml + '</div>';
+        
+        for (const rc of runningContainers) {
+            this.loadContainerStats(rc.id, rc.agent);
+            this.checkUpdate(rc.id, rc.agent);
+        }
+    },
+
+    computeGridLayout(stacks, allContainers, maxCols) {
+        const groups = [];
+        for (const stack of stacks) {
+            const containers = allContainers.filter(c => {
+                if (stack.name === 'Standalone') return !c.stack;
+                return c.stack === stack.name;
+            });
+            groups.push({ stack, containers });
+        }
+        groups.sort((a, b) => b.containers.length - a.containers.length);
+        
+        const grid = new Set();
+        const placements = [];
+        let maxCol = 0, maxRow = 0;
+        
+        for (const group of groups) {
+            const n = group.containers.length;
+            let w, h;
+            if (n === 0) { w = 1; h = 1; }
+            else {
+                w = Math.ceil(Math.sqrt(n));
+                h = Math.ceil(n / w);
+                if (w > maxCols) { w = maxCols; h = Math.ceil(n / w); }
+            }
+            
+            const pos = this.findGridPlacement(grid, w, h, maxCols);
+            if (!pos) continue;
+            
+            const cells = [];
+            let placed = 0;
+            for (let r = pos.row; r < pos.row + h && placed < n; r++) {
+                for (let c = pos.col; c < pos.col + w && placed < n; c++) {
+                    cells.push({ col: c, row: r, container: group.containers[placed] });
+                    placed++;
+                }
+            }
+            if (n === 0) cells.push({ col: pos.col, row: pos.row, container: null });
+            
+            for (let r = pos.row; r < pos.row + h; r++) {
+                for (let c = pos.col; c < pos.col + w; c++) grid.add(c + "," + r);
+                grid.add((pos.col + w) + "," + r);
+            }
+            for (let c = pos.col; c <= pos.col + w; c++) grid.add(c + "," + (pos.row + h));
+            
+            placements.push({ stack: group.stack, containers: cells, bbox: { col: pos.col, row: pos.row, colSpan: w, rowSpan: h } });
+            maxCol = Math.max(maxCol, pos.col + w);
+            maxRow = Math.max(maxRow, pos.row + h);
+        }
+        return { placements, cols: maxCol, rows: maxRow };
+    },
+
+    findGridPlacement(grid, w, h, maxCols) {
+        for (let row = 0; row < 500; row++) {
+            for (let col = 0; col <= maxCols - w; col++) {
+                if (this._rectFits(grid, col, row, w, h)) return { col, row };
+            }
+        }
+        let maxR = 0;
+        for (const key of grid) { const r = parseInt(key.split(",")[1]); if (r > maxR) maxR = r; }
+        return { col: 0, row: maxR + 1 };
+    },
+
+    _rectFits(grid, col, row, w, h) {
+        for (let r = row; r < row + h; r++)
+            for (let c = col; c < col + w; c++)
+                if (grid.has(c + "," + r)) return false;
+        return true;
+    },
+
+    generateOrganicPath(x, y, w, h, seed) {
+        const rnd = (i) => { const s = Math.sin(seed * 9301 + i * 49297) * 233280; return (s - Math.floor(s)) - 0.5; };
+        const wobble = Math.min(w, h) * 0.02;
+        const margin = Math.min(w, h) * 0.14;
+        const pts = [
+            { x: x + margin, y: y + rnd(0) * wobble },
+            { x: x + w * 0.33, y: y + rnd(1) * wobble },
+            { x: x + w * 0.67, y: y + rnd(2) * wobble },
+            { x: x + w - margin, y: y + rnd(3) * wobble },
+            { x: x + w + rnd(4) * wobble, y: y + h * 0.33 },
+            { x: x + w + rnd(5) * wobble, y: y + h * 0.67 },
+            { x: x + w - margin, y: y + h + rnd(6) * wobble },
+            { x: x + w * 0.67, y: y + h + rnd(7) * wobble },
+            { x: x + w * 0.33, y: y + h + rnd(8) * wobble },
+            { x: x + margin, y: y + h + rnd(9) * wobble },
+            { x: x + rnd(10) * wobble, y: y + h * 0.67 },
+            { x: x + rnd(11) * wobble, y: y + h * 0.33 },
+        ];
+        let path = 'M ' + pts[0].x.toFixed(1) + ' ' + pts[0].y.toFixed(1);
+        const n = pts.length;
+        for (let i = 0; i < n; i++) {
+            const p0 = pts[(i-1+n)%n], p1 = pts[i], p2 = pts[(i+1)%n], p3 = pts[(i+2)%n];
+            const c1x = p1.x + (p2.x - p0.x) / 6, c1y = p1.y + (p2.y - p0.y) / 6;
+            const c2x = p2.x - (p3.x - p1.x) / 6, c2y = p2.y - (p3.y - p1.y) / 6;
+            path += ' C ' + c1x.toFixed(1) + ' ' + c1y.toFixed(1) + ', ' + c2x.toFixed(1) + ' ' + c2y.toFixed(1) + ', ' + p2.x.toFixed(1) + ' ' + p2.y.toFixed(1);
+        }
+        return path + ' Z';
+    },
+
+    hashString(s) { let h = 0; for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0; return Math.abs(h); },
+
+    stackColor(name) {
+        const palette = [
+            { fill: 'rgba(233,69,96,0.07)', stroke: 'rgba(233,69,96,0.30)' },
+            { fill: 'rgba(74,222,128,0.07)', stroke: 'rgba(74,222,128,0.30)' },
+            { fill: 'rgba(96,165,250,0.07)', stroke: 'rgba(96,165,250,0.30)' },
+            { fill: 'rgba(251,191,36,0.07)', stroke: 'rgba(251,191,36,0.30)' },
+            { fill: 'rgba(168,85,247,0.07)', stroke: 'rgba(168,85,247,0.30)' },
+            { fill: 'rgba(34,211,238,0.07)', stroke: 'rgba(34,211,238,0.30)' },
+            { fill: 'rgba(249,115,22,0.07)', stroke: 'rgba(249,115,22,0.30)' },
+            { fill: 'rgba(236,72,153,0.07)', stroke: 'rgba(236,72,153,0.30)' },
+        ];
+        return palette[this.hashString(name) % palette.length];
+    },
+
+    containerStatusDot(status) {
+        let cls = 'status-running';
+        if (status === 'exited' || status === 'stopped') cls = 'status-stopped';
+        else if (status === 'restarting' || status === 'paused') cls = 'status-partial';
+        else if (status === 'dead' || status === 'error') cls = 'status-stopped';
+        return '<span class="grid-status-dot ' + cls + '" title="' + this.escapeHtml(status) + '"></span>';
+    },
+
+    renderGridStackHeader(stack, left, top, width) {
+        const isManaged = stack.managed !== false;
+        const isStandalone = stack.standalone === true;
+        let typeBadge = '';
+        if (isStandalone) typeBadge = '<span class="stack-type-badge stack-badge-standalone">standalone</span>';
+        else if (!isManaged) typeBadge = '<span class="stack-type-badge stack-badge-external">⚠ Externe</span>';
+        else typeBadge = '<span class="stack-type-badge stack-badge-docky">Docky</span>';
+        
+        const agentBadge = (this.currentAgentFilter === "all" && stack.agent_name) ? '<span class="stack-agent-badge">🖥 ' + this.escapeHtml(stack.agent_name) + '</span>' : '';
+        const statusBadge = this.statusBadge(stack.status);
+        const containerInfo = stack.container_count > 0 ? stack.running_count + '/' + stack.container_count : "0";
+        const countBadge = '<span class="meta-badge">🐳 ' + containerInfo + '</span>';
+        const portsInfo = (stack.ports && stack.ports.length > 0) ? '<span class="meta-badge meta-ports">🔌 ' + this.escapeHtml(stack.ports.slice(0,3).join(", ")) + (stack.ports.length > 3 ? '…' : '') + '</span>' : '';
+        
+        const escapedName = this.escapeHtml(stack.name);
+        const editBtn = isManaged ? '<button class="grid-icon-btn" title="Éditer" onclick="DockyApp.selectStackFromDashboard(\'' + escapedName + '\')">📝</button>' : '';
+        const importBtn = (!isManaged && !isStandalone && stack.source_path) ? '<button class="grid-icon-btn" title="Importer" onclick="DockyApp.importExternal(\'' + this.escapeHtml(stack.source_path) + '\', \'' + escapedName + '\')">📥</button>' : '';
+        const stackActionBtns = isStandalone ? '' : '<button class="grid-icon-btn btn-start" title="Démarrer" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'start\')">▶</button><button class="grid-icon-btn btn-stop" title="Arrêter" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'stop\')">⏹</button><button class="grid-icon-btn btn-restart" title="Redémarrer" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'restart\')">🔄</button><button class="grid-icon-btn" title="Update" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'update\')">⬆</button>';
+        
+        return '<div class="grid-stack-header" style="left:' + left + 'px;top:' + top + 'px;width:' + width + 'px;z-index:2"><div class="grid-stack-header-info"><span class="grid-stack-name">' + escapedName + '</span>' + typeBadge + agentBadge + statusBadge + countBadge + portsInfo + '</div><div class="grid-stack-header-actions">' + editBtn + importBtn + stackActionBtns + '</div></div>';
+    },
+
+    renderGridContainerCard(c, left, top, width, height, agent) {
+        if (!c) return '<div class="grid-container-card grid-card-empty" style="left:' + left + 'px;top:' + top + 'px;width:' + width + 'px;height:' + height + 'px;z-index:3"></div>';
+        const escapedId = this.escapeHtml(c.id), name = this.escapeHtml(c.name), image = this.escapeHtml(c.image);
+        const statusDot = this.containerStatusDot(c.status);
+        const agt = (agent || "").replace(/'/g, "\\'");
+        const ports = (c.ports || []).filter(p => p.host_port).map(p => p.host_port + '→' + p.container).join(", ");
+        const portsBadge = ports ? '<span class="meta-badge meta-ports grid-card-ports">🔌 ' + this.escapeHtml(ports) + '</span>' : '';
+        
+        return '<div class="grid-container-card" data-id="' + escapedId + '" style="left:' + left + 'px;top:' + top + 'px;width:' + width + 'px;height:' + height + 'px;z-index:3"><div class="grid-card-top"><span class="grid-card-name" title="' + name + '">' + name + '</span>' + statusDot + '</div><div class="grid-card-image" title="' + image + '">📦 ' + image + '</div><div class="grid-card-resources" id="resources-' + escapedId + '"><div class="resource-line"><span class="resource-label">CPU</span><div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div><span class="resource-value">—</span></div><div class="resource-line"><span class="resource-label">RAM</span><div class="progress-bar"><div class="progress-fill ram" style="width:0%"></div></div><span class="resource-value">—</span></div></div><div class="grid-card-extra">' + portsBadge + '<span class="update-badge hidden" id="update-' + escapedId + '">⬆</span></div><div class="grid-card-actions"><button class="grid-icon-btn btn-start" title="Start" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'start\', \'' + agt + '\')">▶</button><button class="grid-icon-btn btn-stop" title="Stop" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'stop\', \'' + agt + '\')">⏹</button><button class="grid-icon-btn btn-restart" title="Restart" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'restart\', \'' + agt + '\')">🔄</button><button class="grid-icon-btn btn-logs" title="Logs" onclick="DockyApp.openLogs(\'' + escapedId + '\', \'' + name + '\', \'' + agt + '\')">📋</button><button class="grid-icon-btn btn-console" title="Console" onclick="DockyApp.openConsole(\'' + escapedId + '\', \'' + name + '\', \'' + agt + '\')">🖥</button></div></div>';
+    },
+
+    _debouncedGridRender() {
+        if (this._gridRenderTimer) clearTimeout(this._gridRenderTimer);
+        this._gridRenderTimer = setTimeout(() => { if (this.stacks.length > 0) this.renderGridDashboard(); }, 200);
+    },
+
+    // -------------------------------------------------------
     // Stats / Resources
     // -------------------------------------------------------
 
@@ -500,24 +742,13 @@ const DockyApp = {
     // -------------------------------------------------------
 
     async openLogs(containerId, name, agent) {
+        // Open logs in a popup window so the user can keep it on another screen
+        const url = `/popup/logs?agent=${encodeURIComponent(agent || '')}&container=${encodeURIComponent(containerId)}&name=${encodeURIComponent(name || '')}`;
+        window.open(url, `logs-${containerId}`, 'width=900,height=650,scrollbars=yes,resizable=yes');
+        // Also keep the legacy modal available via a state flag for backwards compat
         this.logsContainerId = containerId;
         this.logsContainerAgent = agent;
         this.logsStreamMode = false;
-        const title = document.getElementById("logs-title");
-        if (title) title.textContent = `📋 Logs - ${name}`;
-        const modal = document.getElementById("logs-modal");
-        modal.classList.remove("hidden");
-        const output = document.getElementById("logs-output");
-        output.innerHTML = '<div class="terminal-line">Chargement…</div>';
-
-        // Fetch static logs
-        const data = await this.apiFetch(`/api/containers/${containerId}/logs?tail=200` + this.agentQuery(agent));
-        if (data && data.lines) {
-            this.renderLogs(data.lines);
-        }
-        // Reset stream toggle
-        const toggle = document.getElementById("logs-stream-toggle");
-        if (toggle) toggle.checked = false;
     },
 
     renderLogs(lines) {
@@ -595,62 +826,12 @@ const DockyApp = {
     // -------------------------------------------------------
 
     async openConsole(containerId, name, agent) {
+        // Open console in a popup window so the user can keep it on another screen
+        const url = `/popup/console?agent=${encodeURIComponent(agent || '')}&container=${encodeURIComponent(containerId)}&name=${encodeURIComponent(name || '')}`;
+        window.open(url, `console-${containerId}`, 'width=900,height=650,scrollbars=yes,resizable=yes');
+        // Keep legacy state for backwards compat (modal helpers remain usable)
         this.consoleContainerId = containerId;
         this.consoleContainerAgent = agent;
-        const title = document.getElementById("console-title");
-        if (title) title.textContent = `🖥 Console - ${name}`;
-        const modal = document.getElementById("console-modal");
-        modal.classList.remove("hidden");
-        const output = document.getElementById("console-output");
-        output.innerHTML = '<div class="terminal-line terminal-empty">Connexion au container…</div>';
-
-        // Connect WebSocket
-        const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-        const wsUrl = `${proto}//${window.location.host}/api/containers/${containerId}/exec`;
-        try {
-            this.consoleWs = new WebSocket(wsUrl);
-            this.consoleWs.onopen = () => {
-                output.innerHTML = '<div class="terminal-line terminal-info">— Connecté. Tapez vos commandes. —</div>';
-                const input = document.getElementById("console-input");
-                if (input) input.focus();
-            };
-            this.consoleWs.onmessage = (event) => {
-                const lineDiv = document.createElement("div");
-                lineDiv.className = "terminal-line";
-                lineDiv.textContent = event.data;
-                output.appendChild(lineDiv);
-                output.scrollTop = output.scrollHeight;
-            };
-            this.consoleWs.onerror = () => {
-                this.showToast("Erreur console WebSocket", "error");
-            };
-        } catch (e) {
-            this.showToast("Console: " + e.message, "error");
-        }
-
-        // Setup input handler
-        const input = document.getElementById("console-input");
-        if (input) {
-            input.onkeydown = (e) => {
-                if (e.key === "Enter") {
-                    const cmd = input.value;
-                    if (!cmd.trim()) return;
-                    // Display the command
-                    const cmdDiv = document.createElement("div");
-                    cmdDiv.className = "terminal-line terminal-cmd";
-                    cmdDiv.textContent = "$ " + cmd;
-                    output.appendChild(cmdDiv);
-                    // Send to WS
-                    if (this.consoleWs && this.consoleWs.readyState === WebSocket.OPEN) {
-                        this.consoleWs.send(cmd);
-                    }
-                    // History
-                    this.consoleHistory.push(cmd);
-                    input.value = "";
-                    output.scrollTop = output.scrollHeight;
-                }
-            };
-        }
     },
 
     closeConsole() {
@@ -1039,6 +1220,242 @@ const DockyApp = {
 
     closeNewStackModal() {
         document.getElementById("new-stack-modal").classList.add("hidden");
+    },
+
+    // -------------------------------------------------------
+    // Import stack
+    // -------------------------------------------------------
+
+    openImportModal() {
+        const modal = document.getElementById("import-modal");
+        if (modal) modal.classList.remove("hidden");
+        const src = document.getElementById("import-source-path");
+        const name = document.getElementById("import-stack-name");
+        if (src) src.value = "";
+        if (name) name.value = "";
+        setTimeout(() => {
+            if (src) src.focus();
+        }, 50);
+    },
+
+    closeImportModal() {
+        const modal = document.getElementById("import-modal");
+        if (modal) modal.classList.add("hidden");
+    },
+
+    importExternal(sourcePath, stackName) {
+        if (!sourcePath) {
+            this.showToast('Chemin source non détecté pour cette stack', "error");
+            return;
+        }
+        // Dry-run first to get a preview, then show a modal before the
+        // actual import.
+        this._importPreview = null;
+        this._doImportPreview(sourcePath, stackName);
+    },
+
+    async _doImportPreview(sourcePath, stackName) {
+        const agent = this.stackAgentMap[stackName] || (this.currentAgentFilter !== 'all' ? this.currentAgentFilter : null);
+        if (!agent) {
+            this.showToast('Agent non trouvé pour cette stack', "error");
+            return;
+        }
+
+        this.showToast('Génération de la preview...', "info");
+
+        try {
+            const resp = await fetch('/api/stacks/import?agent=' + encodeURIComponent(agent), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ source_path: sourcePath, stack_name: stackName, dry_run: true }),
+                credentials: 'same-origin',
+            });
+            if (resp.status === 401) {
+                window.location.href = "/login";
+                return;
+            }
+            const data = await resp.json().catch(() => ({}));
+
+            if (resp.ok && data.success) {
+                this.showImportPreview(sourcePath, stackName, agent, data);
+            } else {
+                this.showToast(data.detail || data.error || "Erreur lors de la preview", "error");
+            }
+        } catch (e) {
+            this.showToast('Erreur: ' + e.message, "error");
+        }
+    },
+
+    showImportPreview(sourcePath, stackName, agent, previewData) {
+        // Stocker les infos pour la confirmation
+        this._importPreview = { sourcePath, stackName, agent };
+
+        const modal = document.getElementById('import-preview-modal');
+        const contentEl = document.getElementById('import-preview-content');
+        const conversionsEl = document.getElementById('import-preview-conversions');
+        const warningsEl = document.getElementById('import-preview-warnings');
+
+        // Afficher le compose converti
+        if (contentEl) contentEl.textContent = previewData.preview || previewData.converted_compose || '';
+
+        // Afficher les conversions
+        if (conversionsEl) {
+            if (previewData.conversions && previewData.conversions.length > 0) {
+                conversionsEl.innerHTML = '<div style="color: var(--text-secondary); margin-bottom: 8px;">Chemins convertis (' + previewData.conversions.length + '):</div>' +
+                    previewData.conversions.map(c => '<div style="color: #4fc3f7; font-family: monospace; font-size: 12px; padding: 2px 0;">' + this.escapeHtml(c) + '</div>').join('');
+                conversionsEl.style.display = 'block';
+            } else {
+                conversionsEl.innerHTML = '<div style="color: var(--text-secondary);">Aucune conversion nécessaire (chemins déjà absolus)</div>';
+                conversionsEl.style.display = 'block';
+            }
+        }
+
+        // Afficher les warnings
+        if (warningsEl) {
+            if (previewData.warnings && previewData.warnings.length > 0) {
+                warningsEl.innerHTML = '<div style="color: #ff9800; margin-bottom: 8px;">⚠️ Avertissements:</div>' +
+                    previewData.warnings.map(w => '<div style="color: #ff9800; font-size: 12px; padding: 2px 0;">' + this.escapeHtml(w) + '</div>').join('');
+                warningsEl.style.display = 'block';
+            } else {
+                warningsEl.style.display = 'none';
+            }
+        }
+
+        if (modal) modal.classList.remove('hidden');
+    },
+
+    closeImportPreview() {
+        const modal = document.getElementById('import-preview-modal');
+        if (modal) modal.classList.add('hidden');
+    },
+
+    async confirmImport() {
+        if (!this._importPreview) return;
+        const { sourcePath, stackName, agent } = this._importPreview;
+
+        this.closeImportPreview();
+        this.showToast('Import en cours...', "info");
+
+        try {
+            const resp = await fetch('/api/stacks/import?agent=' + encodeURIComponent(agent), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ source_path: sourcePath, stack_name: stackName, dry_run: false }),
+                credentials: 'same-origin',
+            });
+            if (resp.status === 401) {
+                window.location.href = "/login";
+                return;
+            }
+            const data = await resp.json().catch(() => ({}));
+
+            if (resp.ok && data.success) {
+                let msg = 'Stack « ' + (data.name || stackName) + ' » importée avec succès';
+                if (data.conversions && data.conversions.length > 0) {
+                    msg += ' (' + data.conversions.length + ' chemin(s) converti(s))';
+                }
+                if (data.warnings && data.warnings.length > 0) {
+                    msg += '\n⚠ ' + data.warnings.join(', ');
+                }
+                this.showToast(msg, "success");
+                this._importPreview = null;
+                await this.refreshStacks();
+            } else {
+                this.showToast(data.detail || data.error || "Erreur lors de l'import", "error");
+            }
+        } catch (e) {
+            this.showToast('Erreur: ' + e.message, "error");
+        }
+    },
+
+    async doImportDirect(sourcePath, stackName) {
+        const agent = this.stackAgentMap[stackName] || (this.currentAgentFilter !== 'all' ? this.currentAgentFilter : null);
+        if (!agent) {
+            this.showToast('Agent non trouvé pour cette stack', "error");
+            return;
+        }
+
+        this.showToast('Import en cours...', "info");
+
+        try {
+            const resp = await fetch('/api/stacks/import?agent=' + encodeURIComponent(agent), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ source_path: sourcePath, stack_name: stackName }),
+                credentials: 'same-origin',
+            });
+            if (resp.status === 401) {
+                window.location.href = "/login";
+                return;
+            }
+            const data = await resp.json().catch(() => ({}));
+
+            if (resp.ok && data.success) {
+                let msg = 'Stack « ' + (data.name || stackName) + ' » importée avec succès';
+                if (data.conversions && data.conversions.length > 0) {
+                    msg += ' (' + data.conversions.length + ' chemin(s) converti(s))';
+                }
+                if (data.warnings && data.warnings.length > 0) {
+                    msg += '\n⚠ ' + data.warnings.join(', ');
+                }
+                this.showToast(msg, "success");
+                await this.refreshStacks();
+            } else {
+                this.showToast(data.detail || data.error || "Erreur lors de l'import", "error");
+            }
+        } catch (e) {
+            this.showToast('Erreur: ' + e.message, "error");
+        }
+    },
+
+    async doImport() {
+        const sourcePath = (document.getElementById("import-source-path").value || "").trim();
+        const stackName = (document.getElementById("import-stack-name").value || "").trim() || null;
+        const agent = this.currentAgentFilter !== "all" ? this.currentAgentFilter : null;
+
+        if (!sourcePath) {
+            this.showToast("Le chemin source est requis", "error");
+            return;
+        }
+        if (!agent) {
+            this.showToast("Sélectionne un agent spécifique (pas « Tous »)", "error");
+            return;
+        }
+
+        try {
+            const resp = await fetch(
+                "/api/stacks/import?agent=" + encodeURIComponent(agent),
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ source_path: sourcePath, stack_name: stackName }),
+                    credentials: "same-origin",
+                }
+            );
+            if (resp.status === 401) {
+                window.location.href = "/login";
+                return;
+            }
+            const data = await resp.json().catch(() => ({}));
+
+            if (resp.ok && data.success) {
+                let msg = 'Stack « ' + (data.name || stackName || sourcePath) + ' » importée avec succès';
+                if (data.conversions && data.conversions.length > 0) {
+                    msg += '\n\nChemins convertis (' + data.conversions.length + '):\n' + data.conversions.slice(0, 5).join('\n');
+                    if (data.conversions.length > 5) msg += '\n... et ' + (data.conversions.length - 5) + ' autres';
+                }
+                if (data.warnings && data.warnings.length > 0) {
+                    msg += '\n\n⚠️ Avertissements:\n' + data.warnings.join('\n');
+                }
+                this.showToast(msg, "success");
+                this.closeImportModal();
+                await this.refreshStacks();
+            } else {
+                this.showToast(data.detail || data.error || "Erreur lors de l'import", "error");
+            }
+        } catch (e) {
+            this.showToast("Erreur: " + e.message, "error");
+        }
     },
 
     async createStack() {
@@ -1448,6 +1865,55 @@ const DockyApp = {
             '</div>';
     },
 
+    // -------------------------------------------------------
+    // Chat panel toggle (show/hide)
+    // -------------------------------------------------------
+
+    toggleChat() {
+        this.chatVisible = !this.chatVisible;
+        this.applyChatVisibility();
+        // Persist preference
+        try {
+            localStorage.setItem('docky-chat-visible', this.chatVisible ? '1' : '0');
+        } catch (e) {
+            /* localStorage may be unavailable */
+        }
+    },
+
+    applyChatVisibility() {
+        const chatPanel = document.querySelector('.chat-panel');
+        const hResizer = document.getElementById('resizer-horizontal');
+        if (chatPanel) {
+            chatPanel.style.display = this.chatVisible ? '' : 'none';
+        }
+        if (hResizer) {
+            hResizer.style.display = this.chatVisible ? '' : 'none';
+        }
+        // Let the dashboard take the full height when the chat is hidden
+        const dashboardPanel = document.querySelector('.dashboard-panel');
+        if (dashboardPanel) {
+            if (!this.chatVisible) {
+                dashboardPanel.style.flex = '1';
+                dashboardPanel.style.height = '';
+            } else {
+                // Restore saved height if available, otherwise reset to flex default
+                const saved = localStorage.getItem('docky-dashboard-height');
+                if (saved) {
+                    dashboardPanel.style.height = saved + '%';
+                    dashboardPanel.style.flex = 'none';
+                } else {
+                    dashboardPanel.style.flex = '';
+                    dashboardPanel.style.height = '';
+                }
+            }
+        }
+        // Update the toggle button active state
+        const btn = document.getElementById('chat-toggle');
+        if (btn) {
+            btn.classList.toggle('active', this.chatVisible);
+        }
+    },
+
     showChatLoading(show) {
         const loading = document.getElementById("chat-loading");
         if (!loading) return;
@@ -1532,10 +1998,129 @@ const DockyApp = {
     },
 
     // -------------------------------------------------------
+    // Panel resizers (click'n'drag)
+    // -------------------------------------------------------
+
+    initResizers() {
+        const self = this;
+
+        const vResizer = document.getElementById('resizer-vertical');
+        const hResizer = document.getElementById('resizer-horizontal');
+
+        // Restaurer les tailles sauvegardées
+        this.restorePanelSizes();
+
+        if (vResizer) {
+            vResizer.addEventListener('mousedown', function(e) {
+                e.preventDefault();
+                const layout = document.querySelector('.app-layout');
+                const leftCol = document.querySelector('.left-column');
+                if (!layout || !leftCol) return;
+
+                const startX = e.clientX;
+                const containerWidth = layout.getBoundingClientRect().width;
+                const startWidth = leftCol.getBoundingClientRect().width;
+
+                document.body.style.cursor = 'col-resize';
+                document.body.style.userSelect = 'none';
+                vResizer.classList.add('active');
+
+                function onMouseMove(e) {
+                    const dx = e.clientX - startX;
+                    const newWidth = Math.max(200, Math.min(containerWidth - 200, startWidth + dx));
+                    const percent = (newWidth / containerWidth) * 100;
+                    leftCol.style.width = percent + '%';
+                    leftCol.style.flex = 'none';
+                    localStorage.setItem('docky-left-width', percent);
+                }
+
+                function onMouseUp() {
+                    document.body.style.cursor = '';
+                    document.body.style.userSelect = '';
+                    vResizer.classList.remove('active');
+                    document.removeEventListener('mousemove', onMouseMove);
+                    document.removeEventListener('mouseup', onMouseUp);
+                }
+
+                document.addEventListener('mousemove', onMouseMove);
+                document.addEventListener('mouseup', onMouseUp);
+            });
+        }
+
+        if (hResizer) {
+            hResizer.addEventListener('mousedown', function(e) {
+                e.preventDefault();
+                const leftCol = document.querySelector('.left-column');
+                if (!leftCol) return;
+
+                const startY = e.clientY;
+                const containerHeight = leftCol.getBoundingClientRect().height;
+                const dashboardPanel = document.querySelector('.dashboard-panel');
+                if (!dashboardPanel) return;
+                const startHeight = dashboardPanel.getBoundingClientRect().height;
+
+                document.body.style.cursor = 'row-resize';
+                document.body.style.userSelect = 'none';
+                hResizer.classList.add('active');
+
+                function onMouseMove(e) {
+                    const dy = e.clientY - startY;
+                    const newHeight = Math.max(150, Math.min(containerHeight - 100, startHeight + dy));
+                    const percent = (newHeight / containerHeight) * 100;
+                    dashboardPanel.style.height = percent + '%';
+                    dashboardPanel.style.flex = 'none';
+                    localStorage.setItem('docky-dashboard-height', percent);
+                }
+
+                function onMouseUp() {
+                    document.body.style.cursor = '';
+                    document.body.style.userSelect = '';
+                    hResizer.classList.remove('active');
+                    document.removeEventListener('mousemove', onMouseMove);
+                    document.removeEventListener('mouseup', onMouseUp);
+                }
+
+                document.addEventListener('mousemove', onMouseMove);
+                document.addEventListener('mouseup', onMouseUp);
+            });
+        }
+    },
+
+    restorePanelSizes() {
+        const leftWidth = localStorage.getItem('docky-left-width');
+        const dashHeight = localStorage.getItem('docky-dashboard-height');
+
+        if (leftWidth) {
+            const leftCol = document.querySelector('.left-column');
+            if (leftCol) {
+                leftCol.style.width = leftWidth + '%';
+                leftCol.style.flex = 'none';
+            }
+        }
+        if (dashHeight && this.chatVisible) {
+            const dash = document.querySelector('.dashboard-panel');
+            if (dash) {
+                dash.style.height = dashHeight + '%';
+                dash.style.flex = 'none';
+            }
+        }
+    },
+
+    // -------------------------------------------------------
     // Init
     // -------------------------------------------------------
 
     init() {
+        // Load chat panel visibility preference (persisted in localStorage)
+        try {
+            this.chatVisible = localStorage.getItem('docky-chat-visible') !== '0';
+        } catch (e) {
+            this.chatVisible = true;
+        }
+        this.applyChatVisibility();
+
+        this.initResizers();
+
         this.loadAgents();
         this.startAgentsRefresh();
         this.refreshStacks();
@@ -1624,6 +2209,13 @@ const DockyApp = {
                 this.closeSoulEditor();
             }
         });
+
+        // Grid dashboard resize observer
+        const dashContent = document.getElementById("dashboard-content");
+        if (dashContent && window.ResizeObserver) {
+            this._gridResizeObserver = new ResizeObserver(() => { this._debouncedGridRender(); });
+            this._gridResizeObserver.observe(dashContent);
+        }
     },
 };
 

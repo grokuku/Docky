@@ -191,6 +191,30 @@ body {
     font-size: 0.875rem;
 }
 
+/* Topbar toggle buttons (e.g. chat toggle) */
+
+.topbar-btn {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    padding: 6px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+    transition: all 0.2s;
+}
+
+.topbar-btn:hover {
+    border-color: var(--accent);
+}
+
+.topbar-btn.active {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+}
+
 /* Agent selector */
 
 .agent-selector {
@@ -304,9 +328,8 @@ body {
 }
 
 .app-layout {
-    display: grid;
-    grid-template-columns: 1fr 400px;
-    gap: 16px;
+    display: flex;
+    flex-direction: row;
     padding: 16px;
     flex: 1;
     overflow: hidden;
@@ -315,14 +338,67 @@ body {
 .left-column {
     display: flex;
     flex-direction: column;
-    gap: 16px;
     min-height: 0;
+    flex: 1;
+    min-width: 200px;
 }
 
 .right-column {
     display: flex;
     flex-direction: column;
     min-height: 0;
+    width: 400px;
+    flex-shrink: 0;
+}
+
+/* Resizers */
+
+.resizer {
+    background: transparent;
+    position: relative;
+    flex-shrink: 0;
+    z-index: 10;
+}
+
+.resizer-vertical {
+    width: 6px;
+    cursor: col-resize;
+    height: 100%;
+}
+
+.resizer-horizontal {
+    height: 6px;
+    cursor: row-resize;
+    width: 100%;
+}
+
+.resizer:hover, .resizer.active {
+    background: var(--accent);
+    opacity: 0.5;
+}
+
+.resizer-vertical::before {
+    content: '';
+    position: absolute;
+    left: 2px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 2px;
+    height: 30px;
+    background: var(--border-color);
+    border-radius: 1px;
+}
+
+.resizer-horizontal::before {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 30px;
+    height: 2px;
+    background: var(--border-color);
+    border-radius: 1px;
 }
 
 /* Panels */
@@ -1651,13 +1727,23 @@ body {
 
 @media (max-width: 900px) {
     .app-layout {
-        grid-template-columns: 1fr;
-        grid-template-rows: auto auto;
+        flex-direction: column;
         overflow: auto;
     }
 
-    .left-column,
+    .resizer {
+        display: none;
+    }
+
+    .left-column {
+        width: 100%;
+        flex: none;
+        min-height: 300px;
+    }
+
     .right-column {
+        width: 100%;
+        flex: none;
         min-height: 300px;
     }
 
@@ -1941,3 +2027,41 @@ body {
 .llm-warning strong {
     color: #ffb300;
 }
+
+/* ============================================================
+   Grid Dashboard (Option B) — organic bubbles + card grid
+   ============================================================ */
+
+.docky-grid-canvas { position: relative; }
+.docky-bubbles-svg { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 1; }
+.grid-stack-header { position: absolute; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 2px 0; pointer-events: auto; }
+.grid-stack-header-info { display: flex; align-items: center; gap: 5px; min-width: 0; flex: 1; flex-wrap: wrap; }
+.grid-stack-name { font-weight: 700; font-size: 0.85rem; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px; }
+.grid-stack-header-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.grid-icon-btn { width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--border-color); border-radius: 5px; background: rgba(0,0,0,0.2); color: var(--text-secondary); cursor: pointer; font-size: 0.72rem; line-height: 1; padding: 0; transition: all var(--transition); }
+.grid-icon-btn:hover { border-color: var(--accent); color: var(--text-primary); transform: translateY(-1px); }
+.grid-icon-btn.btn-start:hover { border-color: var(--success); color: var(--success); }
+.grid-icon-btn.btn-stop:hover { border-color: var(--danger); color: var(--danger); }
+.grid-icon-btn.btn-restart:hover { border-color: var(--warning); color: var(--warning); }
+.grid-icon-btn.btn-logs:hover, .grid-icon-btn.btn-console:hover { border-color: var(--info); color: var(--info); }
+.grid-container-card { position: absolute; display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); transition: border-color var(--transition), box-shadow var(--transition); overflow: hidden; }
+.grid-container-card:hover { border-color: var(--bg-tertiary); box-shadow: 0 4px 16px rgba(0,0,0,0.3); z-index: 4; }
+.grid-card-empty { background: transparent; border: 1px dashed rgba(255,255,255,0.04); pointer-events: none; }
+.grid-card-top { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.grid-card-name { font-weight: 600; font-size: 0.8rem; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+.grid-status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--text-muted); }
+.grid-status-dot.status-running { background: var(--success); box-shadow: 0 0 4px rgba(74,222,128,0.5); }
+.grid-status-dot.status-stopped { background: var(--danger); }
+.grid-status-dot.status-partial { background: var(--warning); }
+.grid-card-image { font-size: 0.68rem; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.grid-card-resources { display: flex; flex-direction: column; gap: 3px; }
+.grid-card-resources .resource-line { display: flex; align-items: center; gap: 4px; font-size: 0.65rem; }
+.grid-card-resources .resource-label { color: var(--text-muted); width: 22px; text-align: right; flex-shrink: 0; }
+.grid-card-resources .progress-bar { flex: 1; height: 5px; background: rgba(0,0,0,0.3); border-radius: 3px; overflow: hidden; min-width: 30px; }
+.grid-card-resources .progress-fill { height: 100%; background: var(--info); border-radius: 3px; transition: width 0.4s ease; min-width: 0; }
+.grid-card-resources .progress-fill.ram { background: var(--warning); }
+.grid-card-resources .resource-value { color: var(--text-secondary); white-space: nowrap; font-size: 0.6rem; width: 50px; text-align: right; overflow: hidden; text-overflow: ellipsis; }
+.grid-card-extra { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; min-height: 16px; }
+.grid-card-ports { font-size: 0.6rem !important; padding: 1px 5px !important; }
+.grid-card-actions { display: flex; gap: 3px; justify-content: center; margin-top: auto; }
+@media (max-width: 700px) { .grid-stack-header-info { gap: 3px; } .grid-stack-name { font-size: 0.78rem; max-width: 120px; } .grid-card-name { font-size: 0.72rem; } .grid-icon-btn { width: 22px; height: 22px; font-size: 0.65rem; } }

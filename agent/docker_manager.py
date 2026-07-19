@@ -396,6 +396,15 @@ def list_stacks() -> List[Dict[str, Any]]:
             continue
         seen.add(project)
         working_dir = labels.get("com.docker.compose.project.working_dir", "")
+        config_files = labels.get("com.docker.compose.project.config_files", "")
+        # Deduce a source path for one-click import: prefer the explicit
+        # working_dir label, otherwise fall back to the parent directory of
+        # the first declared compose file.
+        source_path = working_dir
+        if not source_path and config_files:
+            first = config_files.split(",")[0].strip()
+            if first:
+                source_path = str(Path(first).parent)
         result.append(
             {
                 "name": project,
@@ -404,6 +413,7 @@ def list_stacks() -> List[Dict[str, Any]]:
                 "has_env": False,
                 "managed": False,
                 "standalone": False,
+                "source_path": source_path or "",
             }
         )
 
@@ -772,6 +782,194 @@ def delete_stack(name: str) -> Dict[str, Any]:
         raise ValueError("Refusing to delete: path outside stacks directory")
     shutil.rmtree(base)
     return {"name": name, "deleted": True}
+
+
+def import_stack(source_path: str, stack_name: str = None, dry_run: bool = False) -> dict:
+    """Import a stack from an external directory (e.g. Dockge).
+    Copies docker-compose.yml + .env to /data/stacks/{name}/
+    Converts relative volume paths to absolute paths.
+
+    When *dry_run* is True, no file is written or copied: the function only
+    performs path conversion and returns a preview of the converted compose
+    file along with the list of conversions and warnings.
+
+    Returns: { success: bool, name: str, conversions: list, warnings: list,
+               preview?: str }
+    """
+    import re as _re
+    from datetime import date
+
+    source = Path(source_path).resolve()
+    if not source.exists():
+        return {"success": False, "error": f"Source path '{source_path}' does not exist"}
+
+    compose_src = source / 'docker-compose.yml'
+    if not compose_src.exists():
+        # Try compose.yaml
+        compose_src = source / 'compose.yaml'
+        if not compose_src.exists():
+            return {"success": False, "error": "No docker-compose.yml found in source directory"}
+
+    # Determine stack name
+    if not stack_name:
+        stack_name = source.name
+
+    # Validate stack name
+    try:
+        validate_stack_name(stack_name)
+    except ValueError:
+        return {"success": False, "error": f"Invalid stack name: {stack_name}"}
+
+    # Target directory
+    stacks_dir = Path(get_data_dir()) / 'stacks'
+    target = stacks_dir / stack_name
+
+    # In dry-run mode, do not check for an existing target folder: the user
+    # might want to preview even if a folder with the same name already
+    # exists (the real import will fail then).
+    if not dry_run and target.exists():
+        return {"success": False, "error": f"Stack '{stack_name}' already exists in Docky"}
+
+    # Read the compose file
+    compose_content = compose_src.read_text(encoding='utf-8')
+
+    # Convert relative paths to absolute
+    conversions = []
+    warnings = []
+
+    lines = compose_content.split('\n')
+    converted_lines = []
+
+    # Get named volumes to avoid converting them
+    named_volumes = set()
+    in_volumes_section = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == 'volumes:' and not line.startswith(' '):
+            in_volumes_section = True
+            continue
+        if in_volumes_section:
+            if line and not line.startswith(' ') and not line.startswith('#'):
+                in_volumes_section = False
+            elif stripped and ':' not in stripped.split('#')[0] and not stripped.startswith('-'):
+                # Named volume: volumename:
+                vol_name = stripped.split(':')[0].strip()
+                if vol_name:
+                    named_volumes.add(vol_name)
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Skip comments and empty lines
+        if stripped.startswith('#') or not stripped:
+            converted_lines.append(line)
+            continue
+
+        # Look for volume mounts: - source:target or - source:target:ro
+        if stripped.startswith('- '):
+            vol_part = stripped[2:].strip()
+            # Split by : but be careful of Windows paths (not relevant here)
+            parts = vol_part.split(':')
+            if len(parts) >= 2:
+                source_vol = parts[0].strip()
+
+                # Skip if it's a named volume
+                if source_vol in named_volumes:
+                    converted_lines.append(line)
+                    continue
+
+                # Skip if it's already absolute path
+                if source_vol.startswith('/'):
+                    converted_lines.append(line)
+                    continue
+
+                # Skip if it looks like a variable ${...}
+                if '${' in source_vol:
+                    warnings.append(f"Variable in volume path: {source_vol} - check manually")
+                    converted_lines.append(line)
+                    continue
+
+                # Skip if it's a relative path that goes up (../)
+                if source_vol.startswith('../'):
+                    warnings.append(f"Parent directory path: {source_vol} - check manually")
+                    converted_lines.append(line)
+                    continue
+
+                # Convert: ./something or something → /abs/path/something
+                if source_vol.startswith('./'):
+                    source_vol = source_vol[2:]
+
+                # Resolve relative to source directory
+                abs_path = str((source / source_vol).resolve())
+
+                # Replace in the line
+                new_line = line.replace(source_vol if not parts[0].strip().startswith('./') else './' + source_vol, abs_path)
+                if new_line == line:
+                    # Fallback: replace the whole source part
+                    indent = line[:len(line) - len(line.lstrip())]
+                    rest = ':'.join(parts[1:])
+                    new_line = f"{indent}- {abs_path}:{rest}"
+
+                conversions.append(f"{parts[0].strip()} → {abs_path}")
+                converted_lines.append(new_line)
+                continue
+
+        converted_lines.append(line)
+
+    converted_compose = '\n'.join(converted_lines)
+
+    # Add Docky metadata at the top
+    today = date.today().isoformat()
+    metadata = f"""# ============================================
+# Docky Stack Metadata
+# @name: {stack_name}
+# @category: imported
+# @description: Imported from {source}
+# @source: 
+# @hardware: 
+# @ports: 
+# @created: {today}
+# @updated: {today}
+# ============================================
+
+"""
+
+    # In dry-run mode, do not write or copy anything: just return the
+    # preview of the converted compose file.
+    if dry_run:
+        return {
+            "success": True,
+            "name": stack_name,
+            "conversions": conversions,
+            "warnings": warnings,
+            "preview": metadata + converted_compose,
+        }
+
+    # Create target directory
+    target.mkdir(parents=True, exist_ok=False)
+
+    # Write the compose file with metadata
+    (target / 'docker-compose.yml').write_text(metadata + converted_compose, encoding='utf-8')
+
+    # Copy .env if exists
+    env_src = source / '.env'
+    if env_src.exists():
+        shutil.copy2(str(env_src), str(target / '.env'))
+
+    # Copy other config files (not docker-compose.yml, not .env, not .git)
+    for item in source.iterdir():
+        if item.is_file() and item.name not in ['docker-compose.yml', 'compose.yaml', '.env', '.gitignore', '.git']:
+            # Only copy config files (yml, yaml, conf, json, txt, sh, env)
+            if item.suffix in ['.yml', '.yaml', '.conf', '.json', '.txt', '.sh', '.env', '.ini', '.cfg']:
+                shutil.copy2(str(item), str(target / item.name))
+
+    return {
+        "success": True,
+        "name": stack_name,
+        "path": str(target),
+        "conversions": conversions,
+        "warnings": warnings
+    }
 
 
 async def deploy_stack(name: str) -> Dict[str, Any]:

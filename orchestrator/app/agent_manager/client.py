@@ -334,6 +334,34 @@ class AgentManager:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    async def import_stack(
+        self,
+        agent_name: str,
+        source_path: str,
+        stack_name: Optional[str] = None,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
+        """Import a stack from an external folder (e.g. Dockge) on an agent.
+
+        The agent copies the ``docker-compose.yml`` and ``.env`` from the
+        source folder and converts relative paths to absolute paths.
+
+        When *dry_run* is True, the agent does not copy any file: it only
+        returns a preview of the converted compose file along with the list
+        of path conversions and warnings.
+        """
+        body: Dict[str, Any] = {"source_path": source_path}
+        if stack_name:
+            body["stack_name"] = stack_name
+        if dry_run:
+            body["dry_run"] = True
+        try:
+            return await self._request(
+                agent_name, "POST", "/agent/stacks/import", json=body, timeout=60
+            )
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     async def set_permissions(
         self,
         agent_name: str,

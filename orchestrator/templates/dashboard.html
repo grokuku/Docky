@@ -19,6 +19,7 @@
         </div>
         <div class="topbar-right">
             <button class="btn btn-ghost btn-sm" id="ports-btn" onclick="DockyApp.togglePorts()">🔌 Ports</button>
+            <button id="chat-toggle" class="topbar-btn active" title="Afficher/Masquer le chat" onclick="DockyApp.toggleChat()">💬</button>
             <span class="topbar-user">👤 {{ username }}</span>
             <a class="btn btn-ghost btn-sm" href="/settings">Settings</a>
             <button class="btn btn-ghost btn-sm" onclick="window.location.href='/logout'">Déconnexion</button>
@@ -58,6 +59,8 @@
                 </div>
             </section>
 
+            <div id="resizer-horizontal" class="resizer resizer-horizontal"></div>
+
             <section class="panel chat-panel">
                 <div class="panel-header">
                     <h2>Assistant Docky 🤖</h2>
@@ -85,6 +88,8 @@
             </section>
         </div>
 
+        <div id="resizer-vertical" class="resizer resizer-vertical"></div>
+
         <!-- Right column: Compose editor -->
         <div class="right-column">
             <section class="panel compose-panel">
@@ -92,6 +97,7 @@
                     <h2>📝 Éditeur Compose</h2>
                     <div class="compose-header-controls">
                         <button class="btn btn-sm" id="new-stack-btn" onclick="DockyApp.openNewStackModal()">➕ Nouvelle stack</button>
+                        <button class="btn btn-sm btn-info" id="import-stack-btn" onclick="DockyApp.openImportModal()">📥 Importer</button>
                         <select id="stack-selector" class="stack-selector" onchange="DockyApp.onStackSelect(this.value)">
                             <option value="">— Sélectionner —</option>
                         </select>
@@ -169,6 +175,51 @@
             <div class="modal-footer">
                 <button class="btn btn-ghost" onclick="DockyApp.closeNewStackModal()">Annuler</button>
                 <button class="btn btn-primary" onclick="DockyApp.createStack()">Créer la stack</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Import stack modal -->
+    <div id="import-modal" class="modal hidden">
+        <div class="modal-content modal-small">
+            <div class="modal-header">
+                <h3>📥 Importer une stack</h3>
+                <button class="btn btn-ghost btn-sm" onclick="DockyApp.closeImportModal()">✕</button>
+            </div>
+            <div class="modal-body modal-body-pad">
+                <p class="form-hint" style="margin-bottom:12px;">Importe une stack depuis un dossier externe (ex : Dockge). Le docker-compose.yml et le .env seront copiés. Les chemins relatifs seront convertis en chemins absolus.</p>
+                <div class="form-group">
+                    <label for="import-source-path">Chemin source (dossier de la stack)</label>
+                    <input type="text" id="import-source-path" placeholder="/opt/stacks/myapp" autocomplete="off">
+                </div>
+                <div class="form-group">
+                    <label for="import-stack-name">Nom de la stack (optionnel, utilise le nom du dossier par défaut)</label>
+                    <input type="text" id="import-stack-name" placeholder="myapp" autocomplete="off">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" onclick="DockyApp.closeImportModal()">Annuler</button>
+                <button class="btn btn-primary" onclick="DockyApp.doImport()">Importer</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Delete confirm modal -->
+    <div id="import-preview-modal" class="modal hidden">
+        <div class="modal-content" style="max-width: 700px;">
+            <div class="modal-header">
+                <h3>📋 Preview de l'import</h3>
+                <button class="btn btn-ghost btn-sm" onclick="DockyApp.closeImportPreview()">✕</button>
+            </div>
+            <div class="modal-body modal-body-pad">
+                <div id="import-preview-conversions" style="margin-bottom: 16px;"></div>
+                <div id="import-preview-warnings" style="margin-bottom: 16px;"></div>
+                <div style="margin-bottom: 8px; color: var(--text-secondary);">docker-compose.yml converti:</div>
+                <pre id="import-preview-content" style="background: #0d1117; color: #c9d1d9; padding: 12px; border-radius: 6px; font-family: monospace; font-size: 12px; max-height: 300px; overflow-y: auto; white-space: pre-wrap;"></pre>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" onclick="DockyApp.closeImportPreview()">Annuler</button>
+                <button class="btn btn-primary" onclick="DockyApp.confirmImport()">Confirmer l'import</button>
             </div>
         </div>
     </div>

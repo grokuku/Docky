@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Logs - {{ name or container }} ({{ agent }})</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { height: 100%; }
+        body {
+            background: #0d1117;
+            color: #4caf50;
+            font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+            font-size: 13px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .popup-header {
+            background: #161b22;
+            border-bottom: 1px solid #30363d;
+            padding: 8px 12px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-shrink: 0;
+            flex-wrap: wrap;
+        }
+        .popup-title {
+            color: #c9d1d9;
+            font-weight: 600;
+            font-size: 14px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .popup-controls {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-left: auto;
+        }
+        .popup-btn {
+            background: #21262d;
+            color: #c9d1d9;
+            border: 1px solid #30363d;
+            border-radius: 4px;
+            padding: 4px 10px;
+            cursor: pointer;
+            font-size: 12px;
+            font-family: inherit;
+        }
+        .popup-btn:hover { background: #30363d; }
+        .popup-btn.active { border-color: #4caf50; color: #4caf50; }
+        .popup-select {
+            background: #21262d;
+            color: #c9d1d9;
+            border: 1px solid #30363d;
+            border-radius: 4px;
+            padding: 4px 6px;
+            font-size: 12px;
+            font-family: inherit;
+        }
+        .popup-status {
+            color: #8b949e;
+            font-size: 11px;
+            margin-left: 6px;
+        }
+        .logs-output {
+            flex: 1;
+            overflow-y: auto;
+            padding: 8px 12px;
+            white-space: pre-wrap;
+            word-break: break-word;
+            line-height: 1.45;
+        }
+        .logs-output::-webkit-scrollbar { width: 10px; }
+        .logs-output::-webkit-scrollbar-track { background: #0d1117; }
+        .logs-output::-webkit-scrollbar-thumb { background: #30363d; border-radius: 5px; }
+        .log-line { color: #4caf50; }
+        .log-empty { color: #8b949e; font-style: italic; }
+        .log-loading { color: #d29922; }
+    </style>
+</head>
+<body>
+    <div class="popup-header">
+        <span class="popup-title">📋 Logs - {{ name or container }} ({{ agent }})</span>
+        <div class="popup-controls">
+            <label style="color:#8b949e;font-size:12px;">Lignes:</label>
+            <select class="popup-select" id="tail-select">
+                <option value="50">50</option>
+                <option value="100">100</option>
+                <option value="200" selected>200</option>
+                <option value="500">500</option>
+            </select>
+            <button class="popup-btn" id="pause-btn" onclick="PopupLogs.togglePause()">⏸ Pause</button>
+            <button class="popup-btn" onclick="PopupLogs.clearOutput()">🗑 Clear</button>
+            <button class="popup-btn" onclick="PopupLogs.fetchLogs()">🔄 Refresh</button>
+            <span class="popup-status" id="status"></span>
+        </div>
+    </div>
+    <div class="logs-output" id="logs-output">
+        <div class="log-loading">Chargement des logs…</div>
+    </div>
+
+    <script>
+        const PopupLogs = {
+            agent: "{{ agent }}",
+            container: "{{ container }}",
+            paused: false,
+            pollInterval: null,
+            pollTimer: 3000,
+
+            init() {
+                this.fetchLogs();
+                this.startPolling();
+                // Auto-scroll on scroll-up detection could be added; keep simple
+            },
+
+            startPolling() {
+                this.stopPolling();
+                this.pollInterval = setInterval(() => {
+                    if (!this.paused) this.fetchLogs();
+                }, this.pollTimer);
+            },
+
+            stopPolling() {
+                if (this.pollInterval) {
+                    clearInterval(this.pollInterval);
+                    this.pollInterval = null;
+                }
+            },
+
+            togglePause() {
+                this.paused = !this.paused;
+                const btn = document.getElementById("pause-btn");
+                if (this.paused) {
+                    btn.textContent = "▶ Resume";
+                    btn.classList.add("active");
+                    this.setStatus("en pause");
+                } else {
+                    btn.textContent = "⏸ Pause";
+                    btn.classList.remove("active");
+                    this.setStatus("auto-refresh");
+                    this.fetchLogs();
+                }
+            },
+
+            clearOutput() {
+                const out = document.getElementById("logs-output");
+                out.innerHTML = '<div class="log-empty">— Effacé (les logs reviendront au prochain refresh) —</div>';
+            },
+
+            setStatus(msg) {
+                const el = document.getElementById("status");
+                if (el) el.textContent = msg;
+            },
+
+            async fetchLogs() {
+                const tail = document.getElementById("tail-select").value;
+                const agent = encodeURIComponent(this.agent);
+                const container = encodeURIComponent(this.container);
+                const url = `/api/containers/${container}/logs?agent=${agent}&tail=${tail}`;
+                try {
+                    const resp = await fetch(url, { credentials: "same-origin" });
+                    if (resp.status === 401) {
+                        window.location.href = "/login";
+                        return;
+                    }
+                    const data = await resp.json();
+                    this.render(data.lines || []);
+                    this.setStatus(this.paused ? "en pause" : `mis à jour ${new Date().toLocaleTimeString()}`);
+                } catch (e) {
+                    this.setStatus("erreur: " + e.message);
+                }
+            },
+
+            render(lines) {
+                const out = document.getElementById("logs-output");
+                if (!lines || lines.length === 0) {
+                    out.innerHTML = '<div class="log-empty">— Aucun log —</div>';
+                    return;
+                }
+                let html = "";
+                // Build with textContent for safety
+                out.innerHTML = "";
+                for (const line of lines) {
+                    const div = document.createElement("div");
+                    div.className = "log-line";
+                    div.textContent = line;
+                    out.appendChild(div);
+                }
+                // Auto-scroll to bottom
+                out.scrollTop = out.scrollHeight;
+            },
+        };
+
+        document.addEventListener("DOMContentLoaded", () => PopupLogs.init());
+        // Cleanup on close
+        window.addEventListener("beforeunload", () => PopupLogs.stopPolling());
+    </script>
+</body>
+</html>

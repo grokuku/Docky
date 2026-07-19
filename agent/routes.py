@@ -267,6 +267,27 @@ async def create_stack(request: Request):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+@router.post("/stacks/import")
+async def import_stack_endpoint(request: Request):
+    auth_error = require_api_key(request)
+    if auth_error:
+        return auth_error
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON body"})
+    source_path = data.get("source_path", "")
+    stack_name = data.get("stack_name")
+    dry_run = data.get("dry_run", False)
+    if not source_path:
+        return JSONResponse(status_code=400, content={"error": "source_path is required"})
+    try:
+        result = await asyncio.to_thread(docker_manager.import_stack, source_path, stack_name, dry_run)
+        return result
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @router.delete("/stacks/{name}")
 async def delete_stack(request: Request, name: str):
     auth_err = require_api_key(request)

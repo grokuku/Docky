@@ -35,6 +35,32 @@ async def dashboard(request: Request):
     )
 
 
+@router.get("/popup/logs")
+async def popup_logs(request: Request, agent: str = "", container: str = "", name: str = ""):
+    """Popup page showing container logs (openable in a separate window)."""
+    username = _is_authenticated(request)
+    if username is None:
+        return RedirectResponse(url="/login", status_code=303)
+    return templates.TemplateResponse(
+        request,
+        "logs.html",
+        {"username": username, "agent": agent, "container": container, "name": name},
+    )
+
+
+@router.get("/popup/console")
+async def popup_console(request: Request, agent: str = "", container: str = "", name: str = ""):
+    """Popup page for executing commands in a container (separate window)."""
+    username = _is_authenticated(request)
+    if username is None:
+        return RedirectResponse(url="/login", status_code=303)
+    return templates.TemplateResponse(
+        request,
+        "console.html",
+        {"username": username, "agent": agent, "container": container, "name": name},
+    )
+
+
 @router.get("/settings")
 async def settings_page(request: Request):
     """Show the settings page, or redirect to login if not authenticated."""

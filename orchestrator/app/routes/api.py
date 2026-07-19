@@ -641,6 +641,40 @@ async def ws_container_exec(websocket: WebSocket, container_id: str):
     await websocket.close(code=1011)
 
 
+@router.post("/containers/{container_id}/exec")
+async def api_container_exec(
+    request: Request, container_id: str, agent: str = Query(...)
+):
+    """Execute a one-shot command in a container via the agent.
+
+    Body JSON: ``{ "command": "ls -la" }``
+    Returns: ``{ "success": true, "output": "..." }``
+    """
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"detail": "Invalid JSON body"})
+    command = data.get("command", "")
+    if not command:
+        return JSONResponse(status_code=400, content={"detail": "command is required"})
+    try:
+        result = await agent_manager.exec_container(agent_name, container_id, command)
+        if isinstance(result, dict) and not result.get("success", True):
+            return JSONResponse(
+                status_code=500,
+                content={"detail": f"Exec error: {result.get('error', 'unknown')}"},
+            )
+        return result
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"detail": f"Exec error: {exc}"})
+
+
 # ---------------------------------------------------------------------------
 # Resources
 # ---------------------------------------------------------------------------
@@ -958,6 +992,31 @@ async def api_create_stack(request: Request, agent: str = Query(...)):
     result = await agent_manager.create_stack(agent_name, name, compose, env)
     err = _check_agent_error(result)
     return err if err is not None else result
+
+
+@router.post("/stacks/import")
+async def api_import_stack(request: Request, agent: str = Query(...)):
+    """Import a stack from an external folder on an agent."""
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"detail": "Invalid JSON body"})
+    source_path = data.get("source_path", "")
+    stack_name = data.get("stack_name")
+    dry_run = data.get("dry_run", False)
+    if not source_path:
+        return JSONResponse(status_code=400, content={"detail": "source_path is required"})
+    try:
+        result = await agent_manager.import_stack(agent_name, source_path, stack_name, dry_run)
+        return result
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @router.delete("/stacks/{name}")
