@@ -17,7 +17,8 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from app.auth.router import COOKIE_NAME
 from app.auth.jwt_utils import verify_token
 from app.agent_manager.client import agent_manager
-from app.config import load_settings, save_settings
+import bcrypt
+from app.config import load_settings, save_settings, load_users, save_users
 from app.llm.client import (
     LLMClient,
     run_chat,
@@ -440,6 +441,62 @@ async def api_test_settings_agent(request: Request, name: str):
 
 
 # ---------------------------------------------------------------------------
+# Settings - Password change
+# ---------------------------------------------------------------------------
+
+@router.put("/settings/password")
+async def api_change_password(request: Request):
+    """Change the current user's password.
+
+    Body JSON: ``{ "current_password": "...", "new_password": "..." }``
+    """
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"detail": "Invalid JSON body"})
+
+    current_password = data.get("current_password", "")
+    new_password = data.get("new_password", "")
+
+    if not current_password or not new_password:
+        return JSONResponse(
+            status_code=400, content={"detail": "current_password and new_password are required"}
+        )
+
+    if len(new_password) < 6:
+        return JSONResponse(status_code=400, content={"detail": "Password too short"})
+
+    # Load users.yaml and find the current user.
+    users_data = load_users()
+    users_list = users_data.get("users", []) or []
+    target = None
+    for user in users_list:
+        if user.get("username") == username:
+            target = user
+            break
+
+    if target is None:
+        return JSONResponse(status_code=404, content={"detail": "User not found"})
+
+    stored_hash = target.get("password_hash", "")
+    if not stored_hash or not bcrypt.checkpw(
+        current_password.encode("utf-8"), stored_hash.encode("utf-8")
+    ):
+        return JSONResponse(
+            status_code=400, content={"detail": "Current password is incorrect"}
+        )
+
+    # Hash the new password and persist.
+    new_hash = bcrypt.hashpw(new_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    target["password_hash"] = new_hash
+    save_users(users_data)
+    return {"success": True}
+
+
+# ---------------------------------------------------------------------------
 # Containers
 # ---------------------------------------------------------------------------
 
@@ -669,10 +726,16 @@ async def api_stack_containers(
         return err
     containers = await agent_manager.get_containers(agent_name)
     result = []
+    # The special "Standalone" pseudo-stack groups every container that is
+    # not part of any Docker Compose project.
+    standalone = name == "Standalone"
     for c in containers:
         labels = c.get("labels", {}) if isinstance(c, dict) else {}
         stack_label = labels.get("com.docker.compose.project") or c.get("stack")
-        if stack_label and stack_label == name:
+        if standalone:
+            if not stack_label:
+                result.append(c)
+        elif stack_label and stack_label == name:
             result.append(c)
     return result
 

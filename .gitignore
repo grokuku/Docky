@@ -12,6 +12,8 @@ build/
 .env
 .env.*
 *.env
+# Ne pas ignorer .env.example (fichier template à committer)
+!.env.example
 
 # IDE
 .vscode/

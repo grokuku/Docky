@@ -265,6 +265,44 @@ body {
     margin-left: 4px;
 }
 
+/* Stack type badge (managed / external / standalone) */
+
+.stack-type-badge {
+    font-size: 0.68rem;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 4px;
+    white-space: nowrap;
+    margin-left: 4px;
+}
+
+.stack-badge-docky {
+    background: rgba(74, 222, 128, 0.15);
+    color: var(--success);
+}
+
+.stack-badge-external {
+    background: rgba(251, 191, 36, 0.18);
+    color: var(--warning);
+}
+
+.stack-badge-standalone {
+    background: rgba(108, 108, 128, 0.18);
+    color: var(--text-muted);
+}
+
+/* Alias requested by spec (orange badge for external stacks) */
+.stack-external-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    background: rgba(255, 152, 0, 0.2);
+    color: #ff9800;
+    border: 1px solid rgba(255, 152, 0, 0.3);
+    margin-left: 8px;
+}
+
 .app-layout {
     display: grid;
     grid-template-columns: 1fr 400px;

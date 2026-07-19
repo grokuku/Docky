@@ -205,6 +205,8 @@ const DockyApp = {
         const current = selector.value;
         selector.innerHTML = '<option value="">— Sélectionner une stack —</option>';
         stacks.forEach((s) => {
+            // Only managed stacks are editable; skip external and standalone
+            if (s.managed === false) return;
             const opt = document.createElement("option");
             opt.value = s.name;
             opt.textContent = s.name;
@@ -239,12 +241,34 @@ const DockyApp = {
             const agentBadge = (this.currentAgentFilter === "all" && stack.agent_name)
                 ? '<span class="stack-agent-badge">🖥 ' + this.escapeHtml(stack.agent_name) + '</span>'
                 : "";
+            // Managed / external / standalone indicator
+            const isManaged = stack.managed !== false;
+            const isStandalone = stack.standalone === true;
+            let typeBadge = '';
+            if (isStandalone) {
+                typeBadge = '<span class="stack-type-badge stack-badge-standalone">standalone</span>';
+            } else if (!isManaged) {
+                typeBadge = '<span class="stack-type-badge stack-badge-external">⚠ Externe</span>';
+            } else {
+                typeBadge = '<span class="stack-type-badge stack-badge-docky">Docky</span>';
+            }
+            // Edit button only for managed stacks (files are editable)
+            const editBtn = isManaged
+                ? '<button class="icon-btn" title="Éditer" onclick="DockyApp.selectStackFromDashboard(\'' + this.escapeHtml(stack.name) + '\')">📝</button>'
+                : '';
+            // Stack-level start/stop/restart only for real stacks (not standalone)
+            const stackActionBtns = isStandalone
+                ? ''
+                : '<button class="icon-btn btn-start" title="Démarrer" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'start\')">▶</button>'
+                  + '<button class="icon-btn btn-stop" title="Arrêter" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'stop\')">⏹</button>'
+                  + '<button class="icon-btn btn-restart" title="Redémarrer" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'restart\')">🔄</button>';
 
             html += `
                 <div class="stack-card ${isExpanded ? "expanded" : ""}" data-stack="${this.escapeHtml(stack.name)}">
                     <div class="stack-card-header" onclick="DockyApp.toggleStack('${this.escapeHtml(stack.name)}')">
                         <div class="stack-card-info">
                             <span class="stack-name">${this.escapeHtml(stack.name)}</span>
+                            ${typeBadge}
                             ${agentBadge}
                             ${statusBadge}
                         </div>
@@ -253,10 +277,8 @@ const DockyApp = {
                             ${portsInfo ? `<span class="meta-badge meta-ports">🔌 ${this.escapeHtml(portsInfo)}</span>` : ""}
                         </div>
                         <div class="stack-card-actions" onclick="event.stopPropagation()">
-                            <button class="icon-btn" title="Éditer" onclick="DockyApp.selectStackFromDashboard('${this.escapeHtml(stack.name)}')">📝</button>
-                            <button class="icon-btn btn-start" title="Démarrer" onclick="DockyApp.stackAction('${this.escapeHtml(stack.name)}', 'start')">▶</button>
-                            <button class="icon-btn btn-stop" title="Arrêter" onclick="DockyApp.stackAction('${this.escapeHtml(stack.name)}', 'stop')">⏹</button>
-                            <button class="icon-btn btn-restart" title="Redémarrer" onclick="DockyApp.stackAction('${this.escapeHtml(stack.name)}', 'restart')">🔄</button>
+                            ${editBtn}
+                            ${stackActionBtns}
                             <span class="stack-chevron">${isExpanded ? "▼" : "▶"}</span>
                         </div>
                     </div>
@@ -712,6 +734,24 @@ const DockyApp = {
         this.selectedStack = name;
         this.selectedStackAgent = this.stackAgentMap[name] || (this.currentAgentFilter !== "all" ? this.currentAgentFilter : null);
         const agent = this.selectedStackAgent;
+
+        // External / standalone stacks cannot be edited (files are not in /data/stacks/)
+        const stackInfo = this.stacks.find((s) => s.name === name);
+        if (stackInfo && (stackInfo.managed === false || stackInfo.standalone === true)) {
+            this.stackFiles = [];
+            this.currentFile = null;
+            this.fileContents = {};
+            this.savedContents = {};
+            const label = stackInfo.standalone === true
+                ? "Containers standalone (hors Docker Compose)."
+                : "Stack externe - non gérée par Docky.";
+            this.renderEditorPlaceholder(
+                label + " Les fichiers ne sont pas accessibles. " +
+                "Vous pouvez démarrer/arrêter/redémarrer cette stack depuis le dashboard."
+            );
+            return;
+        }
+
         this.editorLoading = true;
         this.currentFile = null;
         this.fileContents = {};

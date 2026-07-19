@@ -202,6 +202,8 @@ async def list_stacks(request: Request):
             "path": s["path"],
             "has_compose": s["has_compose"],
             "has_env": s["has_env"],
+            "managed": s.get("managed", True),
+            "standalone": s.get("standalone", False),
             "container_count": len(containers),
             "running_count": running,
             "status": status,

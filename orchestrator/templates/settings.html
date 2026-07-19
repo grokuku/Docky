@@ -83,6 +83,30 @@
                 </div>
             </div>
         </section>
+
+        <!-- Security / Password change -->
+        <section class="panel settings-panel">
+            <div class="panel-header">
+                <h2>🔐 Sécurité</h2>
+            </div>
+            <div class="panel-body settings-body">
+                <div class="form-group">
+                    <label for="current-password">Mot de passe actuel</label>
+                    <input type="password" id="current-password" placeholder="••••••••" autocomplete="off">
+                </div>
+                <div class="form-group">
+                    <label for="new-password">Nouveau mot de passe</label>
+                    <input type="password" id="new-password" placeholder="••••••••" autocomplete="new-password">
+                </div>
+                <div class="form-group">
+                    <label for="confirm-password">Confirmer le nouveau mot de passe</label>
+                    <input type="password" id="confirm-password" placeholder="••••••••" autocomplete="new-password">
+                </div>
+                <div class="settings-actions">
+                    <button class="btn btn-success" onclick="SettingsApp.changePassword()">Changer le mot de passe</button>
+                </div>
+            </div>
+        </section>
     </div>
 
     <!-- Agent form modal -->

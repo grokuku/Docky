@@ -6,6 +6,7 @@ ports scanning and update checks.
 """
 
 import asyncio
+import logging
 import os
 import re
 import shutil
@@ -17,6 +18,12 @@ import docker
 from docker.errors import DockerException, NotFound, APIError
 
 from agent.config import get_data_dir
+
+logger = logging.getLogger(__name__)
+
+# Pseudo-stack name used to group containers that are not part of any
+# Docker Compose project (i.e. standalone containers).
+STANDALONE_STACK_NAME = "Standalone"
 
 
 # ---------------------------------------------------------------------------
@@ -74,14 +81,22 @@ def _container_to_dict(c) -> Dict[str, Any]:
         "state": status_label,
         "health": health,
         "ports": port_list,
-        "stack": labels.get("com.docker.compose.project", ""),
+        "stack": labels.get("com.docker.compose.project") or None,
+        "service": labels.get("com.docker.compose.service", ""),
+        "managed": False,  # filled in by list_containers()
         "labels": labels,
         "created": c.attrs.get("Created", ""),
     }
 
 
 def list_containers(all: bool = True) -> List[Dict[str, Any]]:
-    """Return a list of containers with their key properties."""
+    """Return a list of containers with their key properties.
+
+    Each container dict includes a ``managed`` boolean: ``True`` if the
+    container belongs to a stack whose directory lives in ``/data/stacks/``
+    (i.e. managed by Docky), ``False`` otherwise (external stack or
+    standalone container).
+    """
     try:
         client = get_docker_client()
         containers = client.containers.list(all=all)
@@ -89,8 +104,15 @@ def list_containers(all: bool = True) -> List[Dict[str, Any]]:
         return []
 
     result: List[Dict[str, Any]] = []
+    managed_names = _managed_stack_names()
     for c in containers:
-        result.append(_container_to_dict(c))
+        d = _container_to_dict(c)
+        stack = d.get("stack", "")
+        if stack is None:
+            d["managed"] = True
+        else:
+            d["managed"] = stack in managed_names
+        result.append(d)
     return result
 
 
@@ -257,38 +279,159 @@ def get_stacks_dir() -> Path:
     return get_data_dir() / "stacks"
 
 
-def list_stacks() -> List[Dict[str, Any]]:
-    """Scan the stacks directory for folders containing a compose file."""
+def _managed_stack_names() -> set:
+    """Return the set of stack names present in /data/stacks/."""
     stacks_dir = get_stacks_dir()
-    if not stacks_dir.exists():
-        return []
+    names = set()
+    if stacks_dir.exists():
+        for entry in stacks_dir.iterdir():
+            if entry.is_dir():
+                names.add(entry.name)
+    return names
 
-    result: List[Dict[str, Any]] = []
-    for entry in sorted(stacks_dir.iterdir()):
-        if not entry.is_dir():
+
+def _external_compose_info(stack_name: str) -> tuple:
+    """Derive ``(compose_file_path, working_dir)`` for an external stack from
+    the Docker Compose labels of its containers.
+
+    Returns ``(None, None)`` if no information could be found.
+    """
+    try:
+        client = get_docker_client()
+        containers = client.containers.list(all=True)
+    except DockerException:
+        return None, None
+
+    for c in containers:
+        labels = c.attrs.get("Config", {}).get("Labels", {}) or {}
+        if labels.get("com.docker.compose.project") != stack_name:
             continue
-        compose_candidates = [
-            entry / "docker-compose.yml",
-            entry / "docker-compose.yaml",
-            entry / "compose.yml",
-            entry / "compose.yaml",
-        ]
-        has_compose = any(p.exists() for p in compose_candidates)
-        has_env = (entry / ".env").exists()
+        config_files = labels.get("com.docker.compose.project.config_files", "")
+        working_dir = labels.get("com.docker.compose.project.working_dir", "")
+        if config_files:
+            first = config_files.split(",")[0].strip()
+            compose_path = Path(first)
+            cwd = working_dir or str(compose_path.parent)
+            return compose_path, cwd
+        if working_dir:
+            wd = Path(working_dir)
+            for name in ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"]:
+                candidate = wd / name
+                if candidate.exists():
+                    return candidate, working_dir
+    return None, None
+
+
+def _resolve_stack_compose(stack_name: str) -> tuple:
+    """Resolve ``(compose_file_path, working_dir)`` for a stack whether it is
+    managed by Docky (in /data/stacks/) or external.
+
+    Returns ``(None, None)`` when the stack cannot be located.
+    """
+    # 1. Managed by Docky
+    managed_path = get_stacks_dir() / stack_name
+    if managed_path.exists():
+        compose_file = _compose_file_path(managed_path)
+        if compose_file is not None:
+            return compose_file, str(managed_path)
+    # 2. External stack detected via container labels
+    return _external_compose_info(stack_name)
+
+
+def list_stacks() -> List[Dict[str, Any]]:
+    """List all stacks visible to the agent.
+
+    Three kinds of stacks are returned:
+    * **managed** – directories present in ``/data/stacks/`` (``managed: True``)
+    * **external** – Docker Compose projects detected through container labels
+      but whose files are not in ``/data/stacks/`` (``managed: False``)
+    * **Standalone** – a pseudo-stack grouping every container that does not
+      belong to any Compose project (``managed: False, standalone: True``)
+    """
+    result: List[Dict[str, Any]] = []
+    seen: set = set()
+
+    # 1. Stacks managed by Docky (in /data/stacks/)
+    stacks_dir = get_stacks_dir()
+    if stacks_dir.exists():
+        for entry in sorted(stacks_dir.iterdir()):
+            if not entry.is_dir():
+                continue
+            compose_candidates = [
+                entry / "docker-compose.yml",
+                entry / "docker-compose.yaml",
+                entry / "compose.yml",
+                entry / "compose.yaml",
+            ]
+            has_compose = any(p.exists() for p in compose_candidates)
+            has_env = (entry / ".env").exists()
+            result.append(
+                {
+                    "name": entry.name,
+                    "path": str(entry),
+                    "has_compose": has_compose,
+                    "has_env": has_env,
+                    "managed": True,
+                    "standalone": False,
+                }
+            )
+            seen.add(entry.name)
+
+    # 2. External stacks detected via container labels
+    try:
+        client = get_docker_client()
+        containers = client.containers.list(all=True)
+    except DockerException as exc:
+        logger.warning("Failed to detect external stacks: %s", exc)
+        containers = []
+
+    has_standalone = False
+    for c in containers:
+        labels = c.attrs.get("Config", {}).get("Labels", {}) or {}
+        project = labels.get("com.docker.compose.project", "")
+        if not project:
+            has_standalone = True
+            continue
+        if project in seen:
+            continue
+        seen.add(project)
+        working_dir = labels.get("com.docker.compose.project.working_dir", "")
         result.append(
             {
-                "name": entry.name,
-                "path": str(entry),
-                "has_compose": has_compose,
-                "has_env": has_env,
+                "name": project,
+                "path": working_dir,
+                "has_compose": True,
+                "has_env": False,
+                "managed": False,
+                "standalone": False,
             }
         )
+
+    # 3. Pseudo "Standalone" stack for containers without a Compose project
+    if has_standalone:
+        result.append(
+            {
+                "name": STANDALONE_STACK_NAME,
+                "path": "",
+                "has_compose": False,
+                "has_env": False,
+                "managed": False,
+                "standalone": True,
+            }
+        )
+
     return result
 
 
 def get_stack_containers(stack_name: str) -> List[Dict[str, Any]]:
-    """Return all containers belonging to a compose stack."""
+    """Return all containers belonging to a compose stack.
+
+    The special ``Standalone`` pseudo-stack returns every container that is
+    not part of any Docker Compose project.
+    """
     containers = list_containers(all=True)
+    if stack_name == STANDALONE_STACK_NAME:
+        return [c for c in containers if not c.get("stack")]
     return [c for c in containers if c.get("stack") == stack_name]
 
 
@@ -318,6 +461,42 @@ def get_stack_ports(stack_name: str) -> List[str]:
     return sorted(ports, key=lambda x: int(x) if x.isdigit() else 0)
 
 
+async def get_stacks():
+    """Return all stacks visible to the agent.
+
+    Combines stacks managed by Docky (directories in /data/stacks/) with
+    external Docker Compose projects detected through container labels
+    (``com.docker.compose.project``).
+
+    Each entry is a dict with ``name`` and ``managed`` (``True`` for Docky
+    stacks, ``False`` for external ones).
+    """
+    stacks = []
+
+    # 1. Stacks gérés par Docky (dans /data/stacks/)
+    stacks_dir = Path(get_data_dir()) / 'stacks'
+    if stacks_dir.exists():
+        for d in stacks_dir.iterdir():
+            if d.is_dir() and (d / 'docker-compose.yml').exists():
+                stacks.append({"name": d.name, "managed": True})
+
+    # 2. Stacks externes (via labels des containers)
+    try:
+        client = get_docker_client()
+        containers = client.containers.list(all=True)
+        managed_names = {s["name"] for s in stacks}
+        for c in containers:
+            labels = c.attrs.get('Config', {}).get('Labels', {})
+            project = labels.get('com.docker.compose.project')
+            if project and project not in managed_names:
+                stacks.append({"name": project, "managed": False})
+                managed_names.add(project)
+    except Exception:
+        pass
+
+    return stacks
+
+
 def _compose_file_path(stack_path: Path) -> Optional[Path]:
     """Return the path to the compose file for a stack, or ``None``."""
     for name in ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"]:
@@ -330,23 +509,22 @@ def _compose_file_path(stack_path: Path) -> Optional[Path]:
 async def _run_compose(stack_name: str, command: str) -> Dict[str, Any]:
     """Run a docker compose subcommand for a stack (non-blocking).
 
+    Works for both managed stacks (in /data/stacks/) and external stacks
+    whose compose file path is derived from container labels.
+
     Uses :func:`asyncio.create_subprocess_exec` so the FastAPI event loop
     is not blocked while Docker pulls images or starts containers.
     """
-    stack_path = get_stacks_dir() / stack_name
-    if not stack_path.exists():
+    compose_file, cwd = _resolve_stack_compose(stack_name)
+    if compose_file is None or not Path(compose_file).exists():
         return {"success": False, "error": f"Stack '{stack_name}' not found"}
-
-    compose_file = _compose_file_path(stack_path)
-    if compose_file is None:
-        return {"success": False, "error": "No compose file found in stack directory"}
 
     args = ["docker", "compose", "-f", str(compose_file)] + command.split()
     full_cmd = " ".join(args)
     try:
         proc = await asyncio.create_subprocess_exec(
             *args,
-            cwd=str(stack_path),
+            cwd=cwd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -391,8 +569,8 @@ async def compose_restart(stack_name: str) -> Dict[str, Any]:
 
 async def compose_pull(name: str) -> Dict[str, Any]:
     """Pull images for a stack."""
-    stack_dir = _stack_dir(name)
-    if not stack_dir.exists():
+    compose_file, _cwd = _resolve_stack_compose(name)
+    if compose_file is None or not Path(compose_file).exists():
         raise FileNotFoundError(f"Stack '{name}' not found")
     return await _run_compose(name, "pull")
 
@@ -403,8 +581,8 @@ async def update_stack(name: str) -> Dict[str, Any]:
     Returns a dict with ``success`` and ``output``.
     Raises ``FileNotFoundError`` if the stack directory does not exist.
     """
-    stack_dir = _stack_dir(name)
-    if not stack_dir.exists():
+    compose_file, _cwd = _resolve_stack_compose(name)
+    if compose_file is None or not Path(compose_file).exists():
         raise FileNotFoundError(f"Stack '{name}' not found")
     pull_result = await _run_compose(name, "pull")
     up_result = await _run_compose(name, "up -d")
@@ -579,8 +757,8 @@ async def deploy_stack(name: str) -> Dict[str, Any]:
     Returns a dict with ``success``, ``output`` and ``error``.
     Raises ``FileNotFoundError`` if the stack directory does not exist.
     """
-    base = _stack_dir(name)
-    if not base.exists():
+    compose_file, _cwd = _resolve_stack_compose(name)
+    if compose_file is None or not Path(compose_file).exists():
         raise FileNotFoundError(f"Stack '{name}' not found")
     down_result = await compose_down(name)
     up_result = await compose_up(name)

@@ -334,6 +334,46 @@ const SettingsApp = {
     },
 
     // -------------------------------------------------------
+    // Password change
+    // -------------------------------------------------------
+
+    async changePassword() {
+        const current = document.getElementById("current-password").value;
+        const newPwd = document.getElementById("new-password").value;
+        const confirm = document.getElementById("confirm-password").value;
+
+        if (!current || !newPwd || !confirm) {
+            this.showToast("Tous les champs sont requis.", "error");
+            return;
+        }
+
+        if (newPwd !== confirm) {
+            this.showToast("Les mots de passe ne correspondent pas.", "error");
+            return;
+        }
+
+        if (newPwd.length < 6) {
+            this.showToast("Le mot de passe doit faire au moins 6 caractères.", "error");
+            return;
+        }
+
+        const data = await this.apiPut("/api/settings/password", {
+            current_password: current,
+            new_password: newPwd,
+        });
+        if (!data) return;
+
+        if (data.success) {
+            this.showToast("Mot de passe changé avec succès.", "success");
+            document.getElementById("current-password").value = "";
+            document.getElementById("new-password").value = "";
+            document.getElementById("confirm-password").value = "";
+        } else {
+            this.showToast(data.detail || data.error || "Erreur lors du changement de mot de passe.", "error");
+        }
+    },
+
+    // -------------------------------------------------------
     // Init
     // -------------------------------------------------------
 

@@ -66,6 +66,16 @@ def load_users() -> Dict[str, Any]:
     return _load_yaml(get_data_dir() / "users.yaml")
 
 
+def save_users(users_data: Dict[str, Any]):
+    """Save ``users.yaml`` to the data directory.
+
+    The file is written in block style, preserving key order.
+    """
+    users_path = get_data_dir() / "users.yaml"
+    with open(users_path, "w", encoding="utf-8") as f:
+        yaml.dump(users_data, f, default_flow_style=False, sort_keys=False)
+
+
 def load_api_keys() -> Dict[str, Any]:
     """Load ``api_keys.yaml`` from the data directory."""
     return _load_yaml(get_data_dir() / "api_keys.yaml")
