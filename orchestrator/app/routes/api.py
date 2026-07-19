@@ -783,6 +783,21 @@ async def api_stack_restart(request: Request, name: str, agent: str = Query(...)
     return err if err is not None else result
 
 
+@router.post("/stacks/{name}/update")
+async def api_stack_update(request: Request, name: str, agent: str = Query(...)):
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    try:
+        result = await agent_manager.update_stack(agent_name, name)
+        return result
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
 # ---------------------------------------------------------------------------
 # Stack files (editor)
 # ---------------------------------------------------------------------------

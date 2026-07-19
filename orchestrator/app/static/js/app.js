@@ -194,6 +194,12 @@ const DockyApp = {
                 this.stackAgentMap[s.name] = this.currentAgentFilter;
             }
         }
+        // Check if stacks have changed before re-rendering
+        const stacksKey = JSON.stringify(data);
+        if (this._lastStacksKey === stacksKey) {
+            return;
+        }
+        this._lastStacksKey = stacksKey;
         this.renderStacks();
         // Update compose selector
         this.updateStackSelector(data);
@@ -261,7 +267,8 @@ const DockyApp = {
                 ? ''
                 : '<button class="icon-btn btn-start" title="Démarrer" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'start\')">▶</button>'
                   + '<button class="icon-btn btn-stop" title="Arrêter" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'stop\')">⏹</button>'
-                  + '<button class="icon-btn btn-restart" title="Redémarrer" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'restart\')">🔄</button>';
+                  + '<button class="icon-btn btn-restart" title="Redémarrer" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'restart\')">🔄</button>'
+                  + '<button class="icon-btn" title="Update" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'update\')">⬆</button>';
 
             html += `
                 <div class="stack-card ${isExpanded ? "expanded" : ""}" data-stack="${this.escapeHtml(stack.name)}">
@@ -338,13 +345,13 @@ const DockyApp = {
     },
 
     renderContainers(target, containers, stackName, agent) {
-        if (!containers || containers.length === 0) {
-            target.innerHTML = '<div class="placeholder"><p>Aucun container pour cette stack</p></div>';
+        if (!containers || !Array.isArray(containers) || containers.length === 0) {
+            target.innerHTML = '<div style="color: var(--text-secondary); padding: 12px;">Aucun container ou erreur de chargement</div>';
             return;
         }
 
         let html = '<div class="containers-list">';
-        const agt = agent ? encodeURIComponent(agent) : "";
+        const agt = (agent || "").replace(/'/g, "\\'");
         for (const c of containers) {
             const ports = (c.ports || [])
                 .filter(p => p.host_port)
@@ -485,8 +492,7 @@ const DockyApp = {
         output.innerHTML = '<div class="terminal-line">Chargement…</div>';
 
         // Fetch static logs
-        const agentParam = agent ? "\u0026agent=" + encodeURIComponent(agent) : "";
-        const data = await this.apiFetch(`/api/containers/${containerId}/logs?tail=200${agentParam}`);
+        const data = await this.apiFetch(`/api/containers/${containerId}/logs?tail=200` + this.agentQuery(agent));
         if (data && data.lines) {
             this.renderLogs(data.lines);
         }
