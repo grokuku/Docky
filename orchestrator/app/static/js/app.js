@@ -189,40 +189,51 @@ const DockyApp = {
     // -------------------------------------------------------
 
     async refreshStacks() {
-        const data = await this.apiFetch("/api/stacks" + this.agentQueryParam());
-        if (data === null) return;
-        this.stacks = data;
-        
+        // Fetch stacks et containers EN PARALLÈLE
+        const containersUrl = this.currentAgentFilter === 'all'
+            ? '/api/containers?agent=all'
+            : '/api/containers?agent=' + encodeURIComponent(this.currentAgentFilter);
+
+        const [stacksResp, containersResp] = await Promise.all([
+            this.apiFetch("/api/stacks" + this.agentQueryParam()),
+            fetch(containersUrl, { credentials: "same-origin" })
+        ]);
+
+        if (stacksResp === null) return;
+        this.stacks = stacksResp;
+
         // Build stackAgentMap
         this.stackAgentMap = {};
-        for (const s of data) {
+        for (const s of stacksResp) {
             if (s.agent_name) this.stackAgentMap[s.name] = s.agent_name;
             else if (this.currentAgentFilter !== "all") this.stackAgentMap[s.name] = this.currentAgentFilter;
         }
-        
-        // Fetch all containers
-        try {
-            let containersUrl;
-            if (this.currentAgentFilter === 'all') {
-                containersUrl = '/api/containers?agent=all';
-            } else {
-                containersUrl = '/api/containers?agent=' + encodeURIComponent(this.currentAgentFilter);
+
+        // Parse containers
+        let containersData = [];
+        if (containersResp) {
+            if (containersResp.status === 401) {
+                window.location.href = "/login";
+                return;
             }
-            const resp = await fetch(containersUrl, { credentials: "same-origin" });
-            if (resp.status === 401) { window.location.href = "/login"; return; }
-            const containersData = await resp.json();
-            this._allContainersCache = Array.isArray(containersData) ? containersData : [];
-        } catch(e) {
-            this._allContainersCache = [];
+            if (containersResp.status === 200) {
+                try {
+                    containersData = await containersResp.json();
+                    if (!Array.isArray(containersData)) containersData = [];
+                } catch (e) {
+                    containersData = [];
+                }
+            }
         }
-        
+        this._allContainersCache = containersData;
+
         // Skip re-render if nothing changed
-        const gridKey = JSON.stringify(data) + '|' + JSON.stringify(this._allContainersCache);
+        const gridKey = JSON.stringify(stacksResp) + '|' + JSON.stringify(this._allContainersCache);
         if (this._lastGridKey === gridKey) return;
         this._lastGridKey = gridKey;
-        
+
         this.renderGridDashboard();
-        this.updateStackSelector(data);
+        this.updateStackSelector(stacksResp);
     },
 
     updateStackSelector(stacks) {
@@ -482,12 +493,11 @@ const DockyApp = {
         }
         
         // Calculer la largeur de la grille (en nombre de cellules)
-        // On veut que la grille soit assez large pour contenir les blocs sans trop de trous
+        // On veut que la grille remplisse la largeur disponible
         const totalContainers = blocks.reduce((s, b) => s + b.n, 0);
-        let gridCols = Math.max(3, Math.ceil(Math.sqrt(totalContainers)));
-        // Ajuster selon la largeur disponible
-        gridCols = Math.min(gridCols, Math.floor(availWidth / (cellW + gap)));
-        gridCols = Math.max(3, gridCols);
+        let gridCols = Math.max(3, Math.floor(availWidth / (cellW + gap)));
+        // Mais limiter pour ne pas avoir trop de colonnes si peu de containers
+        gridCols = Math.min(gridCols, Math.max(3, Math.ceil(totalContainers / 2)));
         
         // Skyline: hauteur de chaque colonne (commence à 0)
         const skyline = new Array(gridCols).fill(0);
@@ -536,7 +546,9 @@ const DockyApp = {
         
         // Dimensions du canvas
         const maxSkyline = Math.max(...skyline);
-        const canvasW = gridCols * (cellW + gap) - gap;
+        let canvasW = gridCols * (cellW + gap) - gap;
+        // S'assurer que le canvas utilise toute la largeur disponible
+        if (canvasW < availWidth) canvasW = availWidth;
         const canvasH = maxSkyline * (cellH + gap) - gap;
         
         // Construire le HTML — dans l'ordre alphabétique des stacks

@@ -143,9 +143,10 @@ body {
    ============================================================ */
 
 .app-body {
-    min-height: 100vh;
+    height: 100vh;
     display: flex;
     flex-direction: column;
+    overflow: hidden;
 }
 
 .topbar {
@@ -157,6 +158,9 @@ body {
     background: var(--bg-secondary);
     border-bottom: 1px solid var(--border-color);
     flex-shrink: 0;
+    position: sticky;
+    top: 0;
+    z-index: 100;
 }
 
 .topbar-logo {
@@ -332,6 +336,7 @@ body {
     flex-direction: row;
     padding: 16px;
     flex: 1;
+    height: calc(100vh - 56px);
     overflow: hidden;
 }
 
@@ -339,16 +344,18 @@ body {
     display: flex;
     flex-direction: column;
     min-height: 0;
-    flex: 1;
+    flex: 0 0 auto;
     min-width: 200px;
+    overflow-y: auto;
 }
 
 .right-column {
     display: flex;
     flex-direction: column;
     min-height: 0;
-    width: 400px;
-    flex-shrink: 0;
+    flex: 1;
+    min-width: 0;
+    overflow-y: auto;
 }
 
 /* Resizers */
@@ -363,7 +370,9 @@ body {
 .resizer-vertical {
     width: 6px;
     cursor: col-resize;
-    height: 100%;
+    flex-shrink: 0;
+    background: transparent;
+    align-self: stretch;
 }
 
 .resizer-horizontal {
@@ -373,8 +382,11 @@ body {
 }
 
 .resizer:hover, .resizer.active {
-    background: var(--accent);
-    opacity: 0.5;
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.resizer.active {
+    background: rgba(233, 69, 96, 0.15);
 }
 
 .resizer-vertical::before {
@@ -385,8 +397,12 @@ body {
     transform: translateY(-50%);
     width: 2px;
     height: 30px;
-    background: var(--border-color);
+    background: transparent;
     border-radius: 1px;
+}
+
+.resizer-vertical:hover::before {
+    background: rgba(255, 255, 255, 0.1);
 }
 
 .resizer-horizontal::before {
