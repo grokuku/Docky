@@ -851,11 +851,17 @@ def import_stack(source_path: str, stack_name: str = None, dry_run: bool = False
         if in_volumes_section:
             if line and not line.startswith(' ') and not line.startswith('#'):
                 in_volumes_section = False
-            elif stripped and ':' not in stripped.split('#')[0] and not stripped.startswith('-'):
-                # Named volume: volumename:
-                vol_name = stripped.split(':')[0].strip()
-                if vol_name:
-                    named_volumes.add(vol_name)
+            elif stripped and not stripped.startswith('-'):
+                # Named volume: volumename:  (a YAML key ending with ':')
+                key_part = stripped.split('#')[0].strip()
+                if key_part.endswith(':'):
+                    vol_name = key_part.rstrip(':').strip()
+                    if vol_name:
+                        named_volumes.add(vol_name)
+
+    # Track the current YAML path to detect which section we're in
+    indent_levels = [0]  # stack of indent levels
+    yaml_path: list[str] = []  # e.g. ["services", "n8n", "volumes"]
 
     for line in lines:
         stripped = line.strip()
@@ -865,8 +871,55 @@ def import_stack(source_path: str, stack_name: str = None, dry_run: bool = False
             converted_lines.append(line)
             continue
 
+        indent = len(line) - len(line.lstrip())
+
+        # --- Update YAML path based on indentation ---
+        # If we encounter a YAML key (line ending with ':' not starting with '-'),
+        # update the indent stack and yaml_path accordingly.
+        if stripped.endswith(':') and not stripped.startswith('- '):
+            key = stripped.rstrip(':').strip().split('#')[0].strip()
+            if key:
+                # Pop indent levels deeper than current line
+                while len(indent_levels) > 1 and indent_levels[-1] > indent:
+                    indent_levels.pop()
+                    if yaml_path:
+                        yaml_path.pop()
+
+                if indent > indent_levels[-1]:
+                    # Entering a new nested level -> push
+                    indent_levels.append(indent)
+                    yaml_path.append(key)
+                elif indent == indent_levels[-1]:
+                    # Same level as previous key -> replace
+                    if yaml_path:
+                        yaml_path[-1] = key
+                    else:
+                        yaml_path.append(key)
+                # If indent < indent_levels[-1], the while loop above already
+                # popped all deeper levels, and we are now at a shallower level
+                # which means it's a totally different branch (e.g. top-level
+                # volumes: after services:). In that case, replace the last key
+                # if we're at the same indent as the remaining stack top.
+                elif indent == (indent_levels[-1] if indent_levels else 0):
+                    if yaml_path:
+                        yaml_path[-1] = key
+                    else:
+                        yaml_path.append(key)
+
+        # Determine if we are inside a service-level "volumes:" section
+        # (not top-level volumes which are named volume declarations).
+        is_in_volumes = (
+            'volumes' in yaml_path
+            and yaml_path.index('volumes') > 0
+        )
+
         # Look for volume mounts: - source:target or - source:target:ro
         if stripped.startswith('- '):
+            if not is_in_volumes:
+                # Not in a volumes section - pass through unchanged
+                converted_lines.append(line)
+                continue
+
             vol_part = stripped[2:].strip()
             # Split by : but be careful of Windows paths (not relevant here)
             parts = vol_part.split(':')
@@ -906,9 +959,9 @@ def import_stack(source_path: str, stack_name: str = None, dry_run: bool = False
                 new_line = line.replace(source_vol if not parts[0].strip().startswith('./') else './' + source_vol, abs_path)
                 if new_line == line:
                     # Fallback: replace the whole source part
-                    indent = line[:len(line) - len(line.lstrip())]
+                    indent_str = line[:len(line) - len(line.lstrip())]
                     rest = ':'.join(parts[1:])
-                    new_line = f"{indent}- {abs_path}:{rest}"
+                    new_line = f"{indent_str}- {abs_path}:{rest}"
 
                 conversions.append(f"{parts[0].strip()} → {abs_path}")
                 converted_lines.append(new_line)

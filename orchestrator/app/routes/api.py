@@ -8,7 +8,10 @@ parameter or, for POST bodies, the ``agent`` field). The special value
 """
 
 import json
+import logging
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 import httpx
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, Query
@@ -1044,9 +1047,13 @@ async def api_deploy_stack(request: Request, name: str, agent: str = Query(...))
     agent_name, err = _resolve_agent(agent)
     if err is not None:
         return err
-    result = await agent_manager.deploy_stack(agent_name, name)
-    err = _check_agent_error(result)
-    return err if err is not None else result
+    try:
+        result = await agent_manager.deploy_stack(agent_name, name)
+        err = _check_agent_error(result)
+        return err if err is not None else result
+    except Exception as e:
+        logger.error("deploy_stack failed for stack '%s' on agent '%s': %s", name, agent_name, str(e), exc_info=True)
+        return JSONResponse(status_code=502, content={"detail": f"Failed to deploy stack: {str(e)}"})
 
 
 # ---------------------------------------------------------------------------
