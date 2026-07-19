@@ -459,151 +459,72 @@ const DockyApp = {
         cellSize = Math.max(140, Math.min(maxCell, cellSize));
         cols = Math.max(3, Math.floor((availWidth + gap) / (cellSize + gap)));
         
-        const layout = this.computeGridLayout(this.stacks, this._allContainersCache || [], cols);
-        this._gridLayout = layout;
-        this._gridCellSize = cellSize;
+        // Trier les stacks par nom (ordre stable)
+        const sortedStacks = [...this.stacks].sort((a, b) => a.name.localeCompare(b.name));
         
-        const cellW = cellSize, cellH = cellSize;
-        const padX = 14, padY = 10, headerH = 32;
-        const padTop = padY + headerH + 8;
-        
-        const canvasW = layout.cols * (cellW + gap) - gap + 2 * padX;
-        const canvasH = layout.rows * (cellH + gap) - gap + padTop + padY;
-        
-        let svgPaths = '', headersHtml = '', cardsHtml = '';
-        const runningContainers = [];
-        
-        for (const placement of layout.placements) {
-            const { stack, containers, bbox } = placement;
-            const color = this.stackColor(stack.name);
-            const seed = this.hashString(stack.name);
-            
-            const bx = bbox.col * (cellW + gap);
-            const by = bbox.row * (cellH + gap);
-            const bw = bbox.colSpan * (cellW + gap) - gap + 2 * padX;
-            const bh = bbox.rowSpan * (cellH + gap) - gap + padTop + padY;
-            
-            const path = this.generateOrganicPath(bx, by, bw, bh, seed);
-            svgPaths += '<path d="' + path + '" fill="' + color.fill + '" stroke="' + color.stroke + '" stroke-width="1.5" opacity="0.9"/>';
-            
-            const hLeft = bx + padX, hTop = by + 8, hWidth = bw - 2 * padX;
-            headersHtml += this.renderGridStackHeader(stack, hLeft, hTop, hWidth);
-            
-            const agent = this.stackAgentMap[stack.name] || (this.currentAgentFilter !== "all" ? this.currentAgentFilter : null);
-            for (const cell of containers) {
-                const cLeft = cell.col * (cellW + gap) + padX;
-                const cTop = cell.row * (cellH + gap) + padTop;
-                cardsHtml += this.renderGridContainerCard(cell.container, cLeft, cTop, cellW, cellH, agent);
-                if (cell.container && cell.container.status === "running") runningContainers.push({ id: cell.container.id, agent });
+        // Grouper les containers par stack
+        const allContainers = this._allContainersCache || [];
+        const stackGroups = [];
+        for (const stack of sortedStacks) {
+            const containers = allContainers.filter(c => {
+                if (stack.name === 'Standalone') return !c.stack;
+                return c.stack === stack.name;
+            });
+            if (containers.length > 0 || stack.name === 'Standalone') {
+                stackGroups.push({ stack, containers, color: this.stackColor(stack.name) });
             }
         }
         
-        container.innerHTML = '<div class="docky-grid-canvas" style="position:relative;width:' + canvasW + 'px;height:' + canvasH + 'px;">'
-            + '<svg class="docky-bubbles-svg" width="' + canvasW + '" height="' + canvasH + '" style="position:absolute;top:0;left:0;pointer-events:none;z-index:1;">' + svgPaths + '</svg>'
-            + headersHtml + cardsHtml + '</div>';
+        // Flow layout en serpent (boustrophedon)
+        // Placer tous les containers à la suite, row by row
+        // Ligne paire: gauche→droite, ligne impaire: droite→gauche
+        const allCells = []; // {col, row, container, stackName, color, borderColor}
+        let currentCol = 0;
+        let currentRow = 0;
+        let leftToRight = true;
+        
+        for (const group of stackGroups) {
+            const borderColor = group.color.stroke;
+            for (const c of group.containers) {
+                if (currentCol >= cols) {
+                    currentRow++;
+                    currentCol = 0;
+                    leftToRight = !leftToRight;
+                }
+                // En mode right-to-left, la colonne est inversée
+                const actualCol = leftToRight ? currentCol : (cols - 1 - currentCol);
+                allCells.push({ col: actualCol, row: currentRow, container: c, stackName: group.stack.name, borderColor });
+                currentCol++;
+            }
+        }
+        
+        const totalRows = currentRow + 1;
+        const cellW = cellSize, cellH = cellSize;
+        
+        // Canvas dimensions
+        const canvasW = cols * (cellW + gap) - gap;
+        const canvasH = totalRows * (cellH + gap) - gap;
+        
+        // Build HTML
+        let cardsHtml = '';
+        const runningContainers = [];
+        
+        for (const cell of allCells) {
+            const left = cell.col * (cellW + gap);
+            const top = cell.row * (cellH + gap);
+            const agent = this.stackAgentMap[cell.stackName] || (this.currentAgentFilter !== "all" ? this.currentAgentFilter : null);
+            
+            // Pass the border color to the card
+            cardsHtml += this.renderGridContainerCard(cell.container, left, top, cellW, cellH, agent, cell.borderColor, cell.stackName);
+            if (cell.container && cell.container.status === "running") runningContainers.push({ id: cell.container.id, agent });
+        }
+        
+        container.innerHTML = '<div class="docky-grid-canvas" style="position:relative;width:' + canvasW + 'px;height:' + canvasH + 'px;">' + cardsHtml + '</div>';
         
         for (const rc of runningContainers) {
             this.loadContainerStats(rc.id, rc.agent);
             this.checkUpdate(rc.id, rc.agent);
         }
-    },
-
-    computeGridLayout(stacks, allContainers, maxCols) {
-        const groups = [];
-        for (const stack of stacks) {
-            const containers = allContainers.filter(c => {
-                if (stack.name === 'Standalone') return !c.stack;
-                return c.stack === stack.name;
-            });
-            groups.push({ stack, containers });
-        }
-        groups.sort((a, b) => b.containers.length - a.containers.length);
-        
-        const grid = new Set();
-        const placements = [];
-        let maxCol = 0, maxRow = 0;
-        
-        for (const group of groups) {
-            const n = group.containers.length;
-            let w, h;
-            if (n === 0) { w = 1; h = 1; }
-            else {
-                w = Math.ceil(Math.sqrt(n));
-                h = Math.ceil(n / w);
-                if (w > maxCols) { w = maxCols; h = Math.ceil(n / w); }
-            }
-            
-            const pos = this.findGridPlacement(grid, w, h, maxCols);
-            if (!pos) continue;
-            
-            const cells = [];
-            let placed = 0;
-            for (let r = pos.row; r < pos.row + h && placed < n; r++) {
-                for (let c = pos.col; c < pos.col + w && placed < n; c++) {
-                    cells.push({ col: c, row: r, container: group.containers[placed] });
-                    placed++;
-                }
-            }
-            if (n === 0) cells.push({ col: pos.col, row: pos.row, container: null });
-            
-            for (let r = pos.row; r < pos.row + h; r++) {
-                for (let c = pos.col; c < pos.col + w; c++) grid.add(c + "," + r);
-                grid.add((pos.col + w) + "," + r);
-            }
-            for (let c = pos.col; c <= pos.col + w; c++) grid.add(c + "," + (pos.row + h));
-            
-            placements.push({ stack: group.stack, containers: cells, bbox: { col: pos.col, row: pos.row, colSpan: w, rowSpan: h } });
-            maxCol = Math.max(maxCol, pos.col + w);
-            maxRow = Math.max(maxRow, pos.row + h);
-        }
-        return { placements, cols: maxCol, rows: maxRow };
-    },
-
-    findGridPlacement(grid, w, h, maxCols) {
-        for (let row = 0; row < 500; row++) {
-            for (let col = 0; col <= maxCols - w; col++) {
-                if (this._rectFits(grid, col, row, w, h)) return { col, row };
-            }
-        }
-        let maxR = 0;
-        for (const key of grid) { const r = parseInt(key.split(",")[1]); if (r > maxR) maxR = r; }
-        return { col: 0, row: maxR + 1 };
-    },
-
-    _rectFits(grid, col, row, w, h) {
-        for (let r = row; r < row + h; r++)
-            for (let c = col; c < col + w; c++)
-                if (grid.has(c + "," + r)) return false;
-        return true;
-    },
-
-    generateOrganicPath(x, y, w, h, seed) {
-        const rnd = (i) => { const s = Math.sin(seed * 9301 + i * 49297) * 233280; return (s - Math.floor(s)) - 0.5; };
-        const wobble = Math.min(w, h) * 0.02;
-        const margin = Math.min(w, h) * 0.14;
-        const pts = [
-            { x: x + margin, y: y + rnd(0) * wobble },
-            { x: x + w * 0.33, y: y + rnd(1) * wobble },
-            { x: x + w * 0.67, y: y + rnd(2) * wobble },
-            { x: x + w - margin, y: y + rnd(3) * wobble },
-            { x: x + w + rnd(4) * wobble, y: y + h * 0.33 },
-            { x: x + w + rnd(5) * wobble, y: y + h * 0.67 },
-            { x: x + w - margin, y: y + h + rnd(6) * wobble },
-            { x: x + w * 0.67, y: y + h + rnd(7) * wobble },
-            { x: x + w * 0.33, y: y + h + rnd(8) * wobble },
-            { x: x + margin, y: y + h + rnd(9) * wobble },
-            { x: x + rnd(10) * wobble, y: y + h * 0.67 },
-            { x: x + rnd(11) * wobble, y: y + h * 0.33 },
-        ];
-        let path = 'M ' + pts[0].x.toFixed(1) + ' ' + pts[0].y.toFixed(1);
-        const n = pts.length;
-        for (let i = 0; i < n; i++) {
-            const p0 = pts[(i-1+n)%n], p1 = pts[i], p2 = pts[(i+1)%n], p3 = pts[(i+2)%n];
-            const c1x = p1.x + (p2.x - p0.x) / 6, c1y = p1.y + (p2.y - p0.y) / 6;
-            const c2x = p2.x - (p3.x - p1.x) / 6, c2y = p2.y - (p3.y - p1.y) / 6;
-            path += ' C ' + c1x.toFixed(1) + ' ' + c1y.toFixed(1) + ', ' + c2x.toFixed(1) + ' ' + c2y.toFixed(1) + ', ' + p2.x.toFixed(1) + ' ' + p2.y.toFixed(1);
-        }
-        return path + ' Z';
     },
 
     hashString(s) { let h = 0; for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0; return Math.abs(h); },
@@ -630,37 +551,107 @@ const DockyApp = {
         return '<span class="grid-status-dot ' + cls + '" title="' + this.escapeHtml(status) + '"></span>';
     },
 
-    renderGridStackHeader(stack, left, top, width) {
-        const isManaged = stack.managed !== false;
-        const isStandalone = stack.standalone === true;
-        let typeBadge = '';
-        if (isStandalone) typeBadge = '<span class="stack-type-badge stack-badge-standalone">standalone</span>';
-        else if (!isManaged) typeBadge = '<span class="stack-type-badge stack-badge-external">⚠ Externe</span>';
-        else typeBadge = '<span class="stack-type-badge stack-badge-docky">Docky</span>';
+    renderGridContainerCard(c, left, top, width, height, agent, borderColor, stackName) {
+        if (!c) return '';
         
-        const agentBadge = (this.currentAgentFilter === "all" && stack.agent_name) ? '<span class="stack-agent-badge">🖥 ' + this.escapeHtml(stack.agent_name) + '</span>' : '';
-        const statusBadge = this.statusBadge(stack.status);
-        const containerInfo = stack.container_count > 0 ? stack.running_count + '/' + stack.container_count : "0";
-        const countBadge = '<span class="meta-badge">🐳 ' + containerInfo + '</span>';
-        const portsInfo = (stack.ports && stack.ports.length > 0) ? '<span class="meta-badge meta-ports">🔌 ' + this.escapeHtml(stack.ports.slice(0,3).join(", ")) + (stack.ports.length > 3 ? '…' : '') + '</span>' : '';
-        
-        const escapedName = this.escapeHtml(stack.name);
-        const editBtn = isManaged ? '<button class="grid-icon-btn" title="Éditer" onclick="DockyApp.selectStackFromDashboard(\'' + escapedName + '\')">📝</button>' : '';
-        const importBtn = (!isManaged && !isStandalone && stack.source_path) ? '<button class="grid-icon-btn" title="Importer" onclick="DockyApp.importExternal(\'' + this.escapeHtml(stack.source_path) + '\', \'' + escapedName + '\')">📥</button>' : '';
-        const stackActionBtns = isStandalone ? '' : '<button class="grid-icon-btn btn-start" title="Démarrer" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'start\')">▶</button><button class="grid-icon-btn btn-stop" title="Arrêter" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'stop\')">⏹</button><button class="grid-icon-btn btn-restart" title="Redémarrer" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'restart\')">🔄</button><button class="grid-icon-btn" title="Update" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'update\')">⬆</button>';
-        
-        return '<div class="grid-stack-header" style="left:' + left + 'px;top:' + top + 'px;width:' + width + 'px;z-index:2"><div class="grid-stack-header-info"><span class="grid-stack-name">' + escapedName + '</span>' + typeBadge + agentBadge + statusBadge + countBadge + portsInfo + '</div><div class="grid-stack-header-actions">' + editBtn + importBtn + stackActionBtns + '</div></div>';
-    },
-
-    renderGridContainerCard(c, left, top, width, height, agent) {
-        if (!c) return '<div class="grid-container-card grid-card-empty" style="left:' + left + 'px;top:' + top + 'px;width:' + width + 'px;height:' + height + 'px;z-index:3"></div>';
         const escapedId = this.escapeHtml(c.id), name = this.escapeHtml(c.name), image = this.escapeHtml(c.image);
         const statusDot = this.containerStatusDot(c.status);
         const agt = (agent || "").replace(/'/g, "\\'");
         const ports = (c.ports || []).filter(p => p.host_port).map(p => p.host_port + '→' + p.container).join(", ");
         const portsBadge = ports ? '<span class="meta-badge meta-ports grid-card-ports">🔌 ' + this.escapeHtml(ports) + '</span>' : '';
         
-        return '<div class="grid-container-card" data-id="' + escapedId + '" style="left:' + left + 'px;top:' + top + 'px;width:' + width + 'px;height:' + height + 'px;z-index:3"><div class="grid-card-top"><span class="grid-card-name" title="' + name + '">' + name + '</span>' + statusDot + '</div><div class="grid-card-image" title="' + image + '">📦 ' + image + '</div><div class="grid-card-resources" id="resources-' + escapedId + '"><div class="resource-line"><span class="resource-label">CPU</span><div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div><span class="resource-value">—</span></div><div class="resource-line"><span class="resource-label">RAM</span><div class="progress-bar"><div class="progress-fill ram" style="width:0%"></div></div><span class="resource-value">—</span></div></div><div class="grid-card-extra">' + portsBadge + '<span class="update-badge hidden" id="update-' + escapedId + '">⬆</span></div><div class="grid-card-actions"><button class="grid-icon-btn btn-start" title="Start" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'start\', \'' + agt + '\')">▶</button><button class="grid-icon-btn btn-stop" title="Stop" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'stop\', \'' + agt + '\')">⏹</button><button class="grid-icon-btn btn-restart" title="Restart" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'restart\', \'' + agt + '\')">🔄</button><button class="grid-icon-btn btn-logs" title="Logs" onclick="DockyApp.openLogs(\'' + escapedId + '\', \'' + name + '\', \'' + agt + '\')">📋</button><button class="grid-icon-btn btn-console" title="Console" onclick="DockyApp.openConsole(\'' + escapedId + '\', \'' + name + '\', \'' + agt + '\')">🖥</button></div></div>';
+        return '<div class="grid-container-card" data-id="' + escapedId + '" data-stack="' + this.escapeHtml(stackName) + '" style="left:' + left + 'px;top:' + top + 'px;width:' + width + 'px;height:' + height + 'px;z-index:3;border-color:' + borderColor + '"' 
+            + ' onclick="DockyApp.selectContainerInGrid(\'' + escapedId + '\', \'' + this.escapeHtml(stackName) + '\')">'
+            + '<div class="grid-card-top"><span class="grid-card-name" title="' + name + '">' + name + '</span>' + statusDot + '</div>'
+            + '<div class="grid-card-image" title="' + image + '">📦 ' + image + '</div>'
+            + '<div class="grid-card-resources" id="resources-' + escapedId + '"><div class="resource-line"><span class="resource-label">CPU</span><div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div><span class="resource-value">—</span></div><div class="resource-line"><span class="resource-label">RAM</span><div class="progress-bar"><div class="progress-fill ram" style="width:0%"></div></div><span class="resource-value">—</span></div></div>'
+            + '<div class="grid-card-extra">' + portsBadge + '<span class="update-badge hidden" id="update-' + escapedId + '">⬆</span></div>'
+            + '<div class="grid-card-actions" onclick="event.stopPropagation()">'
+            + '<button class="grid-icon-btn btn-start" title="Start" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'start\', \'' + agt + '\')">▶</button>'
+            + '<button class="grid-icon-btn btn-stop" title="Stop" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'stop\', \'' + agt + '\')">⏹</button>'
+            + '<button class="grid-icon-btn btn-restart" title="Restart" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'restart\', \'' + agt + '\')">🔄</button>'
+            + '<button class="grid-icon-btn btn-logs" title="Logs" onclick="DockyApp.openLogs(\'' + escapedId + '\', \'' + name + '\', \'' + agt + '\')">📋</button>'
+            + '<button class="grid-icon-btn btn-console" title="Console" onclick="DockyApp.openConsole(\'' + escapedId + '\', \'' + name + '\', \'' + agt + '\')">🖥</button>'
+            + '</div></div>';
+    },
+
+    selectContainerInGrid(containerId, stackName) {
+        // Assombrir les containers qui ne sont pas dans ce stack
+        const cards = document.querySelectorAll('.grid-container-card');
+        cards.forEach(card => {
+            if (card.dataset.stack === stackName) {
+                card.classList.remove('grid-dimmed');
+            } else {
+                card.classList.add('grid-dimmed');
+            }
+        });
+        
+        // Trouver la stack et l'afficher dans le panel droit
+        const stack = this.stacks.find(s => s.name === stackName);
+        if (stack) {
+            this.showStackContextPanel(stack, containerId);
+        }
+    },
+
+    showStackContextPanel(stack, selectedContainerId) {
+        const panel = document.querySelector('.compose-panel .panel-body') || document.getElementById('compose-editor') || document.querySelector('.right-column .panel-body');
+        if (!panel) return;
+        
+        const isManaged = stack.managed !== false;
+        const isStandalone = stack.standalone === true;
+        
+        let html = '<div class="stack-context-panel">';
+        html += '<div class="stack-context-header">';
+        html += '<h2 class="stack-context-title">' + this.escapeHtml(stack.name) + '</h2>';
+        if (isStandalone) html += '<span class="stack-type-badge stack-badge-standalone">standalone</span>';
+        else if (!isManaged) html += '<span class="stack-type-badge stack-badge-external">⚠ Externe</span>';
+        else html += '<span class="stack-type-badge stack-badge-docky">Docky</span>';
+        html += '</div>';
+        
+        // Boutons de commande du stack
+        if (!isStandalone) {
+            const escapedName = this.escapeHtml(stack.name);
+            html += '<div class="stack-context-actions">';
+            html += '<button class="btn btn-sm btn-success" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'start\')">▶ Démarrer</button>';
+            html += '<button class="btn btn-sm btn-danger" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'stop\')">⏹ Arrêter</button>';
+            html += '<button class="btn btn-sm btn-warning" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'restart\')">🔄 Redémarrer</button>';
+            html += '<button class="btn btn-sm btn-info" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'update\')">⬆ Update</button>';
+            if (isManaged) html += '<button class="btn btn-sm" onclick="DockyApp.selectStackFromDashboard(\'' + escapedName + '\')">📝 Éditer</button>';
+            if (!isManaged && stack.source_path) html += '<button class="btn btn-sm btn-info" onclick="DockyApp.importExternal(\'' + this.escapeHtml(stack.source_path) + '\', \'' + escapedName + '\')">📥 Importer</button>';
+            html += '</div>';
+        }
+        
+        // Éditeur compose (si managed)
+        if (isManaged) {
+            html += '<div class="stack-context-compose">';
+            html += '<div class="compose-tabs" id="compose-tabs"></div>';
+            html += '<div class="code-editor-wrap">';
+            html += '<div class="line-numbers" id="line-numbers"></div>';
+            html += '<textarea class="code-textarea" id="code-editor" placeholder="Sélectionne un fichier..."></textarea>';
+            html += '</div>';
+            html += '<div class="editor-actions">';
+            html += '<button class="btn btn-sm btn-success" onclick="DockyApp.saveCurrentFile()">💾 Sauvegarder</button>';
+            html += '<button class="btn btn-sm btn-info" onclick="DockyApp.saveAndDeploy()">💾+🚀 Sauvegarder & Déployer</button>';
+            html += '</div>';
+            html += '</div>';
+        } else {
+            html += '<div class="stack-context-no-compose"><p>Stack externe — compose non accessible</p></div>';
+        }
+        
+        html += '</div>';
+        
+        panel.innerHTML = html;
+        
+        // Charger le compose si managed
+        if (isManaged) {
+            this.selectedStackAgent = this.stackAgentMap[stack.name] || (this.currentAgentFilter !== "all" ? this.currentAgentFilter : null);
+            this.loadEditor(stack.name);
+        }
+    },
+
+    clearStackSelection() {
+        const cards = document.querySelectorAll('.grid-container-card');
+        cards.forEach(card => card.classList.remove('grid-dimmed'));
     },
 
     _debouncedGridRender() {
