@@ -189,6 +189,12 @@
             <div class="modal-body modal-body-pad">
                 <p class="form-hint" style="margin-bottom:12px;">Importe une stack depuis un dossier externe (ex : Dockge). Le docker-compose.yml et le .env seront copiés. Les chemins relatifs seront convertis en chemins absolus.</p>
                 <div class="form-group">
+                    <label for="import-agent">Agent cible</label>
+                    <select id="import-agent" class="form-input" style="width: 100%;">
+                        <option value="">-- Choisir un agent --</option>
+                    </select>
+                </div>
+                <div class="form-group">
                     <label for="import-source-path">Chemin source (dossier de la stack)</label>
                     <input type="text" id="import-source-path" placeholder="/opt/stacks/myapp" autocomplete="off">
                 </div>

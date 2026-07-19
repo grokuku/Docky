@@ -667,7 +667,15 @@ const DockyApp = {
             html += '<button class="btn btn-sm btn-warning" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'restart\')">🔄 Redémarrer</button>';
             html += '<button class="btn btn-sm btn-info" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'update\')">⬆ Update</button>';
             if (isManaged) html += '<button class="btn btn-sm" onclick="DockyApp.selectStackFromDashboard(\'' + escapedName + '\')">📝 Éditer</button>';
-            if (!isManaged && stack.source_path) html += '<button class="btn btn-sm btn-info" onclick="DockyApp.importExternal(\'' + this.escapeHtml(stack.source_path) + '\', \'' + escapedName + '\')">📥 Importer</button>';
+            if (!isManaged && !isStandalone) {
+                if (stack.source_path) {
+                    // Chemin détecté automatiquement → import direct avec preview
+                    html += '<button class="btn btn-sm btn-info" onclick="DockyApp.importExternal(\'' + this.escapeHtml(stack.source_path) + '\', \'' + escapedName + '\')">📥 Importer</button>';
+                } else {
+                    // Chemin non détecté → ouvrir le modal manuel avec le nom pré-rempli
+                    html += '<button class="btn btn-sm btn-info" onclick="DockyApp.openImportModalForStack(\'' + escapedName + '\')">📥 Importer</button>';
+                }
+            }
             html += '</div>';
         }
         
@@ -1274,9 +1282,30 @@ const DockyApp = {
         const name = document.getElementById("import-stack-name");
         if (src) src.value = "";
         if (name) name.value = "";
+
+        // Peupler le sélecteur d'agent
+        const agentSelect = document.getElementById("import-agent");
+        if (agentSelect) {
+            agentSelect.innerHTML = '<option value="">-- Choisir un agent --</option>';
+            for (const agent of this.agentsList) {
+                const aName = agent.name || agent;
+                const opt = document.createElement("option");
+                opt.value = aName;
+                opt.textContent = aName + (agent.status === "online" ? " 🟢" : " 🔴");
+                if (this.currentAgentFilter === aName) opt.selected = true;
+                agentSelect.appendChild(opt);
+            }
+        }
+
         setTimeout(() => {
             if (src) src.focus();
         }, 50);
+    },
+
+    openImportModalForStack(stackName) {
+        this.openImportModal();
+        const nameField = document.getElementById("import-stack-name");
+        if (nameField) nameField.value = stackName;
     },
 
     closeImportModal() {
@@ -1452,14 +1481,15 @@ const DockyApp = {
     async doImport() {
         const sourcePath = (document.getElementById("import-source-path").value || "").trim();
         const stackName = (document.getElementById("import-stack-name").value || "").trim() || null;
-        const agent = this.currentAgentFilter !== "all" ? this.currentAgentFilter : null;
+        const agentSelect = document.getElementById("import-agent");
+        const agent = agentSelect ? agentSelect.value : (this.currentAgentFilter !== "all" ? this.currentAgentFilter : null);
 
         if (!sourcePath) {
             this.showToast("Le chemin source est requis", "error");
             return;
         }
         if (!agent) {
-            this.showToast("Sélectionne un agent spécifique (pas « Tous »)", "error");
+            this.showToast("Sélectionne un agent cible", "error");
             return;
         }
 
