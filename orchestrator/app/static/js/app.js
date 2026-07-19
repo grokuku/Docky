@@ -144,7 +144,8 @@ const DockyApp = {
             const isOnline = status === "online" || status === "connected" || status === true;
             const dotClass = isOnline ? "online" : "offline";
             const isActive = this._filteredAgents.size === 0 || this._filteredAgents.has(name);
-            html += '<button class="agent-btn' + (isActive ? ' active' : '') + '" onclick="DockyApp.toggleAgentFilter(' + JSON.stringify(name) + ')" title="' + this.escapeHtml(name) + ' — ' + this.escapeHtml(status) + '">'
+            const escapedName = name.replace(/'/g, "\\'");
+            html += '<button class="agent-btn' + (isActive ? ' active' : '') + '" onclick="DockyApp.toggleAgentFilter(\'' + escapedName + '\')" title="' + this.escapeHtml(name) + ' — ' + this.escapeHtml(status) + '">'
                 + '<span class="agent-status-dot ' + dotClass + '"></span>'
                 + this.escapeHtml(name)
                 + '</button>';
