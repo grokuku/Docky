@@ -452,74 +452,126 @@ const DockyApp = {
         if (availWidth < 200) return;
         
         const gap = 8;
-        const minCell = 145;
-        const maxCell = 200;
-        let cols = Math.max(3, Math.min(10, Math.floor(availWidth / minCell)));
-        let cellSize = Math.floor((availWidth - (cols - 1) * gap) / cols);
-        cellSize = Math.max(140, Math.min(maxCell, cellSize));
-        cols = Math.max(3, Math.floor((availWidth + gap) / (cellSize + gap)));
+        const minCell = 140;
+        const maxCell = 190;
+        let cellSize = Math.min(maxCell, Math.max(minCell, Math.floor(availWidth / 6)));
+        let cellW = cellSize, cellH = cellSize;
         
-        // Trier les stacks par nom (ordre stable)
+        // Trier les stacks par nom (ordre stable pour l'affichage)
         const sortedStacks = [...this.stacks].sort((a, b) => a.name.localeCompare(b.name));
-        
-        // Grouper les containers par stack
         const allContainers = this._allContainersCache || [];
-        const stackGroups = [];
+        
+        // Calculer les blocs pour chaque stack
+        const blocks = [];
         for (const stack of sortedStacks) {
             const containers = allContainers.filter(c => {
                 if (stack.name === 'Standalone') return !c.stack;
                 return c.stack === stack.name;
             });
-            if (containers.length > 0 || stack.name === 'Standalone') {
-                stackGroups.push({ stack, containers, color: this.stackColor(stack.name) });
-            }
+            if (containers.length === 0) continue;
+            
+            const n = containers.length;
+            const w = Math.max(1, Math.ceil(n / 2)); // largeur max = ceil(n/2)
+            const h = Math.ceil(n / w);               // hauteur
+            blocks.push({ stack, containers, w, h, n, color: this.stackColor(stack.name), order: blocks.length });
         }
         
-        // Flow layout en serpent (boustrophedon)
-        // Placer tous les containers à la suite, row by row
-        // Ligne paire: gauche→droite, ligne impaire: droite→gauche
-        const allCells = []; // {col, row, container, stackName, color, borderColor}
-        let currentCol = 0;
-        let currentRow = 0;
-        let leftToRight = true;
+        if (blocks.length === 0) {
+            container.innerHTML = '<div class="placeholder"><p>📭 Aucun container trouvé</p></div>';
+            return;
+        }
         
-        for (const group of stackGroups) {
-            const borderColor = group.color.stroke;
-            for (const c of group.containers) {
-                if (currentCol >= cols) {
-                    currentRow++;
-                    currentCol = 0;
-                    leftToRight = !leftToRight;
+        // Calculer la largeur de la grille (en nombre de cellules)
+        // On veut que la grille soit assez large pour contenir les blocs sans trop de trous
+        const totalContainers = blocks.reduce((s, b) => s + b.n, 0);
+        let gridCols = Math.max(3, Math.ceil(Math.sqrt(totalContainers)));
+        // Ajuster selon la largeur disponible
+        gridCols = Math.min(gridCols, Math.floor(availWidth / (cellW + gap)));
+        gridCols = Math.max(3, gridCols);
+        
+        // Skyline: hauteur de chaque colonne (commence à 0)
+        const skyline = new Array(gridCols).fill(0);
+        
+        // Trier les blocs par taille décroissante pour le packing (les gros d'abord pour que les petits remplissent les trous)
+        const packOrder = [...blocks].sort((a, b) => b.n - a.n);
+        
+        // Placer chaque bloc avec l'algorithme skyline bottom-left
+        const placements = new Map(); // block.order -> {x, y, w, h}
+        
+        for (const block of packOrder) {
+            const bw = block.w;
+            const bh = block.h;
+            
+            // Trouver la meilleure position (bottom-left: la plus basse, puis la plus à gauche)
+            let bestX = -1;
+            let bestY = Infinity;
+            
+            for (let col = 0; col <= gridCols - bw; col++) {
+                // La hauteur à laquelle le bloc serait placé = max des hauteurs de skyline sur la largeur du bloc
+                let maxY = 0;
+                for (let c = col; c < col + bw; c++) {
+                    maxY = Math.max(maxY, skyline[c]);
                 }
-                // En mode right-to-left, la colonne est inversée
-                const actualCol = leftToRight ? currentCol : (cols - 1 - currentCol);
-                allCells.push({ col: actualCol, row: currentRow, container: c, stackName: group.stack.name, borderColor });
-                currentCol++;
+                
+                if (maxY < bestY || (maxY === bestY && col < bestX)) {
+                    bestY = maxY;
+                    bestX = col;
+                }
+            }
+            
+            if (bestX === -1) {
+                // Le bloc ne rentre pas, élargir la grille
+                // (ne devrait pas arriver si gridCols est bien calculé)
+                continue;
+            }
+            
+            // Placer le bloc
+            placements.set(block.order, { x: bestX, y: bestY, w: bw, h: bh });
+            
+            // Mettre à jour le skyline
+            for (let c = bestX; c < bestX + bw; c++) {
+                skyline[c] = bestY + bh;
             }
         }
         
-        const totalRows = currentRow + 1;
-        const cellW = cellSize, cellH = cellSize;
+        // Dimensions du canvas
+        const maxSkyline = Math.max(...skyline);
+        const canvasW = gridCols * (cellW + gap) - gap;
+        const canvasH = maxSkyline * (cellH + gap) - gap;
         
-        // Canvas dimensions
-        const canvasW = cols * (cellW + gap) - gap;
-        const canvasH = totalRows * (cellH + gap) - gap;
-        
-        // Build HTML
+        // Construire le HTML — dans l'ordre alphabétique des stacks
         let cardsHtml = '';
         const runningContainers = [];
         
-        for (const cell of allCells) {
-            const left = cell.col * (cellW + gap);
-            const top = cell.row * (cellH + gap);
-            const agent = this.stackAgentMap[cell.stackName] || (this.currentAgentFilter !== "all" ? this.currentAgentFilter : null);
+        for (let i = 0; i < blocks.length; i++) {
+            const block = blocks[i];
+            const placement = placements.get(block.order);
+            if (!placement) continue;
             
-            // Pass the border color to the card
-            cardsHtml += this.renderGridContainerCard(cell.container, left, top, cellW, cellH, agent, cell.borderColor, cell.stackName);
-            if (cell.container && cell.container.status === "running") runningContainers.push({ id: cell.container.id, agent });
+            const { x: baseCol, y: baseRow, w: stackCols, h: stackRows } = placement;
+            const borderColor = block.color.stroke;
+            const bgColor = block.color.fill;
+            const agent = this.stackAgentMap[block.stack.name] || (this.currentAgentFilter !== "all" ? this.currentAgentFilter : null);
+            
+            // Placer les containers en boustrophedon dans le bloc
+            let leftToRight = true;
+            for (let j = 0; j < block.containers.length; j++) {
+                const localCol = j % stackCols;
+                const localRow = Math.floor(j / stackCols);
+                // Boustrophedon: flip direction à chaque ligne
+                const actualCol = (localRow % 2 === 0) ? localCol : (stackCols - 1 - localCol);
+                
+                const cardCol = baseCol + actualCol;
+                const cardRow = baseRow + localRow;
+                const cardX = cardCol * (cellW + gap);
+                const cardY = cardRow * (cellH + gap);
+                
+                cardsHtml += this.renderGridContainerCard(block.containers[j], cardX, cardY, cellW, cellH, agent, borderColor, bgColor, block.stack.name);
+                if (block.containers[j].status === "running") runningContainers.push({ id: block.containers[j].id, agent });
+            }
         }
         
-        container.innerHTML = '<div class="docky-grid-canvas" style="position:relative;width:' + canvasW + 'px;height:' + canvasH + 'px;">' + cardsHtml + '</div>';
+        container.innerHTML = '<div class="docky-grid-canvas" style="position:relative;width:' + canvasW + 'px;height:' + canvasH + 'px;" onclick="DockyApp.clearStackSelection()">' + cardsHtml + '</div>';
         
         for (const rc of runningContainers) {
             this.loadContainerStats(rc.id, rc.agent);
@@ -551,7 +603,7 @@ const DockyApp = {
         return '<span class="grid-status-dot ' + cls + '" title="' + this.escapeHtml(status) + '"></span>';
     },
 
-    renderGridContainerCard(c, left, top, width, height, agent, borderColor, stackName) {
+    renderGridContainerCard(c, left, top, width, height, agent, borderColor, bgColor, stackName) {
         if (!c) return '';
         
         const escapedId = this.escapeHtml(c.id), name = this.escapeHtml(c.name), image = this.escapeHtml(c.image);
@@ -560,8 +612,8 @@ const DockyApp = {
         const ports = (c.ports || []).filter(p => p.host_port).map(p => p.host_port + '→' + p.container).join(", ");
         const portsBadge = ports ? '<span class="meta-badge meta-ports grid-card-ports">🔌 ' + this.escapeHtml(ports) + '</span>' : '';
         
-        return '<div class="grid-container-card" data-id="' + escapedId + '" data-stack="' + this.escapeHtml(stackName) + '" style="left:' + left + 'px;top:' + top + 'px;width:' + width + 'px;height:' + height + 'px;z-index:3;border-color:' + borderColor + '"' 
-            + ' onclick="DockyApp.selectContainerInGrid(\'' + escapedId + '\', \'' + this.escapeHtml(stackName) + '\')">'
+        return '<div class="grid-container-card" data-id="' + escapedId + '" data-stack="' + this.escapeHtml(stackName) + '" style="left:' + left + 'px;top:' + top + 'px;width:' + width + 'px;height:' + height + 'px;z-index:3;background-color:' + bgColor + ';border-color:' + borderColor + '"' 
+            + ' onclick="event.stopPropagation(); DockyApp.selectContainerInGrid(\'' + escapedId + '\', \'' + this.escapeHtml(stackName) + '\')">'
             + '<div class="grid-card-top"><span class="grid-card-name" title="' + name + '">' + name + '</span>' + statusDot + '</div>'
             + '<div class="grid-card-image" title="' + image + '">📦 ' + image + '</div>'
             + '<div class="grid-card-resources" id="resources-' + escapedId + '"><div class="resource-line"><span class="resource-label">CPU</span><div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div><span class="resource-value">—</span></div><div class="resource-line"><span class="resource-label">RAM</span><div class="progress-bar"><div class="progress-fill ram" style="width:0%"></div></div><span class="resource-value">—</span></div></div>'
