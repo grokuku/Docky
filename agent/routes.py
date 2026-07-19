@@ -34,7 +34,7 @@ async def list_containers(request: Request):
     auth_err = require_api_key(request)
     if auth_err:
         return auth_err
-    return docker_manager.list_containers(all=True)
+    return await asyncio.to_thread(docker_manager.list_containers, all=True)
 
 
 @router.get("/containers/{container_id}")
@@ -42,10 +42,10 @@ async def get_container(request: Request, container_id: str):
     auth_err = require_api_key(request)
     if auth_err:
         return auth_err
-    c = docker_manager.get_container(container_id)
+    c = await asyncio.to_thread(docker_manager.get_container, container_id)
     if c is None:
         return JSONResponse(status_code=404, content={"error": "Container not found"})
-    c["stats"] = docker_manager.get_container_stats(container_id)
+    c["stats"] = await asyncio.to_thread(docker_manager.get_container_stats, container_id)
     return c
 
 
@@ -54,7 +54,7 @@ async def get_container_stats(request: Request, container_id: str):
     auth_err = require_api_key(request)
     if auth_err:
         return auth_err
-    return docker_manager.get_container_stats(container_id)
+    return await asyncio.to_thread(docker_manager.get_container_stats, container_id)
 
 
 @router.get("/containers/{container_id}/logs")
@@ -62,7 +62,7 @@ async def get_container_logs(request: Request, container_id: str, tail: int = Qu
     auth_err = require_api_key(request)
     if auth_err:
         return auth_err
-    lines = docker_manager.get_container_logs(container_id, tail=tail)
+    lines = await asyncio.to_thread(docker_manager.get_container_logs, container_id, tail=tail)
     return {"lines": lines}
 
 
@@ -140,7 +140,7 @@ async def exec_one_shot(request: Request, container_id: str):
     if not command.strip():
         return JSONResponse(status_code=400, content={"error": "command is required"})
     try:
-        output = docker_manager.exec_in_container(container_id, command, tty=False)
+        output = await asyncio.to_thread(docker_manager.exec_in_container, container_id, command, tty=False)
         return {"success": True, "output": output}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -151,7 +151,7 @@ async def start_container(request: Request, container_id: str):
     auth_err = require_api_key(request)
     if auth_err:
         return auth_err
-    ok = docker_manager.start_container(container_id)
+    ok = await asyncio.to_thread(docker_manager.start_container, container_id)
     return {"success": ok}
 
 
@@ -160,7 +160,7 @@ async def stop_container(request: Request, container_id: str):
     auth_err = require_api_key(request)
     if auth_err:
         return auth_err
-    ok = docker_manager.stop_container(container_id)
+    ok = await asyncio.to_thread(docker_manager.stop_container, container_id)
     return {"success": ok}
 
 
@@ -169,7 +169,7 @@ async def restart_container(request: Request, container_id: str):
     auth_err = require_api_key(request)
     if auth_err:
         return auth_err
-    ok = docker_manager.restart_container(container_id)
+    ok = await asyncio.to_thread(docker_manager.restart_container, container_id)
     return {"success": ok}
 
 
@@ -178,7 +178,7 @@ async def update_check(request: Request, container_id: str):
     auth_err = require_api_key(request)
     if auth_err:
         return auth_err
-    return docker_manager.check_image_update(container_id)
+    return await asyncio.to_thread(docker_manager.check_image_update, container_id)
 
 
 # ---------------------------------------------------------------------------
@@ -190,18 +190,48 @@ async def list_stacks(request: Request):
     auth_err = require_api_key(request)
     if auth_err:
         return auth_err
-    stacks = docker_manager.list_stacks()
+
+    # Récupérer stacks et containers en parallèle (2 appels au lieu de 1+3N)
+    stacks, all_containers = await asyncio.gather(
+        asyncio.to_thread(docker_manager.list_stacks),
+        asyncio.to_thread(docker_manager.list_containers, all=True),
+    )
+
+    # Calculer les infos localement sans rappeler Docker
     result = []
     for s in stacks:
-        containers = docker_manager.get_stack_containers(s["name"])
-        status = docker_manager.get_stack_status(s["name"])
-        ports = docker_manager.get_stack_ports(s["name"])
-        running = sum(1 for c in containers if c["status"] == "running")
+        name = s["name"]
+        # Filtrer les containers de cette stack
+        if name == "Standalone":
+            containers = [c for c in all_containers if not c.get("stack")]
+        else:
+            containers = [c for c in all_containers if c.get("stack") == name]
+
+        running = sum(1 for c in containers if c.get("status") == "running")
+
+        if not containers:
+            status = "empty"
+        elif running == len(containers):
+            status = "running"
+        elif running == 0:
+            status = "stopped"
+        else:
+            status = "partial"
+
+        # Calculer les ports localement
+        ports_set = set()
+        for c in containers:
+            for p in c.get("ports", []):
+                hp = p.get("host_port", "")
+                if hp:
+                    ports_set.add(hp)
+        ports = sorted(ports_set, key=lambda x: int(x) if x.isdigit() else 0)
+
         result.append({
             "name": s["name"],
-            "path": s["path"],
-            "has_compose": s["has_compose"],
-            "has_env": s["has_env"],
+            "path": s.get("path", ""),
+            "has_compose": s.get("has_compose", False),
+            "has_env": s.get("has_env", False),
             "managed": s.get("managed", True),
             "standalone": s.get("standalone", False),
             "container_count": len(containers),
@@ -395,7 +425,7 @@ async def get_ports(request: Request):
     auth_err = require_api_key(request)
     if auth_err:
         return auth_err
-    return docker_manager.get_used_ports()
+    return await asyncio.to_thread(docker_manager.get_used_ports)
 
 
 # ---------------------------------------------------------------------------

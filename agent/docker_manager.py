@@ -461,42 +461,6 @@ def get_stack_ports(stack_name: str) -> List[str]:
     return sorted(ports, key=lambda x: int(x) if x.isdigit() else 0)
 
 
-async def get_stacks():
-    """Return all stacks visible to the agent.
-
-    Combines stacks managed by Docky (directories in /data/stacks/) with
-    external Docker Compose projects detected through container labels
-    (``com.docker.compose.project``).
-
-    Each entry is a dict with ``name`` and ``managed`` (``True`` for Docky
-    stacks, ``False`` for external ones).
-    """
-    stacks = []
-
-    # 1. Stacks gérés par Docky (dans /data/stacks/)
-    stacks_dir = Path(get_data_dir()) / 'stacks'
-    if stacks_dir.exists():
-        for d in stacks_dir.iterdir():
-            if d.is_dir() and (d / 'docker-compose.yml').exists():
-                stacks.append({"name": d.name, "managed": True})
-
-    # 2. Stacks externes (via labels des containers)
-    try:
-        client = get_docker_client()
-        containers = client.containers.list(all=True)
-        managed_names = {s["name"] for s in stacks}
-        for c in containers:
-            labels = c.attrs.get('Config', {}).get('Labels', {})
-            project = labels.get('com.docker.compose.project')
-            if project and project not in managed_names:
-                stacks.append({"name": project, "managed": False})
-                managed_names.add(project)
-    except Exception:
-        pass
-
-    return stacks
-
-
 def _compose_file_path(stack_path: Path) -> Optional[Path]:
     """Return the path to the compose file for a stack, or ``None``."""
     for name in ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"]:
