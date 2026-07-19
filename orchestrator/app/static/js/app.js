@@ -7,6 +7,7 @@ const DockyApp = {
     // State
     // -------------------------------------------------------
     stacks: [],
+    _allContainersCache: [],
     expandedStack: null,
     autoRefresh: true,
     refreshInterval: null,
@@ -203,6 +204,21 @@ const DockyApp = {
         this.renderStacks();
         // Update compose selector
         this.updateStackSelector(data);
+
+        // Pre-fetch all containers for instant display on stack click
+        try {
+            let containersUrl;
+            if (this.currentAgentFilter === 'all') {
+                containersUrl = '/api/containers?agent=all';
+            } else {
+                containersUrl = '/api/containers?agent=' + encodeURIComponent(this.currentAgentFilter);
+            }
+            const containersResp = await fetch(containersUrl);
+            const containersData = await containersResp.json();
+            this._allContainersCache = Array.isArray(containersData) ? containersData : [];
+        } catch(e) {
+            this._allContainersCache = [];
+        }
     },
 
     updateStackSelector(stacks) {
@@ -334,14 +350,17 @@ const DockyApp = {
         this.renderStacks();
     },
 
-    async loadContainers(stackName) {
+    loadContainers(stackName) {
         const target = document.getElementById("containers-" + stackName);
         if (!target) return;
         const agent = this.stackAgentMap[stackName] || (this.currentAgentFilter !== "all" ? this.currentAgentFilter : null);
         this.expandedStackAgent = agent;
-        const data = await this.apiFetch("/api/stacks/" + encodeURIComponent(stackName) + "/containers" + this.agentQuery(agent));
-        if (data === null) return;
-        this.renderContainers(target, data, stackName, agent);
+        // Display instantly from the pre-loaded cache (no API call)
+        const containers = (this._allContainersCache || []).filter(c => {
+            if (stackName === 'Standalone') return !c.stack;
+            return c.stack === stackName;
+        });
+        this.renderContainers(target, containers, stackName, agent);
     },
 
     renderContainers(target, containers, stackName, agent) {

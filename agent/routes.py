@@ -304,7 +304,7 @@ async def start_stack(request: Request, name: str):
     auth_err = require_api_key(request)
     if auth_err:
         return auth_err
-    return await docker_manager.compose_up(name)
+    return await docker_manager.compose_start(name)
 
 
 @router.post("/stacks/{name}/stop")

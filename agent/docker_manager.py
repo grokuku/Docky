@@ -470,30 +470,53 @@ def _compose_file_path(stack_path: Path) -> Optional[Path]:
     return None
 
 
-async def _run_compose(stack_name: str, command: str) -> Dict[str, Any]:
+async def _run_compose(stack_name: str, command: str, timeout: int = 300) -> Dict[str, Any]:
     """Run a docker compose subcommand for a stack (non-blocking).
 
     Works for both managed stacks (in /data/stacks/) and external stacks
     whose compose file path is derived from container labels.
 
+    For managed stacks (or external stacks whose compose file was found via
+    container labels), the ``-f`` flag is used.
+
+    For external stacks whose compose file could not be located, the
+    ``--project-name`` flag is used instead, which allows commands such as
+    ``stop``, ``restart`` and ``start`` to operate on the existing containers
+    without needing the compose file.
+
     Uses :func:`asyncio.create_subprocess_exec` so the FastAPI event loop
     is not blocked while Docker pulls images or starts containers.
     """
     compose_file, cwd = _resolve_stack_compose(stack_name)
-    if compose_file is None or not Path(compose_file).exists():
-        return {"success": False, "error": f"Stack '{stack_name}' not found"}
 
-    args = ["docker", "compose", "-f", str(compose_file)] + command.split()
+    cmd_parts = command.split()
+
+    if compose_file is not None and Path(compose_file).exists():
+        # Managed stack or external stack with a known compose file
+        args = ["docker", "compose", "-f", str(compose_file)] + cmd_parts
+        work_dir = cwd or str(Path(compose_file).parent)
+    else:
+        # External stack without a compose file: use --project-name
+        args = ["docker", "compose", "--project-name", stack_name] + cmd_parts
+        work_dir = None
+
     full_cmd = " ".join(args)
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            cwd=cwd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        if work_dir:
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                cwd=work_dir,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        else:
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
         stdout_bytes, stderr_bytes = await asyncio.wait_for(
-            proc.communicate(), timeout=300
+            proc.communicate(), timeout=timeout
         )
         stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
         stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
@@ -511,24 +534,60 @@ async def _run_compose(stack_name: str, command: str) -> Dict[str, Any]:
         return {"success": False, "error": str(e), "command": full_cmd}
 
 
-async def compose_up(stack_name: str) -> Dict[str, Any]:
-    """Run ``docker compose up -d`` for the given stack."""
-    return await _run_compose(stack_name, "up -d")
+async def compose_start(name: str) -> Dict[str, Any]:
+    """Start existing containers for the given stack.
+
+    Works with ``--project-name`` for external stacks that have no
+    compose file available.
+    """
+    return await _run_compose(name, "start")
 
 
-async def compose_down(stack_name: str) -> Dict[str, Any]:
-    """Run ``docker compose down`` for the given stack."""
-    return await _run_compose(stack_name, "down")
+async def compose_up(name: str) -> Dict[str, Any]:
+    """Run ``docker compose up -d`` for the given stack.
+
+    For managed stacks (or external stacks with a known compose file),
+    this runs ``docker compose up -d``.  For external stacks whose
+    compose file cannot be located, it falls back to ``docker compose
+    --project-name {name} start`` which starts existing containers without
+    needing the compose file.
+    """
+    compose_file, _cwd = _resolve_stack_compose(name)
+    if compose_file is None or not Path(compose_file).exists():
+        # External stack: use 'start' instead of 'up -d'
+        return await _run_compose(name, "start")
+    return await _run_compose(name, "up -d")
 
 
-async def compose_stop(stack_name: str) -> Dict[str, Any]:
-    """Run ``docker compose stop`` for the given stack."""
-    return await _run_compose(stack_name, "stop")
+async def compose_down(name: str) -> Dict[str, Any]:
+    """Run ``docker compose down`` for the given stack.
+
+    For external stacks without a compose file, falls back to ``stop``
+    (via ``--project-name``) since ``down`` requires the compose file.
+    """
+    compose_file, _cwd = _resolve_stack_compose(name)
+    if compose_file is None or not Path(compose_file).exists():
+        # External stack: use 'stop' instead of 'down'
+        return await _run_compose(name, "stop")
+    return await _run_compose(name, "down")
 
 
-async def compose_restart(stack_name: str) -> Dict[str, Any]:
-    """Run ``docker compose restart`` for the given stack."""
-    return await _run_compose(stack_name, "restart")
+async def compose_stop(name: str) -> Dict[str, Any]:
+    """Run ``docker compose stop`` for the given stack.
+
+    Works with ``--project-name`` for external stacks that have no
+    compose file available.
+    """
+    return await _run_compose(name, "stop")
+
+
+async def compose_restart(name: str) -> Dict[str, Any]:
+    """Run ``docker compose restart`` for the given stack.
+
+    Works with ``--project-name`` for external stacks that have no
+    compose file available.
+    """
+    return await _run_compose(name, "restart")
 
 
 async def compose_pull(name: str) -> Dict[str, Any]:
