@@ -13,13 +13,14 @@ const DockyApp = {
     _lastGridKey: null,
     _gridResizeObserver: null,
     _gridRenderTimer: null,
+    _selectedStack: null,
     expandedStack: null,
     autoRefresh: true,
     refreshInterval: null,
     refreshTimer: 5000,
 
     // Multi-agent
-    currentAgentFilter: "all",   // "all" or agent name
+    _filteredAgents: new Set(),  // Set vide = tous les agents affichés
     agentsList: [],              // [{name, status, ...}]
     agentsRefreshInterval: null,
     agentsRefreshTimer: 30000,
@@ -102,9 +103,9 @@ const DockyApp = {
     // Multi-agent management
     // -------------------------------------------------------
 
-    /** Build the ?agent= query string for the current filter. */
+    /** Build the ?agent= query string. Retourne toujours ?agent=all (filtrage côté frontend). */
     agentQueryParam() {
-        return "?agent=" + encodeURIComponent(this.currentAgentFilter);
+        return '?agent=all';
     },
 
     /** Build a ?agent= query string for a specific agent. */
@@ -135,20 +136,15 @@ const DockyApp = {
             return;
         }
 
-        let html = '';
-        // "Tous" button
-        const allActive = this.currentAgentFilter === "all" ? " active" : "";
-        html += '<button class="agent-btn' + allActive + '" onclick="DockyApp.setAgentFilter(\'all\')" title="Tous les agents">'
-            + '🌍 Tous'
-            + '</button>';
+        let html = '<button class="agent-btn' + (this._filteredAgents.size === 0 ? ' active' : '') + '" onclick="DockyApp.toggleAgentFilter(\'all\')" title="Tous les agents">🌍 Tous</button>';
 
         for (const agent of this.agentsList) {
             const name = agent.name || agent;
             const status = agent.status || "offline";
             const isOnline = status === "online" || status === "connected" || status === true;
             const dotClass = isOnline ? "online" : "offline";
-            const active = this.currentAgentFilter === name ? " active" : "";
-            html += '<button class="agent-btn' + active + '" onclick="DockyApp.setAgentFilter(' + JSON.stringify(name) + ')" title="' + this.escapeHtml(name) + ' — ' + this.escapeHtml(status) + '">'
+            const isActive = this._filteredAgents.size === 0 || this._filteredAgents.has(name);
+            html += '<button class="agent-btn' + (isActive ? ' active' : '') + '" onclick="DockyApp.toggleAgentFilter(' + JSON.stringify(name) + ')" title="' + this.escapeHtml(name) + ' — ' + this.escapeHtml(status) + '">'
                 + '<span class="agent-status-dot ' + dotClass + '"></span>'
                 + this.escapeHtml(name)
                 + '</button>';
@@ -157,9 +153,26 @@ const DockyApp = {
         container.innerHTML = html;
     },
 
-    setAgentFilter(agentName) {
-        if (this.currentAgentFilter === agentName) return;
-        this.currentAgentFilter = agentName;
+    toggleAgentFilter(name) {
+        if (name === 'all') {
+            // "Tous" = vide = tout afficher
+            this._filteredAgents = new Set();
+        } else {
+            if (this._filteredAgents.has(name)) {
+                // Déjà actif → retirer
+                this._filteredAgents.delete(name);
+                if (this._filteredAgents.size === 0) {
+                    // Si plus aucun agent de sélectionné, garder "Tous"
+                    this._filteredAgents = new Set();
+                    this.renderAgentSelector();
+                    this.refreshStacks();
+                    return;
+                }
+            } else {
+                // Pas actif → ajouter
+                this._filteredAgents.add(name);
+            }
+        }
         this.expandedStack = null;
         this.renderAgentSelector();
         this.refreshStacks();
@@ -189,14 +202,10 @@ const DockyApp = {
     // -------------------------------------------------------
 
     async refreshStacks() {
-        // Fetch stacks et containers EN PARALLÈLE
-        const containersUrl = this.currentAgentFilter === 'all'
-            ? '/api/containers?agent=all'
-            : '/api/containers?agent=' + encodeURIComponent(this.currentAgentFilter);
-
+        // Toujours fetch avec ?agent=all (filtrage côté frontend)
         const [stacksResp, containersResp] = await Promise.all([
-            this.apiFetch("/api/stacks" + this.agentQueryParam()),
-            fetch(containersUrl, { credentials: "same-origin" })
+            this.apiFetch("/api/stacks?agent=all"),
+            fetch('/api/containers?agent=all', { credentials: "same-origin" })
         ]);
 
         if (stacksResp === null) return;
@@ -206,7 +215,6 @@ const DockyApp = {
         this.stackAgentMap = {};
         for (const s of stacksResp) {
             if (s.agent_name) this.stackAgentMap[s.name] = s.agent_name;
-            else if (this.currentAgentFilter !== "all") this.stackAgentMap[s.name] = this.currentAgentFilter;
         }
 
         // Parse containers
@@ -275,7 +283,7 @@ const DockyApp = {
             const portsInfo = stack.ports && stack.ports.length > 0
                 ? stack.ports.join(", ")
                 : "";
-            const agentBadge = (this.currentAgentFilter === "all" && stack.agent_name)
+            const agentBadge = stack.agent_name
                 ? '<span class="stack-agent-badge">🖥 ' + this.escapeHtml(stack.agent_name) + '</span>'
                 : "";
             // Managed / external / standalone indicator
@@ -373,7 +381,7 @@ const DockyApp = {
     loadContainers(stackName) {
         const target = document.getElementById("containers-" + stackName);
         if (!target) return;
-        const agent = this.stackAgentMap[stackName] || (this.currentAgentFilter !== "all" ? this.currentAgentFilter : null);
+        const agent = this.stackAgentMap[stackName] || null;
         this.expandedStackAgent = agent;
         // Display instantly from the pre-loaded cache (no API call)
         const containers = (this._allContainersCache || []).filter(c => {
@@ -479,6 +487,15 @@ const DockyApp = {
                 return c.stack === stack.name;
             });
             if (containers.length === 0) continue;
+            
+            // Si des filtres d'agents sont actifs, ne garder que les stacks dont l'agent est filtré
+            if (this._filteredAgents.size > 0) {
+                const stackAgent = this.stackAgentMap[stack.name] || '';
+                if (!this._filteredAgents.has(stackAgent)) {
+                    continue; // Stack entièrement ignorée si son agent n'est pas filtré
+                }
+            }
+            
             const n = containers.length;
             const cols = Math.max(1, Math.ceil(n / 2));
             maxStackCols = Math.max(maxStackCols, cols);
@@ -563,7 +580,7 @@ const DockyApp = {
         for (const cell of allCells) {
             const cardX = cell.col * (cellW + gap);
             const cardY = cell.row * (cellH + gap);
-            const agent = this.stackAgentMap[cell.stackName] || (this.currentAgentFilter !== "all" ? this.currentAgentFilter : null);
+            const agent = this.stackAgentMap[cell.stackName] || null;
             
             cardsHtml += this.renderGridContainerCard(cell.container, cardX, cardY, cellW, cellH, agent, cell.borderColor, cell.bgColor, cell.stackName);
             if (cell.container.status === "running") runningContainers.push({ id: cell.container.id, agent });
@@ -574,6 +591,22 @@ const DockyApp = {
         for (const rc of runningContainers) {
             this.loadContainerStats(rc.id, rc.agent);
             this.checkUpdate(rc.id, rc.agent);
+        }
+
+        // Ré-appliquer la sélection de stack après un re-render (auto-refresh)
+        if (this._selectedStack) {
+            const cards = document.querySelectorAll('.grid-container-card');
+            cards.forEach(card => {
+                if (card.dataset.stack === this._selectedStack) {
+                    card.classList.remove('grid-dimmed');
+                } else {
+                    card.classList.add('grid-dimmed');
+                }
+            });
+            const stack = this.stacks.find(s => s.name === this._selectedStack);
+            if (stack) {
+                this.showStackContextPanel(stack, null);
+            }
         }
     },
 
@@ -626,6 +659,7 @@ const DockyApp = {
     },
 
     selectContainerInGrid(containerId, stackName) {
+        this._selectedStack = stackName;
         // Assombrir les containers qui ne sont pas dans ce stack
         const cards = document.querySelectorAll('.grid-container-card');
         cards.forEach(card => {
@@ -702,12 +736,13 @@ const DockyApp = {
         
         // Charger le compose si managed
         if (isManaged) {
-            this.selectedStackAgent = this.stackAgentMap[stack.name] || (this.currentAgentFilter !== "all" ? this.currentAgentFilter : null);
+            this.selectedStackAgent = this.stackAgentMap[stack.name] || null;
             this.loadEditor(stack.name);
         }
     },
 
     clearStackSelection() {
+        this._selectedStack = null;
         const cards = document.querySelectorAll('.grid-container-card');
         cards.forEach(card => card.classList.remove('grid-dimmed'));
     },
@@ -762,7 +797,7 @@ const DockyApp = {
 
     async stackAction(name, action) {
         this.showToast(`${action} stack "${name}"…`, "info");
-        const agent = this.stackAgentMap[name] || (this.currentAgentFilter !== "all" ? this.currentAgentFilter : null);
+        const agent = this.stackAgentMap[name] || null;
         const result = await this.apiPost(`/api/stacks/${encodeURIComponent(name)}/${action}` + this.agentQuery(agent));
         if (result && result.success) {
             this.showToast(`Stack ${action} OK`, "success");
@@ -919,7 +954,7 @@ const DockyApp = {
         let html = '<div class="ports-grid">';
         for (const p of data) {
             const srcClass = p.source === "docker" ? "port-docker" : "port-system";
-            const agentBadge = (this.currentAgentFilter === "all" && p.agent_name)
+            const agentBadge = p.agent_name
                 ? `<span class="port-agent">🖥 ${this.escapeHtml(p.agent_name)}</span>`
                 : "";
             html += `
@@ -987,7 +1022,7 @@ const DockyApp = {
 
     async loadEditor(name) {
         this.selectedStack = name;
-        this.selectedStackAgent = this.stackAgentMap[name] || (this.currentAgentFilter !== "all" ? this.currentAgentFilter : null);
+        this.selectedStackAgent = this.stackAgentMap[name] || null;
         const agent = this.selectedStackAgent;
 
         // External / standalone stacks cannot be edited (files are not in /data/stacks/)
@@ -1292,7 +1327,7 @@ const DockyApp = {
                 const opt = document.createElement("option");
                 opt.value = aName;
                 opt.textContent = aName + (agent.status === "online" ? " 🟢" : " 🔴");
-                if (this.currentAgentFilter === aName) opt.selected = true;
+                // Pas de sélection par défaut en mode multi-sélection
                 agentSelect.appendChild(opt);
             }
         }
@@ -1325,7 +1360,7 @@ const DockyApp = {
     },
 
     async _doImportPreview(sourcePath, stackName) {
-        const agent = this.stackAgentMap[stackName] || (this.currentAgentFilter !== 'all' ? this.currentAgentFilter : null);
+        const agent = this.stackAgentMap[stackName] || null;
         if (!agent) {
             this.showToast('Agent non trouvé pour cette stack', "error");
             return;
@@ -1439,7 +1474,7 @@ const DockyApp = {
     },
 
     async doImportDirect(sourcePath, stackName) {
-        const agent = this.stackAgentMap[stackName] || (this.currentAgentFilter !== 'all' ? this.currentAgentFilter : null);
+        const agent = this.stackAgentMap[stackName] || null;
         if (!agent) {
             this.showToast('Agent non trouvé pour cette stack', "error");
             return;
@@ -1482,7 +1517,7 @@ const DockyApp = {
         const sourcePath = (document.getElementById("import-source-path").value || "").trim();
         const stackName = (document.getElementById("import-stack-name").value || "").trim() || null;
         const agentSelect = document.getElementById("import-agent");
-        const agent = agentSelect ? agentSelect.value : (this.currentAgentFilter !== "all" ? this.currentAgentFilter : null);
+        const agent = agentSelect ? agentSelect.value : null;
 
         if (!sourcePath) {
             this.showToast("Le chemin source est requis", "error");
@@ -1537,7 +1572,7 @@ const DockyApp = {
             this.showToast("Le nom est requis", "error");
             return;
         }
-        const agentParam = this.agentQuery(this.currentAgentFilter !== "all" ? this.currentAgentFilter : this.selectedStackAgent);
+        const agentParam = this.agentQuery(this.selectedStackAgent);
         const resp = await fetch("/api/stacks" + agentParam, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1574,7 +1609,7 @@ const DockyApp = {
     async confirmDeleteStack() {
         const name = this.deleteTargetStack;
         if (!name) return;
-        const agent = this.stackAgentMap[name] || (this.currentAgentFilter !== "all" ? this.currentAgentFilter : null);
+        const agent = this.stackAgentMap[name] || null;
         const agentParam = this.agentQuery(agent);
         const resp = await fetch("/api/stacks/" + encodeURIComponent(name) + agentParam, {
             method: "DELETE",
