@@ -216,20 +216,16 @@ async def build_system_prompt() -> str:
     4. Stacks grouped by agent.
     5. Used ports grouped by agent.
     6. Content of soul.md.
-    7. Instructions about available tools.
+    7. Action rules (concise, direct).
     """
     parts: List[str] = []
 
     # 1. Identity
     parts.append(
-        "Tu es Docky, un assistant de gestion de stacks Docker Compose "
-        "multi-agents. Tu peux interagir avec plusieurs serveurs (agents) "
-        "distant, chacun exécutant son propre Docker. Pour chaque action "
-        "Docker, tu dois spécifier l'agent (serveur) ciblé via le paramètre "
-        "``agent_name``. Tu aides l'utilisateur à gérer ses containers, créer "
-        "et déployer des stacks, vérifier les ports, chercher des "
-        "informations sur le web et maintenir une mémoire persistante. "
-        "Tu réponds en français par défaut, de manière concise et utile."
+        "Tu es Docky, un assistant spécialisé dans la gestion de serveurs "
+        "Docker multi-agents. Tu interagis avec plusieurs serveurs (agents) "
+        "via des outils. Chaque action Docker nécessite un paramètre "
+        "``agent_name``. Sois direct et concis."
     )
 
     # 2. Refresh agent statuses
@@ -384,50 +380,24 @@ async def build_system_prompt() -> str:
         "spécifique ou si la stabilité est critique."
     )
 
-    # 7. Tool instructions
+    # 7. Règles d'action (concis, orienté action)
     parts.append(
-        "## Outils disponibles\n"
-        "Tu peux utiliser les outils (function calls) suivants pour agir sur "
-        "l'environnement Docker. Tous les outils Docker nécessitent un "
-        "paramètre ``agent_name`` indiquant le serveur (agent) ciblé:\n"
-        "- start_container / stop_container / restart_container\n"
-        "- start_stack / stop_stack / restart_stack\n"
-        "- update_stack (pull + up -d pour mettre à jour les images)\n"
-        "- get_container_logs\n"
-        "- get_container_details / get_container_stats\n"
-        "- list_containers (utilise 'all' pour tous les agents)\n"
-        "- get_stack_status\n"
-        "- get_agent_status (vérifie online/offline)\n"
-        "- exec_in_container (⚠ nécessite validation humaine — propose la "
-        "commande, ne l'exécute pas automatiquement)\n"
-        "- clean_agent (⚠ nécessite validation humaine — docker system prune, "
-        "action destructive)\n"
-        "- create_stack / modify_stack_file / delete_stack / deploy_stack\n"
-        "- get_stack_files / read_stack_file\n"
-        "- set_file_permissions\n"
-        "- get_used_ports / check_ports_available\n"
-        "- web_search / web_scrape / web_map (via Firecrawl/WebClaw)\n"
-        "- read_compose_reference (référence de syntaxe docker-compose)\n"
-        "- update_soul / read_soul\n\n"
-        "Règles:\n"
-        "- Spécifie toujours le bon ``agent_name`` pour chaque action Docker.\n"
-        "- Avant de créer un stack ou d'exposer un port, vérifie toujours que "
-        "les ports nécessaires sont disponibles avec check_ports_available.\n"
-        "- Pour exec_in_container, NE l'exécute jamais toi-même. Retourne la "
-        "commande proposée pour validation humaine.\n"
-        "- Pour clean_agent, NE l'exécute jamais toi-même. C'est une action "
-        "destructive qui nécessite validation humaine.\n"
-        "- Utilise update_soul pour mémiser des préférences ou informations "
-        "importantes que l'utilisateur te demande de retenir.\n"
-        "- Sois transparent: explique brièvement les actions que tu effectues.\n"
-        "- Tu peux lister les fichiers d'une stack avec get_stack_files et lire\n"
-        "  le contenu d'un fichier avec read_stack_file. Utilise-les pour\n"
-        "  diagnostiquer les problèmes de déploiement en lisant le\n"
-        "  docker-compose.yml, le .env et les logs des containers.\n"
-        "- IMPORTANT: Sois efficace avec les tool calls. Prépare le "
-        "docker-compose.yml complet en une seule modification plutôt que de "
-        "faire plusieurs modifications. Limite le nombre d'actions tool calls "
-        "au strict nécessaire."
+        "## Règles\n"
+        "1. **Agis directement** : quand on te demande de lister des containers, "
+        "liste-les. N'explique pas les outils, utilise-les.\n"
+        "2. **Utilise les outils** : pour toute action sur les serveurs, "
+        "appelle le bon outil immédiatement.\n"
+        "3. **Sois concis** dans tes réponses.\n"
+        "4. **Spécifie toujours** le bon ``agent_name`` pour chaque action "
+        "Docker.\n"
+        "5. **Sécurité** : pour exec_in_container et clean_agent, ne les "
+        "exécute jamais toi-même. Propose et attends la validation humaine.\n"
+        "6. **Vérifie les ports** avant de créer un stack ou d'exposer un port.\n"
+        "7. **Mémorise** avec update_soul ce que l'utilisateur demande de "
+        "retenir.\n"
+        "8. **Efficacité** : prépare le docker-compose.yml complet en une "
+        "seule modification.\n"
+        "9. **Réponds dans la langue de l'utilisateur**."
     )
 
     return "\n\n".join(parts)

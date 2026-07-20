@@ -1,5 +1,8 @@
 # Docky — Roadmap
 
+> **Dernière mise à jour :** 2025-06-15
+> **Version courante :** 0.0.1
+
 ## 🎯 Vision
 
 Docky est une plateforme de gestion de stacks Docker Compose multi-serveurs, assistée par LLM. L'architecture est divisée en deux composants :
@@ -19,9 +22,9 @@ L'orchestrateur se connecte aux agents, centralise la configuration, et offre un
 │  (Web UI + LLM + API Discord)             │
 │                                            │
 │  Dashboard (bin-packing, cards, couleurs) │
-│  Chat LLM (29 tools, Firecrawl, SOUL.md)  │
+│  Chat LLM (28 tools, WebClaw, SOUL.md)    │
 │  Éditeur Compose (proxy vers l'agent)     │
-│  Settings (LLM, agents, mot de passe)     │
+│  Settings (LLM, agents, mot de passe)      │
 │  Popups logs + console                     │
 │                                            │
 │  Cache en mémoire (états containers)       │
@@ -48,9 +51,9 @@ L'orchestrateur se connecte aux agents, centralise la configuration, et offre un
 - **Agent** : Python + FastAPI (service léger, pas d'UI)
 - **Communication** : REST API (JSON) + WebSocket (logs, console — TODO: proxy WS)
 - **LLM** : Client API compatible OpenAI (Ollama, Deepseek, Ollama Cloud, etc.)
-- **Recherche web** : Firecrawl API (search + scrape + map)
+- **Recherche web** : Firecrawl API / WebClaw auto-hébergé (endpoint configurable)
 - **Stockage Orchestrateur** :
-  - `settings.yaml` : paramètres globaux (endpoint LLM, modèle, clé Firecrawl, agents configurés)
+  - `settings.yaml` : paramètres globaux (endpoint LLM, modèle, clé Firecrawl/WebClaw, agents configurés)
   - `users.yaml` : utilisateurs (login + hash bcrypt)
   - `api_keys.yaml` : clés API + whitelist IP (pour agent Discord)
   - `soul.md` : mémoire persistante du LLM
@@ -63,6 +66,7 @@ L'orchestrateur se connecte aux agents, centralise la configuration, et offre un
 ### Cache (orchestrateur)
 
 - Cache en mémoire (dict Python) des états des containers et stacks par agent
+- **Stale-while-revalidate** : le cache sert les données immédiatement pour le rendu, le rafraîchissement se fait en arrière-plan
 - Rafraîchi à chaque cycle de refresh du dashboard
 - Pas de cache pour les fichiers (toujours fetch frais)
 
@@ -78,10 +82,10 @@ Le dashboard est composé de panneaux redimensionnables (click'n'drag, sauvegard
 ┌─────────────────────────────┬──────────────────────┐
 │  Top bar : Login / Settings │                      │
 │  Sélecteur d'agent (tous/A) │  Panel contextuel    │
-│  Chat toggle (💬)           │  (apparait au clic    │
+│  Chat toggle (💬)           │  (apparait au clic   │
 ├─────────────────────────────┤   sur un container)  │
 │                             │                      │
-│  Dashboard (bin-packing)    │  - Nom du stack       │
+│  Dashboard (grille/table)   │  - Nom du stack       │
 │  Cards de containers        │  - Badge Docky/Ext.  │
 │  groupées par stack (couleur)│  - Boutons stack     │
 │  Bordure + fond coloré      │  - Éditeur compose   │
@@ -91,15 +95,17 @@ Le dashboard est composé de panneaux redimensionnables (click'n'drag, sauvegard
 └─────────────────────────────┴──────────────────────┘
 ```
 
-### Dashboard (bin-packing)
+### Dashboard (vues grille et table)
 
-- **Algorithme skyline bottom-left** : chaque stack est un bloc rectangulaire (ceil(n/2) × ceil(n/ceil(n/2))), placé sur une grille globale sans trous
+- **Deux modes d'affichage** : grille (boustrophedon) ou table, toggleable via bouton 📋/🔲
+- **Mode grille** : packing boustrophedon bottom-left, containers groupés par stack avec couleur
 - **Tri par taille** pour le packing (gros blocs d'abord, petits remplissent les trous)
 - **Ordre d'affichage alphabétique** (stable entre re-renders)
-- **Boustrophedon** dans chaque bloc (serpent) pour garantir la connexion entre containers
+- **Mode table** : liste triable avec colonnes (nom, statut, image, ports, actions)
 - **Cards de containers** : nom, statut (dot coloré), image, CPU/RAM (barres), ports, boutons (▶⏹🔄📋🖥)
 - **Couleur par stack** : bordure + fond semi-transparent, déterministe (hash du nom)
 - **Clic sur un container** : assombrit les autres stacks + affiche le panel contextuel à droite
+- **Clic molette (bouton central)** : désélectionne la stack
 - **Clic dans le vide** : désélectionne
 
 ### Panel contextuel (clic sur container)
@@ -118,16 +124,19 @@ Le dashboard est composé de panneaux redimensionnables (click'n'drag, sauvegard
 
 - Interface texte simple, peut être masqué pour gagner de la place
 - Le LLM a accès à l'état de tous les agents en temps réel
-- 29 tools disponibles (voir section LLM)
+- 28 tools disponibles (voir section LLM)
 - Validation humaine pour exec dans un container et clean_agent
 - Tool calls visibles ("🔧 Actions effectuées: ...")
 - SOUL.md éditable via l'interface
+- **Bouton Clear chat** (🗑) pour vider la conversation
 - Warning : recommandation d'utiliser un LLM local
 
 ### Page Settings
 
-- **Configuration LLM** : endpoint, API key (masquée), modèle (dropdown avec scan des modèles disponibles), clé Firecrawl, bouton tester
-- **Agents** : liste des agents (statut online/offline), ajouter/modifier/supprimer, bouton tester
+- **Configuration LLM** : endpoint, API key (masquée), modèle (dropdown avec scan des modèles disponibles), bouton tester
+- **Endpoint Firecrawl/WebClaw** : champ pour endpoint WebClaw auto-hébergé (défaut: `https://api.firecrawl.dev/v1`)
+- **Firecrawl API Key** : clé API (optionnelle pour WebClaw local)
+- **Agents** : liste des agents (statut online/offline), ajouter/modifier/supprimer, bouton tester, **mappings de chemins** pour l'import
 - **Sécurité** : changement de mot de passe (ancien + nouveau + confirmation)
 - **Warning LLM local** : bandeau jaune recommandant un LLM local pour éviter les fuites de données
 
@@ -144,13 +153,13 @@ Le dashboard est composé de panneaux redimensionnables (click'n'drag, sauvegard
 
 ### Configuration
 - Endpoint configurable (compatible OpenAI API) dans settings.yaml
-- Modèle configurable (dropdown avec scan automatique des modèles disponibles)
+- Modèle configurable (dropdown avec scan automatique des modèles disponibles via `GET /v1/models`)
 - Paramètres (temperature, max_tokens, etc.)
 - Scan des modèles via GET /v1/models de l'API
 
-### Tools du LLM (29 tools)
+### Tools du LLM (28 outils)
 
-**Containers :**
+**Containers (10) :**
 - start_container(agent_name, container_id)
 - stop_container(agent_name, container_id)
 - restart_container(agent_name, container_id)
@@ -159,8 +168,9 @@ Le dashboard est composé de panneaux redimensionnables (click'n'drag, sauvegard
 - get_container_logs(agent_name, container_id, tail)
 - exec_in_container(agent_name, container_id, command) — ⚠️ validation humaine
 - list_containers(agent_name) — agent_name="all" pour tous les agents
+- get_agent_status(agent_name)
 
-**Stacks :**
+**Stacks (9) :**
 - start_stack(agent_name, stack_name)
 - stop_stack(agent_name, stack_name)
 - restart_stack(agent_name, stack_name)
@@ -169,8 +179,7 @@ Le dashboard est composé de panneaux redimensionnables (click'n'drag, sauvegard
 - create_stack(agent_name, name, compose_content, env_content)
 - modify_stack_file(agent_name, stack_name, filename, content)
 - delete_stack(agent_name, stack_name)
-- get_stack_files(agent_name, stack_name)
-- read_stack_file(agent_name, stack_name, filename)
+- get_stack_files(agent_name, stack_name) / read_stack_file(agent_name, stack_name, filename)
 - get_stack_status(agent_name, stack_name)
 
 **Fichiers :**
@@ -183,15 +192,32 @@ Le dashboard est composé de panneaux redimensionnables (click'n'drag, sauvegard
 **Maintenance :**
 - clean_agent(agent_name) — docker system prune — ⚠️ validation humaine
 
-**Web :**
-- web_search(query) — Firecrawl search
-- web_scrape(url) — Firecrawl scrape
-- web_map(url) — Firecrawl map
+**Web (WebClaw/Firecrawl) :**
+- web_search(query) — recherche via Firecrawl ou WebClaw auto-hébergé
+- web_scrape(url) — scrape via Firecrawl ou WebClaw auto-hébergé
+- web_map(url) — map via Firecrawl ou WebClaw auto-hébergé
 
 **Référence :**
 - read_compose_reference() — lit compose_reference.md
 - read_soul() — lit soul.md
 - update_soul(content) — met à jour soul.md
+
+### WebClaw / Firecrawl
+
+- Endpoint **configurable** dans settings.yaml (`firecrawl.endpoint`)
+- Par défaut : `https://api.firecrawl.dev/v1` (Firecrawl cloud)
+- Peut pointer vers une instance **WebClaw auto-hébergée** (ex: `http://webclaw:3002/v1`)
+- Clé API optionnelle (nécessaire pour Firecrawl cloud, pas pour WebClaw local)
+- Trois outils : search, scrape, map
+- Même API `/v1` compatible
+
+### Prompt système simplifié
+
+- Le system prompt est généré dynamiquement par `build_system_prompt()`
+- **Ne liste plus** les 28 outils un par un dans le prompt
+- Contient : identité Docky, agents disponibles, containers/stacks/ports par agent, soul.md, règles importantes pour docker-compose
+- **Règles orientées action** : concises, directives — « Agis directement », « Utilise les outils », « Sois concis »
+- Référence aux règles docker-compose (pas de `version:`, métadonnées obligatoires, `restart: unless-stopped`, tag `latest` par défaut)
 
 ### SOUL.md
 - Mémoire persistante du LLM
@@ -223,6 +249,13 @@ Chaque docker-compose.yml créé par Docky commence par un bloc de métadonnées
 ```
 
 Ces métadonnées sont parsées et affichées dans le contexte du LLM.
+
+### Historique de conversation
+
+- Le backend `run_chat()` retourne l'**historique complet** (`history`) incluant les tool calls et leurs résultats
+- Le frontend persiste cet historique et le renvoie au prochain message
+- L'historique exclut le system prompt (injecté dynamiquement à chaque tour)
+- Bouton **Clear chat** (🗑) pour réinitialiser la conversation
 
 ---
 
@@ -266,6 +299,12 @@ Ces métadonnées sont parsées et affichées dans le contexte du LLM.
 | GET | /agent/ports | Liste des ports utilisés |
 | POST | /agent/system/prune | Docker system prune |
 
+### Normalisation des noms de stack (bugs corrigés)
+
+- **Problème** : Docker Compose force les noms de projet en **lowercase**, mais les dossiers sur le filesystem peuvent avoir une casse mixte (ex: `MyStack` vs `mystack`)
+- **Fix 1 (`list_stacks`)** : les noms sont normalisés en lowercase dans le set `seen` pour éviter les doublons entre managed stacks (dossier) et external stacks (labels Docker toujours lowercase)
+- **Fix 2 (`_container_to_dict`)** : quand un `managed_stacks` set est fourni, le champ `stack` du container est normalisé pour **matcher la casse originale** du dossier sur le filesystem — les containers s'affichent correctement dans leur stack
+
 ### Stacks externes
 - Détection automatique via les labels Docker Compose (com.docker.compose.project)
 - Actions start/stop/restart fonctionnent avec --project-name (sans fichier compose)
@@ -284,6 +323,7 @@ Ces métadonnées sont parsées et affichées dans le contexte du LLM.
 - Import depuis un dossier externe (Dockge, etc.)
 - Copie du docker-compose.yml + .env + fichiers de config
 - Conversion automatique des chemins relatifs → absolus
+- **Mappings de chemins** (host → local) configurables dans les paramètres de l'agent
 - Preview (dry-run) avant import : affiche le compose converti + conversions + warnings
 - Détection automatique du chemin source via les labels Docker
 - Bouton 📥 en un clic sur les stacks externes
@@ -321,7 +361,7 @@ Ces métadonnées sont parsées et affichées dans le contexte du LLM.
 │   │   ├── compose_reference.md  # Référence docker-compose (bundlé)
 │   │   ├── auth/           # Authentification JWT
 │   │   ├── agent_manager/  # Communication avec agents distants
-│   │   ├── llm/            # Client LLM + 29 tools + Firecrawl
+│   │   ├── llm/            # Client LLM + 28 tools + WebClaw/Firecrawl
 │   │   ├── routes/         # Routes API + dashboard
 │   │   └── static/         # JS, CSS
 │   ├── templates/          # Templates HTML (login, dashboard, settings, popups)
@@ -412,18 +452,20 @@ Ces métadonnées sont parsées et affichées dans le contexte du LLM.
 - [x] Client API compatible OpenAI
 - [x] Interface de chat (texte, toggle 💬)
 - [x] Injection du contexte (état containers + soul.md + métadonnées)
-- [x] 29 tools disponibles
+- [x] 28 tools disponibles (sans liste verbeuse dans le prompt)
 - [x] Validation humaine pour exec dans container
 - [x] Validation humaine pour clean_agent
 - [x] Mise à jour automatique de soul.md par le LLM
 - [x] Édition manuelle de soul.md via l'interface
-- [x] Intégration Firecrawl (search + scrape + map, sans restriction)
+- [x] Intégration WebClaw/Firecrawl (search + scrape + map) — endpoint configurable
 - [x] Création/édition de fichiers arbitraires par le LLM
 - [x] Gestion des permissions (chmod) par le LLM
 - [x] Vérification des ports par le LLM
 - [x] read_compose_reference tool
 - [x] Scan des modèles disponibles (dropdown dans Settings)
-- [x] Historique de conversation (avec tool calls mémorisés)
+- [x] Historique de conversation complet (tool calls + résultats retournés au frontend)
+- [x] **Prompt système simplifié** : règles concises, orientées action (plus de liste verbeuse des outils)
+- [x] **Bouton Clear chat** (🗑) pour vider la conversation
 - [x] Warning LLM local sur la page Settings
 
 ### Phase 5 — Refactoring multi-containers ✅
@@ -445,13 +487,15 @@ Ces métadonnées sont parsées et affichées dans le contexte du LLM.
 - [x] Import de stacks externes (Dockge, etc.) avec dry-run/preview
 - [x] Détection automatique du chemin source des stacks externes
 - [x] Conversion des chemins relatifs → absolus lors de l'import
-- [x] Dashboard avec bin-packing (skyline bottom-left) sans trous
+- [x] **Mappings de chemins** configurables par agent (host → local)
+- [x] Dashboard avec mode grille (boustrophedon) + **mode table** (toggle 📋/🔲)
 - [x] Cards de containers groupées par stack avec couleurs distinctes
 - [x] Boustrophedon dans les blocs pour la connexion des containers
 - [x] Clic sur un container → panel contextuel (stack info + compose + actions)
 - [x] Assombrissement des autres stacks au clic
+- [x] **Middle click (bouton central)** pour désélectionner une stack
 - [x] Panneaux redimensionnables (click'n'drag, sauvegardé en localStorage)
-- [x] Toggle du chat (💾 masquable)
+- [x] Toggle du chat (💬 masquable)
 - [x] Popups logs + console (fenêtres séparées)
 - [x] Changement de mot de passe dans Settings
 - [x] Métadonnées Docky dans les compose (parsing + contexte LLM)
@@ -461,15 +505,22 @@ Ces métadonnées sont parsées et affichées dans le contexte du LLM.
 - [x] .env.example pour la configuration
 - [x] .gitignore (protection des secrets)
 - [x] Versioning (version.txt)
+- [x] **Cache stale-while-revalidate** pour les données dashboard
+- [x] **Filtre multi-agent** (toggle par agent, masquage/affichage)
+- [x] **Sélecteur de stack amélioré** : affiche le nom de l'agent (`@agent`), highlight dans le dashboard
+- [x] **Recherche combobox supprimée** (stack search + container search retirés)
+- [x] **Bugfix : casse des noms de stack** — normalisation lowercase dans list_stacks
+- [x] **Bugfix : containers non affichés** — normalisation du nom de stack dans les containers pour matcher le filesystem
+- [x] **WebClaw/Firecrawl : endpoint configurable** dans settings.yaml + page Settings
 - [x] Scripts supprimés (install.sh, update.sh) — utilisation des images Docker
 
-### Phase 6 — API Agent externe (Discord)
+### Phase 6 — API Agent externe (Discord) 🔜
 - [ ] Endpoints REST orchestrateur (agents, containers, stacks, logs)
 - [ ] Système de clé API + whitelist IP
 - [ ] Validation humaine à la première connexion
 - [ ] Documentation de l'API
 
-### Phase 7 — Polish et Sécurité
+### Phase 7 — Polish et Sécurité 🔜
 - [ ] Proxy WebSocket pour logs/console (actuellement popups HTTP)
 - [ ] Design final et cohérent (refonte UI)
 - [ ] Gestion des erreurs et notifications
@@ -489,3 +540,37 @@ Ces métadonnées sont parsées et affichées dans le contexte du LLM.
 - Installation via docker pull + docker-compose (plus besoin de scripts d'install)
 - L'outil est destiné à un usage personnel dans un premier temps, mais conçu pour pouvoir évoluer
 - Les Phases 1-5 et améliorations post-Phase 5 ont été réalisées
+
+## 🔑 Décisions clés
+
+### WebClaw/Firecrawl : endpoint configurable
+- Le settings.yaml contient désormais une section `firecrawl` avec `endpoint` et `api_key`
+- L'endpoint par défaut est `https://api.firecrawl.dev/v1` (Firecrawl cloud)
+- L'utilisateur peut le remplacer par une instance **WebClaw auto-hébergée** (ex: `http://webclaw:3002/v1`)
+- La clé API est optionnelle : nécessaire pour Firecrawl cloud, ignorée pour WebClaw local
+- Pas de changement dans les outils LLM (même API /v1 compatible)
+
+### Prompt système simplifié
+- Le system prompt ne liste **plus** les 28 outils un par un
+- À la place : règles concises orientées action (« Agis directement », « Utilise les outils », « Sois concis »)
+- Le LLM découvre les outils via la définition OpenAI `tools` (transmise dans l'appel API)
+- Résultat : prompt plus court, moins de tokens consommés, comportement plus fiable
+
+### Normalisation des noms de stack (correction de bugs)
+- Docker Compose force le **lowercase** pour les noms de projet
+- Les dossiers sur le filesystem peuvent avoir une **casse mixte**
+- `list_stacks()` normalise les noms en lowercase dans le set de déduplication
+- `_container_to_dict()` re-normalise vers la casse originale du dossier pour l'affichage
+- Les deux bugs (doublons + containers invisibles) sont corrigés
+
+### Interface utilisateur
+- **Deux modes de vue** : grille (boustrophedon) et table, persisté en localStorage
+- **Sélecteur de stack** : affiche le nom de l'agent en suffixe (`@agent`), ne liste que les stacks managed
+- **Middle click** sur le dashboard → désélectionne la stack courante
+- **Recherche combobox** supprimée (simplification de l'UI)
+- **Clear chat** : bouton dédié pour réinitialiser la conversation LLM
+
+### Cache stale-while-revalidate
+- Le cache dashboard sert les données immédiatement pour un rendu instantané
+- Le rafraîchissement se fait en arrière-plan sans bloquer l'interface
+- Évite les écrans blancs ou les temps d'attente lors des re-renders
