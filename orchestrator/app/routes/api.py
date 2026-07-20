@@ -7,6 +7,7 @@ parameter or, for POST bodies, the ``agent`` field). The special value
 ``all`` aggregates data from every configured agent.
 """
 
+import asyncio
 import json
 import logging
 from typing import Optional
@@ -673,21 +674,83 @@ async def ws_container_logs(websocket: WebSocket, container_id: str):
 async def ws_container_exec(websocket: WebSocket, container_id: str):
     """WebSocket for interactive exec in a container (bidirectional).
 
-    TODO: proxy this WebSocket toward the agent's own
-    ``/agent/containers/{id}/exec`` endpoint. Implementing a full
-    bidirectional WebSocket proxy is deferred to a later iteration.
+    Proxies the client WebSocket to the target agent's
+    ``/agent/containers/{id}/exec`` endpoint, relaying all messages in
+    both directions for an interactive PTY shell.
     """
+    # Auth
     username = _check_auth_ws(websocket)
     if username is None:
         await websocket.close(code=4401)
         return
 
+    # Get agent param
+    agent = websocket.query_params.get("agent", "")
+    if not agent:
+        await websocket.close(code=4400)
+        return
+
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        await websocket.close(code=4403)
+        return
+
+    # Get agent URL and API key
+    agent_info = agent_manager.agents.get(agent_name)
+    if not agent_info:
+        await websocket.close(code=4404)
+        return
+
+    agent_url = agent_info.get("url", "").rstrip("/")
+    agent_api_key = agent_info.get("api_key", "")
+
+    # Build target WS URL
+    ws_proto = "wss" if agent_url.startswith("https") else "ws"
+    agent_path = agent_url.split("://", 1)[1] if "://" in agent_url else agent_url
+    target_url = f"{ws_proto}://{agent_path}/agent/containers/{container_id}/exec"
+    if agent_api_key:
+        target_url += f"?api_key={agent_api_key}"
+
+    # Accept the client WebSocket
     await websocket.accept()
-    await websocket.send_text(
-        "WebSocket proxy to agent not yet implemented. "
-        "Use the agent's WebSocket endpoint directly."
-    )
-    await websocket.close(code=1011)
+
+    try:
+        import websockets as ws_lib
+        async with ws_lib.connect(target_url) as agent_ws:
+            async def client_to_agent():
+                try:
+                    while True:
+                        msg = await websocket.receive()
+                        if msg["type"] == "websocket.disconnect":
+                            break
+                        if "bytes" in msg:
+                            await agent_ws.send(msg["bytes"])
+                        elif "text" in msg:
+                            await agent_ws.send(msg["text"])
+                except Exception:
+                    pass
+
+            async def agent_to_client():
+                try:
+                    async for msg in agent_ws:
+                        if isinstance(msg, bytes):
+                            await websocket.send_bytes(msg)
+                        else:
+                            await websocket.send_text(msg)
+                except Exception:
+                    pass
+
+            await asyncio.gather(client_to_agent(), agent_to_client())
+    except Exception as e:
+        try:
+            await websocket.send_text(json.dumps({"error": str(e)}))
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 @router.post("/containers/{container_id}/exec")

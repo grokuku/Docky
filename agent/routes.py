@@ -96,28 +96,82 @@ async def stream_container_logs(websocket: WebSocket, container_id: str):
 
 @router.websocket("/containers/{container_id}/exec")
 async def exec_in_container(websocket: WebSocket, container_id: str):
-    """WebSocket for interactive exec in a container (bidirectional).
+    """WebSocket for interactive PTY exec in a container (bidirectional).
 
-    The client sends text commands; the agent executes them one-shot and
-    returns the output.  Auth is via the ``api_key`` query parameter.
+    Creates an interactive shell (bash) inside the container and connects it
+    to the WebSocket via a Docker exec PTY.  Supports resize events sent as
+    ``{"type":"resize","cols":X,"rows":Y}`` JSON messages.
+
+    Auth is via the ``api_key`` query parameter (same as ``logs/stream``).
     """
     if not await verify_api_key_ws(websocket):
         await websocket.close(code=4401)
         return
 
     await websocket.accept()
+
+    # Create interactive exec instance
     try:
-        while True:
-            command = await websocket.receive_text()
-            if not command.strip():
-                continue
-            output = docker_manager.exec_in_container(container_id, command, tty=False)
-            await websocket.send_text(output)
-    except WebSocketDisconnect:
-        pass
+        sock, exec_id = await asyncio.to_thread(
+            docker_manager.exec_interactive_start, container_id
+        )
     except Exception as e:
+        await websocket.send_text(f"Error: {e}")
+        await websocket.close()
+        return
+
+    loop = asyncio.get_event_loop()
+
+    async def read_docker():
+        """Read from Docker socket and send to WebSocket."""
         try:
-            await websocket.send_text(f"[error] {e}")
+            while True:
+                data = await loop.sock_recv(sock._sock, 4096)
+                if not data:
+                    break
+                await websocket.send_bytes(data)
+        except Exception:
+            pass
+
+    async def read_websocket():
+        """Read from WebSocket and send to Docker socket."""
+        try:
+            while True:
+                msg = await websocket.receive()
+                if msg["type"] == "websocket.disconnect":
+                    break
+
+                if msg["type"] == "websocket.receive":
+                    if isinstance(msg.get("text"), str):
+                        text = msg["text"]
+                        try:
+                            import json
+                            cmd = json.loads(text)
+                            if cmd.get("type") == "resize":
+                                await asyncio.to_thread(
+                                    docker_manager.exec_resize,
+                                    container_id, exec_id,
+                                    cmd.get("rows", 24), cmd.get("cols", 80)
+                                )
+                                continue
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                        # Send as bytes
+                        await loop.sock_sendall(sock._sock, text.encode())
+                    elif isinstance(msg.get("bytes"), bytes):
+                        await loop.sock_sendall(sock._sock, msg["bytes"])
+        except Exception:
+            pass
+
+    try:
+        await asyncio.gather(read_docker(), read_websocket())
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+        try:
+            await websocket.close()
         except Exception:
             pass
 

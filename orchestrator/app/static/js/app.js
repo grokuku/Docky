@@ -165,6 +165,7 @@ const DockyApp = {
         } else {
             this._hiddenAgents.add(name);
         }
+        localStorage.setItem('docky_hidden_agents', JSON.stringify([...this._hiddenAgents]));
         this.expandedStack = null;
         this.renderAgentSelector();
         // Ne pas fetch tout depuis l'API, juste re-rendre le grid avec le nouveau filtre
@@ -2852,6 +2853,19 @@ const DockyApp = {
             this.chatVisible = true;
         }
         this.applyChatVisibility();
+
+        // Restore hidden agents filter from localStorage
+        try {
+            const saved = localStorage.getItem('docky_hidden_agents');
+            if (saved) {
+                const arr = JSON.parse(saved);
+                if (Array.isArray(arr)) {
+                    this._hiddenAgents = new Set(arr);
+                }
+            }
+        } catch (e) {
+            this._hiddenAgents = new Set();
+        }
 
         // Load view mode preference
         this._viewMode = localStorage.getItem('docky-view-mode') || 'grid';

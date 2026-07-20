@@ -370,6 +370,38 @@ def exec_in_container_stream(container_id: str, command: str):
         yield f"[error] {e}"
 
 
+def exec_interactive_start(container_id: str, shell: str = "/bin/bash") -> tuple:
+    """Create an interactive exec instance with PTY, return (socket, exec_id).
+
+    The returned socket is made non-blocking for use with ``asyncio``.
+    """
+    client = get_docker_client()
+
+    # Create exec instance with TTY
+    exec_id = client.api.exec_create(
+        container_id,
+        ["/bin/sh", "-c", f"TERM=xterm-256color exec {shell} -l"],
+        tty=True,
+        stdin=True,
+        stdout=True,
+        stderr=True,
+    )['Id']
+
+    # Start exec with socket mode
+    sock = client.api.exec_start(exec_id, tty=True, socket=True)
+
+    # Make socket non-blocking for asyncio
+    sock._sock.setblocking(False)
+
+    return sock, exec_id
+
+
+def exec_resize(container_id: str, exec_id: str, height: int, width: int):
+    """Resize the TTY for an exec instance."""
+    client = get_docker_client()
+    client.api.exec_resize(exec_id, height=height, width=width)
+
+
 # ---------------------------------------------------------------------------
 # Stacks
 # ---------------------------------------------------------------------------
