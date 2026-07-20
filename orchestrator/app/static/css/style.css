@@ -2178,7 +2178,7 @@ body {
     -webkit-user-select: none;
     -moz-user-select: none;
     -ms-user-select: none;
-    transition: background var(--transition);
+    transition: background var(--transition), opacity 0.3s ease, filter 0.3s ease;
     font-size: 0.8rem;
 }
 

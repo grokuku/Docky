@@ -26,7 +26,6 @@ const DockyApp = {
     agentsList: [],              // [{name, status, ...}]
     agentsRefreshInterval: null,
     agentsRefreshTimer: 30000,
-    stackAgentMap: {},           // stackName -> agentName
     selectedStackAgent: null,    // agent for the currently edited stack
     expandedStackAgent: null,    // agent for the currently expanded stack
     logsContainerAgent: null,    // agent for the container whose logs are open
@@ -232,12 +231,6 @@ const DockyApp = {
         if (stacksResp === null) return;
         this.stacks = stacksResp;
 
-        // Build stackAgentMap with composite key name@agent
-        this.stackAgentMap = {};
-        for (const s of stacksResp) {
-            if (s.agent_name) this.stackAgentMap[s.name + '@' + s.agent_name] = s.agent_name;
-        }
-
         // Parse containers
         let containersData = [];
         if (containersResp) {
@@ -296,7 +289,8 @@ const DockyApp = {
 
         let html = '<div class="stacks-list">';
         this.stacks.forEach((stack) => {
-            const isExpanded = this.expandedStack === stack.name;
+            const compositeKey = stack.name + '@' + (stack.agent_name || '');
+            const isExpanded = this.expandedStack === compositeKey;
             const statusBadge = this.statusBadge(stack.status);
             const containerInfo = stack.container_count > 0
                 ? `${stack.running_count}/${stack.container_count} actifs`
@@ -325,7 +319,7 @@ const DockyApp = {
                 : '';
             // One-click import button for external stacks (not standalone)
             const importBtn = (!isManaged && !isStandalone)
-                ? '<button class="icon-btn" title="Importer dans Docky" onclick="DockyApp.importExternal(\'' + this.escapeHtml(stack.source_path || '') + '\', \'' + this.escapeHtml(stack.name) + '\')">📥</button>'
+                ? '<button class="icon-btn" title="Importer dans Docky" onclick="DockyApp.importExternal(\'' + this.escapeHtml(stack.source_path || '') + '\', \'' + this.escapeHtml(stack.name) + '\', \'' + escapedAgent + '\')">📥</button>'
                 : '';
             // Stack-level start/stop/restart only for real stacks (not standalone)
             const stackActionBtns = isStandalone
@@ -336,8 +330,8 @@ const DockyApp = {
                   + '<button class="icon-btn" title="Update" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'update\', \'' + escapedAgent + '\')">⬆</button>';
 
             html += `
-                <div class="stack-card ${isExpanded ? "expanded" : ""}" data-stack="${this.escapeHtml(stack.name)}">
-                    <div class="stack-card-header" onclick="DockyApp.toggleStack('${this.escapeHtml(stack.name)}')">
+                <div class="stack-card ${isExpanded ? "expanded" : ""}" data-stack="${this.escapeHtml(stack.name)}" data-agent="${escapedAgent}">
+                    <div class="stack-card-header" onclick="DockyApp.toggleStack('${this.escapeHtml(stack.name)}', '${escapedAgent}')">
                         <div class="stack-card-info">
                             <span class="stack-name">${this.escapeHtml(stack.name)}</span>
                             ${typeBadge}
@@ -355,7 +349,7 @@ const DockyApp = {
                             <span class="stack-chevron">${isExpanded ? "▼" : "▶"}</span>
                         </div>
                     </div>
-                    <div class="stack-containers ${isExpanded ? "" : "hidden"}" id="containers-${this.escapeHtml(stack.name)}">
+                    <div class="stack-containers ${isExpanded ? "" : "hidden"}" id="containers-${this.escapeHtml(stack.name)}@${escapedAgent}">
                         <div class="placeholder"><p>Chargement des containers…</p></div>
                     </div>
                 </div>`;
@@ -365,7 +359,10 @@ const DockyApp = {
 
         // If a stack is expanded, load its containers
         if (this.expandedStack) {
-            this.loadContainers(this.expandedStack);
+            const atIdx = this.expandedStack.lastIndexOf('@');
+            const expName = atIdx > 0 ? this.expandedStack.substring(0, atIdx) : this.expandedStack;
+            const expAgent = atIdx > 0 ? this.expandedStack.substring(atIdx + 1) : '';
+            this.loadContainers(expName, expAgent);
         }
     },
 
@@ -391,26 +388,26 @@ const DockyApp = {
         return `<span class="status-badge ${cls}">● ${this.escapeHtml(label)}</span>`;
     },
 
-    async toggleStack(name) {
-        if (this.expandedStack === name) {
+    async toggleStack(name, agent) {
+        const key = name + '@' + (agent || '');
+        if (this.expandedStack === key) {
             this.expandedStack = null;
         } else {
-            this.expandedStack = name;
+            this.expandedStack = key;
         }
         this.renderStacks();
     },
 
-    loadContainers(stackName) {
-        const target = document.getElementById("containers-" + stackName);
+    loadContainers(stackName, agent) {
+        const target = document.getElementById("containers-" + stackName + "@" + (agent || ''));
         if (!target) return;
-        // Trouver l'agent depuis l'objet stack (évite stackAgentMap[name] ambigu)
-        const stack = this.stacks.find(s => s.name === stackName);
-        const agent = stack ? (stack.agent_name || null) : null;
-        this.expandedStackAgent = agent;
+        // Trouver l'objet stack avec la clé composite name@agent
+        const stack = this.stacks.find(s => s.name === stackName && (s.agent_name||'') === (agent||''));
+        this.expandedStackAgent = agent || null;
         // Display instantly from the pre-loaded cache (no API call)
         const containers = (this._allContainersCache || []).filter(c => {
             if (stackName === 'Standalone') return !c.stack;
-            return c.stack === stackName;
+            return c.stack === stackName && (c.agent_name||'') === (agent||'');
         });
         this.renderContainers(target, containers, stackName, agent);
     },
@@ -508,10 +505,10 @@ const DockyApp = {
         for (const stack of sortedStacks) {
             const containers = allContainers.filter(c => {
                 if (stack.name === 'Standalone') return !c.stack;
-                return c.stack === stack.name;
+                return c.stack === stack.name && (c.agent_name||'') === (stack.agent_name||'');
             });
             if (containers.length === 0) continue;
-            
+
             // Si des filtres d'agents sont actifs, ignorer les stacks dont l'agent est caché
             if (this._hiddenAgents.size > 0) {
                 const stackAgent = stack.agent_name || '';
@@ -684,7 +681,7 @@ const DockyApp = {
         for (const stack of sortedStacks) {
             const containers = allContainers.filter(c => {
                 if (stack.name === 'Standalone') return !c.stack;
-                return c.stack === stack.name;
+                return c.stack === stack.name && (c.agent_name||'') === (stack.agent_name||'');
             });
             if (containers.length === 0) continue;
 
@@ -733,7 +730,7 @@ const DockyApp = {
         // Load stats for running containers
         const runningContainers = allContainers.filter(c => c.status === 'running');
         for (const rc of runningContainers) {
-            const rcStack = this.stacks.find(s => s.name === (rc.stack || ''));
+            const rcStack = this.stacks.find(s => s.name === (rc.stack||'') && (s.agent_name||'') === (rc.agent_name||''));
             const agent = rcStack ? (rcStack.agent_name || '') : '';
             this.loadContainerStats(rc.id, agent);
             this.checkUpdate(rc.id, agent);
@@ -745,9 +742,9 @@ const DockyApp = {
             rows.forEach(row => {
                 const rowKey = (row.dataset.stack || '') + '@' + (row.dataset.agent || '');
                 if (rowKey === this._selectedStack) {
-                    row.style.opacity = '';
+                    row.classList.remove('grid-dimmed');
                 } else {
-                    row.style.opacity = '0.3';
+                    row.classList.add('grid-dimmed');
                 }
             });
             // Extraire le nom et l'agent depuis la clé composite
@@ -861,9 +858,9 @@ const DockyApp = {
             const rowAgent = row.dataset.agent;
             const rowKey = rowStack + '@' + (rowAgent || '');
             if (rowKey === key) {
-                row.style.opacity = '';
+                row.classList.remove('grid-dimmed');
             } else {
-                row.style.opacity = '0.3';
+                row.classList.add('grid-dimmed');
             }
         });
         
@@ -902,7 +899,7 @@ const DockyApp = {
             if (!isManaged && !isStandalone) {
                 if (stack.source_path) {
                     // Chemin détecté automatiquement → import direct avec preview
-                    html += '<button class="btn btn-sm btn-info" onclick="DockyApp.importExternal(\'' + this.escapeHtml(stack.source_path) + '\', \'' + escapedName + '\')">📥 Importer</button>';
+                    html += '<button class="btn btn-sm btn-info" onclick="DockyApp.importExternal(\'' + this.escapeHtml(stack.source_path) + '\', \'' + escapedName + '\', \'' + escapedAgent + '\')">📥 Importer</button>';
                 } else {
                     // Chemin non détecté → ouvrir le modal manuel avec le nom pré-rempli
                     html += '<button class="btn btn-sm btn-info" onclick="DockyApp.openImportModalForStack(\'' + escapedName + '\')">📥 Importer</button>';
@@ -965,7 +962,7 @@ const DockyApp = {
         const cards = document.querySelectorAll('.grid-container-card');
         cards.forEach(card => card.classList.remove('grid-dimmed'));
         const rows = document.querySelectorAll('.table-container-row');
-        rows.forEach(row => row.style.opacity = '');
+        rows.forEach(row => row.classList.remove('grid-dimmed'));
         const selector = document.getElementById('stack-selector');
         if (selector) selector.value = '';
         this.renderEditorPlaceholder();
@@ -1602,9 +1599,9 @@ const DockyApp = {
             const rowAgent = row.dataset.agent;
             const rowKey = rowStack + '@' + (rowAgent || '');
             if (rowKey === key) {
-                row.style.opacity = '';
+                row.classList.remove('grid-dimmed');
             } else {
-                row.style.opacity = '0.3';
+                row.classList.add('grid-dimmed');
             }
         });
 
@@ -1619,12 +1616,8 @@ const DockyApp = {
         }
 
         // Charger l'éditeur
-        if (agent) {
-            this.selectedStackAgent = agent;
-            this.loadEditor(name, agent);
-        } else {
-            this.loadEditor(name, agent || this.stacks.find(s => s.name === name)?.agent_name);
-        }
+        this.selectedStackAgent = agent || null;
+        this.loadEditor(name, agent);
     },
 
     async loadEditor(name, agent) {
@@ -1633,7 +1626,7 @@ const DockyApp = {
 
 
         // External / standalone stacks cannot be edited (files are not in /data/stacks/)
-        const stackInfo = this.stacks.find((s) => s.name === name);
+        const stackInfo = this.stacks.find((s) => s.name === name && (s.agent_name||'') === (agent||''));
         if (stackInfo && (stackInfo.managed === false || stackInfo.standalone === true)) {
             this.stackFiles = [];
             this.currentFile = null;
@@ -1994,7 +1987,7 @@ const DockyApp = {
         if (modal) modal.classList.add("hidden");
     },
 
-    importExternal(sourcePath, stackName) {
+    importExternal(sourcePath, stackName, agent) {
         if (!sourcePath) {
             this.showToast('Chemin source non détecté pour cette stack', "error");
             return;
@@ -2002,12 +1995,10 @@ const DockyApp = {
         // Dry-run first to get a preview, then show a modal before the
         // actual import.
         this._importPreview = null;
-        this._doImportPreview(sourcePath, stackName);
+        this._doImportPreview(sourcePath, stackName, agent);
     },
 
-    async _doImportPreview(sourcePath, stackName) {
-        const stack = this.stacks.find(s => s.name === stackName);
-        const agent = stack ? (stack.agent_name || null) : null;
+    async _doImportPreview(sourcePath, stackName, agent) {
         if (!agent) {
             this.showToast('Agent non trouvé pour cette stack', "error");
             return;
@@ -2120,9 +2111,7 @@ const DockyApp = {
         }
     },
 
-    async doImportDirect(sourcePath, stackName) {
-        const stack = this.stacks.find(s => s.name === stackName);
-        const agent = stack ? (stack.agent_name || null) : null;
+    async doImportDirect(sourcePath, stackName, agent) {
         if (!agent) {
             this.showToast('Agent non trouvé pour cette stack', "error");
             return;
