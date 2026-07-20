@@ -181,6 +181,30 @@ async def update_check(request: Request, container_id: str):
     return await asyncio.to_thread(docker_manager.check_image_update, container_id)
 
 
+@router.get("/containers/{container_id}/edit-spec")
+async def get_container_spec_for_edit(request: Request, container_id: str):
+    auth_err = require_api_key(request)
+    if auth_err:
+        return auth_err
+    spec = await asyncio.to_thread(docker_manager._get_container_full_spec, container_id)
+    if spec is None:
+        return JSONResponse(status_code=404, content={"error": "Container not found"})
+    return spec
+
+
+@router.post("/containers/{container_id}/update")
+async def update_container_route(request: Request, container_id: str):
+    auth_err = require_api_key(request)
+    if auth_err:
+        return auth_err
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON"})
+    result = await docker_manager.update_container(container_id, data)
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Stacks
 # ---------------------------------------------------------------------------

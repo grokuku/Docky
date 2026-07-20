@@ -308,6 +308,23 @@
         </div>
     </div>
 
+    <!-- Container Edit Modal -->
+    <div id="container-edit-modal" class="modal hidden">
+        <div class="modal-content" style="width:90%;max-width:750px;max-height:85vh;">
+            <div class="modal-header">
+                <h3 id="container-edit-title">✏️ Éditer le container</h3>
+                <button class="btn btn-ghost btn-sm" onclick="DockyApp.closeContainerEdit()">✕</button>
+            </div>
+            <div class="modal-body modal-body-pad" id="container-edit-body">
+                <!-- Dynamic content -->
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" onclick="DockyApp.closeContainerEdit()">Annuler</button>
+                <button class="btn btn-primary" onclick="DockyApp.applyContainerEdit()">💾 Appliquer</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast -->
     <div id="toast" class="toast hidden"></div>
 

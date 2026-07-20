@@ -748,7 +748,7 @@ const DockyApp = {
         const escapedName = this.escapeHtml(stackName);
         const ports = (c.ports || []).filter(p => p.host_port).map(p => p.host_port + '→' + p.container).join(", ");
 
-        return '<div class="table-container-row" data-id="' + escapedId + '" data-stack="' + escapedName + '" data-agent="' + this.escapeHtml(agent || '') + '" style="border-left-color:' + borderColor + '" onclick="event.stopPropagation(); DockyApp.selectContainerInGrid(\'' + escapedId + '\', \'' + escapedName + '\', \'' + this.escapeHtml(agent || '') + '\')">'
+        return '<div class="table-container-row" data-id="' + escapedId + '" data-stack="' + escapedName + '" data-agent="' + this.escapeHtml(agent || '') + '" style="border-left-color:' + borderColor + '" onclick="event.stopPropagation(); DockyApp.selectContainerInGrid(\'' + escapedId + '\', \'' + escapedName + '\', \'' + this.escapeHtml(agent || '') + '\')" ondblclick="event.stopPropagation(); DockyApp.openContainerEdit(\'' + escapedId + '\', \'' + escapedName + '\', \'' + this.escapeHtml(agent || '') + '\')">'
             + '<div class="table-row-status">' + statusDot + '</div>'
             + '<div class="table-row-name" title="' + name + '">' + name + '</div>'
             + '<div class="table-row-image" title="' + image + '">📦 ' + image + '</div>'
@@ -800,7 +800,8 @@ const DockyApp = {
         const portsBadge = ports ? '<span class="meta-badge meta-ports grid-card-ports">🔌 ' + this.escapeHtml(ports) + '</span>' : '';
         
         return '<div class="grid-container-card" data-id="' + escapedId + '" data-stack="' + this.escapeHtml(stackName) + '" data-agent="' + this.escapeHtml(agent || '') + '" style="left:' + left + 'px;top:' + top + 'px;width:' + width + 'px;height:' + height + 'px;z-index:3;background-color:' + bgColor + ';border-color:' + borderColor + '"' 
-            + ' onclick="event.stopPropagation(); DockyApp.selectContainerInGrid(\'' + escapedId + '\', \'' + this.escapeHtml(stackName) + '\', \'' + this.escapeHtml(agent || '') + '\')">'
+            + ' onclick="event.stopPropagation(); DockyApp.selectContainerInGrid(\'' + escapedId + '\', \'' + this.escapeHtml(stackName) + '\', \'' + this.escapeHtml(agent || '') + '\')"'
+            + ' ondblclick="event.stopPropagation(); DockyApp.openContainerEdit(\'' + escapedId + '\', \'' + this.escapeHtml(stackName) + '\', \'' + this.escapeHtml(agent || '') + '\')"'
             + '<div class="grid-card-top"><span class="grid-card-name" title="' + name + '">' + name + '</span>' + statusDot + '</div>'
             + '<div class="grid-card-image" title="' + image + '">📦 ' + image + '</div>'
             + '<div class="grid-card-resources" id="resources-' + escapedId + '"><div class="resource-line"><span class="resource-label">CPU</span><div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div><span class="resource-value">—</span></div><div class="resource-line"><span class="resource-label">RAM</span><div class="progress-bar"><div class="progress-fill ram" style="width:0%"></div></div><span class="resource-value">—</span></div></div>'
@@ -1220,6 +1221,244 @@ const DockyApp = {
         }
         document.getElementById("console-modal").classList.add("hidden");
         this.consoleContainerId = null;
+    },
+
+    // -------------------------------------------------------
+    // Container Edit Modal
+    // -------------------------------------------------------
+
+    async openContainerEdit(containerId, stackName, agent) {
+        const modal = document.getElementById("container-edit-modal");
+        if (!modal) return;
+        
+        this._editContainerId = containerId;
+        this._editContainerAgent = agent;
+        this._editContainerStack = stackName;
+        
+        document.getElementById("container-edit-title").textContent = "✏️ Chargement…";
+        document.getElementById("container-edit-body").innerHTML = '<p class="placeholder-hint">Chargement des données…</p>';
+        modal.classList.remove("hidden");
+        
+        try {
+            const resp = await fetch(`/api/containers/${encodeURIComponent(containerId)}/edit-spec?agent=${encodeURIComponent(agent || '')}`);
+            if (!resp.ok) throw new Error("Erreur " + resp.status);
+            const spec = await resp.json();
+            
+            this._editSpec = spec;
+            document.getElementById("container-edit-title").textContent = `✏️ ${this.escapeHtml(spec.name || containerId)}`;
+            this._renderContainerEditForm(spec);
+        } catch(e) {
+            this.showToast("Erreur: " + e.message, "error");
+            this.closeContainerEdit();
+        }
+    },
+
+    _renderContainerEditForm(spec) {
+        const body = document.getElementById("container-edit-body");
+        
+        // Tabs
+        let html = '<div class="edit-section-tabs">';
+        const tabs = [
+            {id:'info', label:'ℹ️ Infos'},
+            {id:'ports', label:'🔌 Ports'},
+            {id:'volumes', label:'💾 Volumes'},
+            {id:'env', label:'🌿 Env'},
+            {id:'network', label:'🌐 Réseau'},
+            {id:'labels', label:'🏷️ Labels'},
+        ];
+        tabs.forEach((t,i) => {
+            html += `<button class="edit-section-tab ${i===0?'active':''}" data-section="${t.id}" onclick="DockyApp._switchEditSection('${t.id}')">${t.label}</button>`;
+        });
+        html += '</div>';
+        
+        // Info section
+        html += '<div class="edit-section active" data-section="info">';
+        html += '<div class="edit-info-grid">';
+        html += `<div class="edit-info-group"><label>Nom</label><div class="edit-value">${this.escapeHtml(spec.name)}</div></div>`;
+        html += `<div class="edit-info-group"><label>Image</label><div class="edit-value">${this.escapeHtml(spec.image)}</div></div>`;
+        const statusDot = spec.status === 'running' ? 'running' : (spec.status === 'exited' ? 'exited' : 'paused');
+        html += `<div class="edit-info-group"><label>Statut</label><div class="edit-value"><span class="edit-status-dot ${statusDot}"></span>${this.escapeHtml(spec.status)}</div></div>`;
+        html += `<div class="edit-info-group"><label>Stack</label><div class="edit-value">${this.escapeHtml(spec.stack || 'Standalone')}</div></div>`;
+        html += '</div>';
+        // Restart policy
+        html += '<div class="form-group"><label>Politique de redémarrage</label><select id="edit-restart-policy" class="edit-select">';
+        ['no','always','on-failure','unless-stopped'].forEach(p => {
+            html += `<option value="${p}" ${spec.restart_policy===p?'selected':''}>${p}</option>`;
+        });
+        html += '</select></div>';
+        html += '</div>'; // end info
+        
+        // Ports section
+        html += '<div class="edit-section" data-section="ports">';
+        html += '<table class="edit-table"><thead><tr><th>Port hôte</th><th>Port container</th><th>Protocole</th><th></th></tr></thead><tbody id="edit-ports-body">';
+        (spec.ports||[]).forEach(p => {
+            const cp = p.container_port || '';
+            const hp = p.host_port || '';
+            const parts = cp.split('/');
+            const portNum = parts[0] || '';
+            const proto = parts[1] || 'tcp';
+            html += `<tr>
+                <td><input type="text" class="edit-port-host" value="${this.escapeHtml(hp)}" placeholder="8080"></td>
+                <td><input type="text" class="edit-port-ctn" value="${this.escapeHtml(portNum)}" placeholder="80"></td>
+                <td><select class="edit-select edit-port-proto"><option value="tcp" ${proto==='tcp'?'selected':''}>TCP</option><option value="udp" ${proto==='udp'?'selected':''}>UDP</option></select></td>
+                <td><button class="btn-icon-row" onclick="this.closest('tr').remove()">✕</button></td>
+            </tr>`;
+        });
+        html += '</tbody></table><button class="edit-add-row" onclick="DockyApp._addEditRow(\'ports\')">➕ Ajouter un port</button>';
+        html += '</div>'; // end ports
+        
+        // Volumes section
+        html += '<div class="edit-section" data-section="volumes">';
+        html += '<table class="edit-table"><thead><tr><th>Chemin hôte</th><th>Chemin container</th><th>Mode</th><th></th></tr></thead><tbody id="edit-volumes-body">';
+        (spec.volumes||[]).forEach(v => {
+            html += `<tr>
+                <td><input type="text" class="edit-vol-host" value="${this.escapeHtml(v.host_path||'')}" placeholder="/host/path"></td>
+                <td><input type="text" class="edit-vol-ctn" value="${this.escapeHtml(v.container_path||'')}" placeholder="/container/path"></td>
+                <td><select class="edit-select edit-vol-mode"><option value="rw" ${(v.mode||'rw')==='rw'?'selected':''}>RW</option><option value="ro" ${(v.mode||'')==='ro'?'selected':''}>RO</option></select></td>
+                <td><button class="btn-icon-row" onclick="this.closest('tr').remove()">✕</button></td>
+            </tr>`;
+        });
+        html += '</tbody></table><button class="edit-add-row" onclick="DockyApp._addEditRow(\'volumes\')">➕ Ajouter un volume</button>';
+        html += '</div>'; // end volumes
+        
+        // Env section
+        html += '<div class="edit-section" data-section="env">';
+        html += '<table class="edit-table"><thead><tr><th>Variable</th><th>Valeur</th><th></th></tr></thead><tbody id="edit-env-body">';
+        (spec.env||[]).forEach(e => {
+            html += `<tr>
+                <td><input type="text" class="edit-env-key" value="${this.escapeHtml(e.key||'')}" placeholder="KEY"></td>
+                <td><input type="text" class="edit-env-val" value="${this.escapeHtml(e.value||'')}" placeholder="value"></td>
+                <td><button class="btn-icon-row" onclick="this.closest('tr').remove()">✕</button></td>
+            </tr>`;
+        });
+        html += '</tbody></table><button class="edit-add-row" onclick="DockyApp._addEditRow(\'env\')">➕ Ajouter une variable</button>';
+        html += '</div>'; // end env
+        
+        // Network section (read-only)
+        html += '<div class="edit-section" data-section="network">';
+        const nets = spec.networks || [];
+        if (nets.length === 0) {
+            html += '<p class="placeholder-hint">Aucun réseau configuré</p>';
+        } else {
+            html += '<table class="edit-table"><thead><tr><th>Réseau</th><th>IP</th></tr></thead><tbody>';
+            nets.forEach(n => {
+                html += `<tr><td class="edit-value-readonly">${this.escapeHtml(n.name||'')}</td><td class="edit-value-readonly">${this.escapeHtml(n.ip||'')}</td></tr>`;
+            });
+            html += '</tbody></table>';
+            html += '<p style="color:var(--text-muted);font-size:0.75rem;margin-top:8px;">ℹ️ La configuration réseau n\'est pas modifiable dans cette version.</p>';
+        }
+        html += '</div>'; // end network
+        
+        // Labels section
+        html += '<div class="edit-section" data-section="labels">';
+        html += '<table class="edit-table"><thead><tr><th>Clé</th><th>Valeur</th><th></th></tr></thead><tbody id="edit-labels-body">';
+        (spec.labels||[]).forEach(l => {
+            html += `<tr>
+                <td><input type="text" class="edit-label-key" value="${this.escapeHtml(l.key||'')}" placeholder="key"></td>
+                <td><input type="text" class="edit-label-val" value="${this.escapeHtml(l.value||'')}" placeholder="value"></td>
+                <td><button class="btn-icon-row" onclick="this.closest('tr').remove()">✕</button></td>
+            </tr>`;
+        });
+        html += '</tbody></table><button class="edit-add-row" onclick="DockyApp._addEditRow(\'labels\')">➕ Ajouter un label</button>';
+        html += '</div>'; // end labels
+        
+        body.innerHTML = html;
+    },
+
+    _switchEditSection(sectionId) {
+        document.querySelectorAll('#container-edit-body .edit-section-tab').forEach(t => {
+            t.classList.toggle('active', t.dataset.section === sectionId);
+        });
+        document.querySelectorAll('#container-edit-body .edit-section').forEach(s => {
+            s.classList.toggle('active', s.dataset.section === sectionId);
+        });
+    },
+
+    _addEditRow(section) {
+        const tbody = document.getElementById(`edit-${section}-body`);
+        if (!tbody) return;
+        const rows = {
+            ports: '<tr><td><input type="text" class="edit-port-host" placeholder="8080"></td><td><input type="text" class="edit-port-ctn" placeholder="80"></td><td><select class="edit-select edit-port-proto"><option value="tcp">TCP</option><option value="udp">UDP</option></select></td><td><button class="btn-icon-row" onclick="this.closest(\'tr\').remove()">✕</button></td></tr>',
+            volumes: '<tr><td><input type="text" class="edit-vol-host" placeholder="/host/path"></td><td><input type="text" class="edit-vol-ctn" placeholder="/container/path"></td><td><select class="edit-select edit-vol-mode"><option value="rw">RW</option><option value="ro">RO</option></select></td><td><button class="btn-icon-row" onclick="this.closest(\'tr\').remove()">✕</button></td></tr>',
+            env: '<tr><td><input type="text" class="edit-env-key" placeholder="KEY"></td><td><input type="text" class="edit-env-val" placeholder="value"></td><td><button class="btn-icon-row" onclick="this.closest(\'tr\').remove()">✕</button></td></tr>',
+            labels: '<tr><td><input type="text" class="edit-label-key" placeholder="key"></td><td><input type="text" class="edit-label-val" placeholder="value"></td><td><button class="btn-icon-row" onclick="this.closest(\'tr\').remove()">✕</button></td></tr>',
+        };
+        if (rows[section]) tbody.insertAdjacentHTML('beforeend', rows[section]);
+    },
+
+    async applyContainerEdit() {
+        const spec = {
+            restart_policy: document.getElementById('edit-restart-policy')?.value || 'no',
+            ports: [],
+            volumes: [],
+            env: [],
+            labels: [],
+        };
+        
+        // Collect ports
+        document.querySelectorAll('#edit-ports-body tr').forEach(tr => {
+            const host = tr.querySelector('.edit-port-host')?.value?.trim();
+            const ctn = tr.querySelector('.edit-port-ctn')?.value?.trim();
+            const proto = tr.querySelector('.edit-port-proto')?.value || 'tcp';
+            if (ctn) spec.ports.push({ host_port: host || '', container_port: `${ctn}/${proto}` });
+        });
+        
+        // Collect volumes
+        document.querySelectorAll('#edit-volumes-body tr').forEach(tr => {
+            const host = tr.querySelector('.edit-vol-host')?.value?.trim();
+            const ctn = tr.querySelector('.edit-vol-ctn')?.value?.trim();
+            const mode = tr.querySelector('.edit-vol-mode')?.value || 'rw';
+            if (host && ctn) spec.volumes.push({ host_path: host, container_path: ctn, mode });
+        });
+        
+        // Collect env
+        document.querySelectorAll('#edit-env-body tr').forEach(tr => {
+            const key = tr.querySelector('.edit-env-key')?.value?.trim();
+            const val = tr.querySelector('.edit-env-val')?.value?.trim();
+            if (key) spec.env.push({ key, value: val || '' });
+        });
+        
+        // Collect labels
+        document.querySelectorAll('#edit-labels-body tr').forEach(tr => {
+            const key = tr.querySelector('.edit-label-key')?.value?.trim();
+            const val = tr.querySelector('.edit-label-val')?.value?.trim();
+            if (key) spec.labels.push({ key, value: val || '' });
+        });
+        
+        // Confirm if running
+        if (this._editSpec && this._editSpec.status === 'running') {
+            if (!confirm("Ce container est en cours d'exécution et va être recréé. Continuer ?")) return;
+        }
+        
+        this.showToast("Application des modifications…", "info");
+        
+        try {
+            const resp = await fetch(`/api/containers/${encodeURIComponent(this._editContainerId)}/update?agent=${encodeURIComponent(this._editContainerAgent || '')}`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(spec),
+            });
+            const result = await resp.json();
+            
+            if (!result.success) {
+                this.showToast("Erreur : " + (result.error || "Échec"), "error");
+                return;
+            }
+            
+            this.showToast("✅ Container mis à jour", "success");
+            this.closeContainerEdit();
+            await this.refreshStacks();
+        } catch(e) {
+            this.showToast("Erreur : " + e.message, "error");
+        }
+    },
+
+    closeContainerEdit() {
+        const modal = document.getElementById("container-edit-modal");
+        if (modal) modal.classList.add("hidden");
+        this._editSpec = null;
+        this._editContainerId = null;
+        this._editContainerAgent = null;
     },
 
     // -------------------------------------------------------
@@ -2688,6 +2927,14 @@ const DockyApp = {
             });
         }
 
+        // Container edit modal backdrop click
+        const editModal = document.getElementById("container-edit-modal");
+        if (editModal) {
+            editModal.addEventListener("click", (e) => {
+                if (e.target === editModal) this.closeContainerEdit();
+            });
+        }
+
         // Enter key shortcuts in modal inputs
         const newNameInput = document.getElementById("new-stack-name");
         if (newNameInput) {
@@ -2717,6 +2964,7 @@ const DockyApp = {
                 this.closeDeleteStackModal();
                 this.closePermsModal();
                 this.closeSoulEditor();
+                this.closeContainerEdit();
                 this._onUnsavedCancel();
             }
         });

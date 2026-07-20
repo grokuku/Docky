@@ -589,6 +589,42 @@ async def api_restart_container(
     return {"success": ok}
 
 
+@router.get("/containers/{container_id}/edit-spec")
+async def api_get_container_edit_spec(
+    request: Request, container_id: str, agent: str = Query(...)
+):
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    spec = await agent_manager.get_container_edit_spec(agent_name, container_id)
+    if spec is None:
+        return JSONResponse(status_code=404, content={"detail": "Container not found"})
+    return spec
+
+
+@router.post("/containers/{container_id}/update")
+async def api_update_container(
+    request: Request, container_id: str, agent: str = Query(...)
+):
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"detail": "Invalid JSON body"})
+    result = await agent_manager.update_container(agent_name, container_id, data)
+    # Check for agent-side errors
+    err = _check_agent_error(result)
+    return err if err is not None else result
+
+
 # ---------------------------------------------------------------------------
 # Logs
 # ---------------------------------------------------------------------------

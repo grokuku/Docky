@@ -178,6 +178,80 @@ def restart_container(container_id: str) -> bool:
         return False
 
 
+def _get_container_full_spec(container_id: str) -> Optional[Dict[str, Any]]:
+    """Return the complete spec of a container for the edit modal.
+
+    Extracts ports, volumes, env, networks, labels, restart_policy and
+    stack information from ``docker inspect`` output.
+    """
+    try:
+        client = get_docker_client()
+        c = client.containers.get(container_id)
+    except Exception:
+        return None
+
+    attrs = c.attrs
+
+    # Ports
+    ports = []
+    for container_port, bindings in (attrs.get("NetworkSettings", {}).get("Ports", {}) or {}).items():
+        if bindings:
+            for b in bindings:
+                ports.append({"host_port": b.get("HostPort", ""), "container_port": container_port})
+        else:
+            ports.append({"host_port": "", "container_port": container_port})
+
+    # Volumes (mounts)
+    volumes = []
+    for m in attrs.get("Mounts", []):
+        if m.get("Type") == "bind":
+            volumes.append({
+                "host_path": m.get("Source", ""),
+                "container_path": m.get("Destination", ""),
+                "mode": "ro" if "ro" in (m.get("Mode", "") or "") else "rw"
+            })
+
+    # Env
+    raw_env = attrs.get("Config", {}).get("Env") or []
+    env = []
+    for e in raw_env:
+        if "=" in e:
+            k, v = e.split("=", 1)
+            env.append({"key": k, "value": v})
+        else:
+            env.append({"key": e, "value": ""})
+
+    # Networks
+    networks = []
+    for net_name, net_info in (attrs.get("NetworkSettings", {}).get("Networks", {}) or {}).items():
+        networks.append({"name": net_name, "ip": net_info.get("IPAddress", "") or ""})
+
+    # Labels
+    raw_labels = attrs.get("Config", {}).get("Labels") or {}
+    labels = [{"key": k, "value": v} for k, v in raw_labels.items()]
+
+    # Restart policy
+    restart_policy = attrs.get("HostConfig", {}).get("RestartPolicy", {}).get("Name", "no")
+
+    # Stack (from compose labels)
+    project = raw_labels.get("com.docker.compose.project", "")
+    managed = bool(project and (get_data_dir() / "stacks" / project).exists())
+
+    return {
+        "name": c.name.lstrip("/"),
+        "image": attrs.get("Config", {}).get("Image", ""),
+        "status": c.status,
+        "restart_policy": restart_policy or "no",
+        "ports": ports,
+        "volumes": volumes,
+        "env": env,
+        "networks": networks,
+        "labels": labels,
+        "stack": project,
+        "managed": managed,
+    }
+
+
 def get_container_logs(container_id: str, tail: int = 100) -> List[str]:
     """Return the last ``tail`` log lines of a container."""
     try:
@@ -625,6 +699,206 @@ async def compose_pull(name: str) -> Dict[str, Any]:
     if compose_file is None or not Path(compose_file).exists():
         raise FileNotFoundError(f"Stack '{name}' not found")
     return await _run_compose(name, "pull")
+
+
+async def update_container(container_id: str, spec: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply changes to a container.
+
+    Strategy:
+    - **External stack** (Compose project not managed by Docky): return error.
+    - **Managed stack** (Compose project in /data/stacks/): modify the
+      docker-compose.yml and redeploy the service.
+    - **Standalone container** (no stack): stop, remove, recreate with new
+      params, then start. Rollback on failure.
+    """
+    try:
+        client = get_docker_client()
+        c = client.containers.get(container_id)
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+    attrs = c.attrs
+
+    # Check if external stack
+    project = (attrs.get("Config", {}).get("Labels") or {}).get("com.docker.compose.project", "")
+    if project:
+        stacks_dir = Path(get_data_dir()) / 'stacks'
+        managed = (stacks_dir / project).exists()
+        if not managed:
+            return {"success": False, "error": "Les stacks externes ne peuvent pas être éditées"}
+        # Managed stack → modify compose file
+        return await _update_compose_container(project, container_id, spec, client)
+
+    # Standalone container → recreate
+    return await _recreate_container(c, container_id, spec, client, attrs)
+
+
+async def _update_compose_container(project: str, container_id: str, spec: Dict, client) -> Dict:
+    """Modify docker-compose.yml and redeploy the service."""
+    compose_path = Path(get_data_dir()) / 'stacks' / project / 'docker-compose.yml'
+    if not compose_path.exists():
+        return {"success": False, "error": "docker-compose.yml not found"}
+
+    import yaml
+    with open(compose_path) as f:
+        compose = yaml.safe_load(f)
+
+    # Find service name from container labels
+    c = client.containers.get(container_id)
+    service_name = (c.attrs.get("Config", {}).get("Labels") or {}).get("com.docker.compose.service", "")
+    if not service_name or service_name not in compose.get("services", {}):
+        return {"success": False, "error": "Service not found in compose file"}
+
+    service = compose["services"][service_name]
+
+    # Apply changes
+    # Ports
+    ports = []
+    for p in spec.get("ports", []):
+        cp = p.get("container_port", "")
+        hp = p.get("host_port", "")
+        if cp:
+            ports.append(f"{hp}:{cp}" if hp else cp)
+    if ports:
+        service["ports"] = ports
+    elif "ports" in service:
+        del service["ports"]
+
+    # Volumes (binds)
+    volumes = []
+    for v in spec.get("volumes", []):
+        hp = v.get("host_path", "")
+        cp = v.get("container_path", "")
+        mode = v.get("mode", "rw")
+        if hp and cp:
+            volumes.append(f"{hp}:{cp}:{mode}" if mode != "rw" else f"{hp}:{cp}")
+    if volumes:
+        service["volumes"] = volumes
+    elif "volumes" in service:
+        del service["volumes"]
+
+    # Env
+    env = []
+    for e in spec.get("env", []):
+        k, v = e.get("key", ""), e.get("value", "")
+        if k:
+            env.append(f"{k}={v}")
+    if env:
+        service["environment"] = env
+    elif "environment" in service:
+        del service["environment"]
+
+    # Labels
+    labels = {}
+    for l in spec.get("labels", []):
+        k, v = l.get("key", ""), l.get("value", "")
+        if k:
+            labels[k] = v
+    if labels:
+        service["labels"] = labels
+    elif "labels" in service:
+        del service["labels"]
+
+    # Restart policy
+    rp = spec.get("restart_policy", "no")
+    if rp and rp != "no":
+        service["restart"] = rp
+    elif "restart" in service:
+        del service["restart"]
+
+    # Write back
+    with open(compose_path, "w") as f:
+        yaml.dump(compose, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+    # Redeploy
+    await compose_up(project)
+
+    return {"success": True, "output": f"Stack {project} redéployée avec les modifications"}
+
+
+async def _recreate_container(c, container_id: str, spec: Dict, client, attrs: Dict) -> Dict:
+    """Stop, remove, recreate with new params. Rollback on failure."""
+    try:
+        old_name = c.name.lstrip("/")
+        image = attrs.get("Config", {}).get("Image", "")
+
+        # Build docker run params
+        run_kwargs = {
+            "image": image,
+            "name": old_name,
+            "detach": True,
+        }
+
+        # Restart policy
+        run_kwargs["restart_policy"] = {"Name": spec.get("restart_policy", "no")}
+
+        # Ports
+        port_bindings = {}
+        for p in spec.get("ports", []):
+            cp = p.get("container_port", "")
+            hp = p.get("host_port", "")
+            if cp and "/" in cp:
+                cport, proto = cp.split("/", 1)
+            elif cp:
+                cport, proto = cp, "tcp"
+            else:
+                continue
+            if hp:
+                port_bindings[(cport, proto)] = hp
+            else:
+                port_bindings[(cport, proto)] = None
+
+        # Volumes
+        volumes_dict = {}
+        binds = []
+        for v in spec.get("volumes", []):
+            hp = v.get("host_path", "")
+            cp = v.get("container_path", "")
+            mode = v.get("mode", "rw")
+            if hp and cp:
+                binds.append(f"{hp}:{cp}:{mode}" if mode != "rw" else f"{hp}:{cp}")
+                volumes_dict[cp] = {"bind": cp, "mode": mode}
+
+        # Env
+        env_list = [f"{e['key']}={e['value']}" for e in spec.get("env", []) if e.get("key")]
+
+        # Labels
+        labels_dict = {l["key"]: l["value"] for l in spec.get("labels", []) if l.get("key")}
+
+        # Stop + backup name
+        await asyncio.to_thread(c.stop, timeout=10)
+        await asyncio.to_thread(c.rename, f"{old_name}_backup")
+        await asyncio.to_thread(c.reload)
+
+        # Create new container
+        new_c = await asyncio.to_thread(
+            client.containers.run,
+            image,
+            detach=True,
+            name=old_name,
+            restart_policy=run_kwargs["restart_policy"],
+            ports=port_bindings or None,
+            volumes=volumes_dict or None,
+            environment=env_list or None,
+            labels=labels_dict or None,
+            remove=False,
+        )
+
+        # Remove old container
+        await asyncio.to_thread(
+            lambda: client.containers.get(f"{old_name}_backup").remove(force=True)
+        )
+
+        return {"success": True, "output": f"Container {old_name} recréé avec les nouvelles configurations"}
+
+    except Exception as e:
+        # Rollback: try to restore backup container
+        try:
+            await asyncio.to_thread(c.start)
+            await asyncio.to_thread(c.rename, old_name)
+        except Exception:
+            pass
+        return {"success": False, "error": str(e)}
 
 
 async def update_stack(name: str) -> Dict[str, Any]:

@@ -257,6 +257,25 @@ class AgentManager:
         except Exception:
             return {"update_available": False, "error": "Agent unreachable"}
 
+    async def get_container_edit_spec(self, agent_name: str, container_id: str) -> Optional[Dict]:
+        """Return the full spec of a container for editing."""
+        try:
+            return await self._request(
+                agent_name, "GET", f"/agent/containers/{container_id}/edit-spec"
+            )
+        except Exception:
+            return None
+
+    async def update_container(self, agent_name: str, container_id: str, spec: Dict) -> Dict:
+        """Apply changes to a container on an agent."""
+        try:
+            return await self._request(
+                agent_name, "POST", f"/agent/containers/{container_id}/update",
+                json=spec,
+            )
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     # ------------------------------------------------------------------
     # Stacks
     # ------------------------------------------------------------------
