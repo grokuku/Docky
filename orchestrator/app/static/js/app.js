@@ -2730,6 +2730,16 @@ const DockyApp = {
             this._gridResizeObserver = new ResizeObserver(() => { this._debouncedGridRender(); });
             this._gridResizeObserver.observe(dashContent);
         }
+
+        // Désélection par clic molette (bouton central)
+        if (dashContent) {
+            dashContent.addEventListener('mousedown', (e) => {
+                if (e.button === 1) {  // Middle click
+                    e.preventDefault();  // Empêche le scroll automatique
+                    this.clearStackSelection();
+                }
+            });
+        }
     },
 };
 
