@@ -5,12 +5,16 @@ authentication via the ``Authorization: Bearer <key>`` header.
 """
 
 import asyncio
+import json
+import logging
 
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from agent import docker_manager
 from agent.auth import require_api_key, verify_api_key_ws
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agent")
 
@@ -116,11 +120,12 @@ async def exec_in_container(websocket: WebSocket, container_id: str):
             docker_manager.exec_interactive_start, container_id
         )
     except Exception as e:
+        logger.exception("Failed to start interactive exec in container %s", container_id)
         await websocket.send_text(f"Error: {e}")
         await websocket.close()
         return
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     async def read_docker():
         """Read from Docker socket and send to WebSocket."""
@@ -130,8 +135,10 @@ async def exec_in_container(websocket: WebSocket, container_id: str):
                 if not data:
                     break
                 await websocket.send_bytes(data)
-        except Exception:
-            pass
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug("read_docker ended: %s", e)
 
     async def read_websocket():
         """Read from WebSocket and send to Docker socket."""
@@ -152,7 +159,6 @@ async def exec_in_container(websocket: WebSocket, container_id: str):
                     if raw is not None:
                         # Check for resize JSON
                         try:
-                            import json
                             cmd = json.loads(raw)
                             if isinstance(cmd, dict) and cmd.get("type") == "resize":
                                 await asyncio.to_thread(
@@ -166,11 +172,30 @@ async def exec_in_container(websocket: WebSocket, container_id: str):
 
                         # Send as bytes to Docker socket
                         await loop.sock_sendall(sock, raw.encode() if isinstance(raw, str) else raw)
-        except Exception:
+        except asyncio.CancelledError:
+            raise
+        except WebSocketDisconnect:
             pass
+        except Exception as e:
+            logger.debug("read_websocket ended: %s", e)
 
     try:
-        await asyncio.gather(read_docker(), read_websocket())
+        # Use FIRST_COMPLETED so that when either side closes (e.g. the
+        # user types ``exit`` or the client disconnects), we cancel the
+        # other task immediately instead of hanging forever.
+        tasks = [
+            asyncio.create_task(read_docker()),
+            asyncio.create_task(read_websocket()),
+        ]
+        done, pending = await asyncio.wait(
+            tasks, return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in pending:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
     finally:
         try:
             sock.close()

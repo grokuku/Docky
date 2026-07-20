@@ -436,6 +436,7 @@ def exec_interactive_start(container_id: str, shell: str = "/bin/bash") -> tuple
     # Make socket non-blocking for asyncio
     sock.setblocking(False)
 
+    logger.info("Interactive exec %s started in container %s", exec_id[:12], container_id[:12])
     return sock, exec_id
 
 
@@ -443,6 +444,7 @@ def exec_resize(container_id: str, exec_id: str, height: int, width: int):
     """Resize the TTY for an exec instance."""
     client = get_docker_client()
     client.api.exec_resize(exec_id, height=height, width=width)
+    logger.debug("Exec %s resized to %dx%d", exec_id[:12], width, height)
 
 
 # ---------------------------------------------------------------------------

@@ -710,7 +710,7 @@ async def ws_container_exec(websocket: WebSocket, container_id: str):
     agent_path = agent_url.split("://", 1)[1] if "://" in agent_url else agent_url
     target_url = f"{ws_proto}://{agent_path}/agent/containers/{urllib.parse.quote(container_id, safe='')}/exec"
     if agent_api_key:
-        target_url += f"?api_key={agent_api_key}"
+        target_url += f"?api_key={urllib.parse.quote(agent_api_key, safe='')}"
 
     # Accept the client WebSocket
     await websocket.accept()
@@ -724,12 +724,14 @@ async def ws_container_exec(websocket: WebSocket, container_id: str):
                         msg = await websocket.receive()
                         if msg["type"] == "websocket.disconnect":
                             break
-                        if "bytes" in msg:
+                        if msg.get("bytes") is not None:
                             await agent_ws.send(msg["bytes"])
-                        elif "text" in msg:
+                        elif msg.get("text") is not None:
                             await agent_ws.send(msg["text"])
-                except Exception:
+                except WebSocketDisconnect:
                     pass
+                except Exception as e:
+                    logger.debug("client_to_agent relay ended: %s", e)
 
             async def agent_to_client():
                 try:
@@ -738,11 +740,26 @@ async def ws_container_exec(websocket: WebSocket, container_id: str):
                             await websocket.send_bytes(msg)
                         else:
                             await websocket.send_text(msg)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("agent_to_client relay ended: %s", e)
 
-            await asyncio.gather(client_to_agent(), agent_to_client())
+            # Use FIRST_COMPLETED so that when either side closes,
+            # we cancel the other and exit cleanly.
+            tasks = [
+                asyncio.create_task(client_to_agent()),
+                asyncio.create_task(agent_to_client()),
+            ]
+            done, pending = await asyncio.wait(
+                tasks, return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
     except Exception as e:
+        logger.warning("WS exec proxy error: %s", e)
         try:
             await websocket.send_text(json.dumps({"error": str(e)}))
         except Exception:

@@ -1023,7 +1023,11 @@ const DockyApp = {
 
     _debouncedGridRender() {
         if (this._gridRenderTimer) clearTimeout(this._gridRenderTimer);
-        this._gridRenderTimer = setTimeout(() => { if (this.stacks.length > 0) this.renderGridDashboard(); }, 200);
+        this._gridRenderTimer = setTimeout(() => {
+            if (this.stacks.length > 0) {
+                this.renderCurrentView();
+            }
+        }, 200);
     },
 
 
