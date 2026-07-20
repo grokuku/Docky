@@ -414,9 +414,21 @@ def exec_in_container_stream(container_id: str, command: str):
 
 
 def exec_interactive_start(container_id: str, shell: str = "/bin/bash") -> tuple:
-    """Create an interactive exec instance with PTY, return (socket, exec_id).
+    """Create an interactive exec instance with PTY.
 
-    The returned socket is made non-blocking for use with ``asyncio``.
+    Returns ``(sock, exec_id, raw_sock)`` where *sock* is the original object
+    returned by Docker SDK (use ``sock.close()`` to clean up) and *raw_sock*
+    is the underlying ``socket.socket`` made non-blocking for use with
+    ``asyncio``.
+
+    Docker SDK ``exec_start(..., socket=True)`` can return different types:
+    - ``socket.socket`` for TCP connections
+    - ``SocketIO`` (urllib3 wrapper) for Unix socket connections
+    - ``HTTPResponse`` wrapper in some configurations
+
+    ``asyncio``'s ``sock_recv`` / ``sock_sendall`` require a real
+    ``socket.socket``, so we extract the raw socket from whatever wrapper
+    Docker SDK gives us.
     """
     client = get_docker_client()
 
@@ -433,11 +445,43 @@ def exec_interactive_start(container_id: str, shell: str = "/bin/bash") -> tuple
     # Start exec with socket mode
     sock = client.api.exec_start(exec_id, tty=True, socket=True)
 
-    # Make socket non-blocking for asyncio
-    sock.setblocking(False)
+    # --- Extract the raw socket.socket from whatever wrapper Docker SDK gave us ---
+    raw_sock = sock
 
-    logger.info("Interactive exec %s started in container %s", exec_id[:12], container_id[:12])
-    return sock, exec_id
+    # Case 1: SocketIO (urllib3) — wraps socket.socket in ._sock
+    if hasattr(sock, '_sock') and hasattr(sock._sock, 'setblocking'):
+        raw_sock = sock._sock
+    # Case 2: urllib3 HTTPResponse — sock._fp.fp is the socket
+    elif hasattr(sock, '_fp') and hasattr(sock._fp, 'fp'):
+        fp = sock._fp.fp
+        # fp can itself be a SocketIO or a raw socket
+        if hasattr(fp, '_sock') and hasattr(fp._sock, 'setblocking'):
+            raw_sock = fp._sock
+        elif hasattr(fp, 'raw') and hasattr(fp.raw, 'setblocking'):
+            raw_sock = fp.raw
+        elif hasattr(fp, 'setblocking'):
+            raw_sock = fp
+    # Case 3: already a raw socket.socket
+    elif hasattr(sock, 'setblocking'):
+        raw_sock = sock
+    # Case 4: fallback — try _fp.fp.raw or similar deep nesting
+    elif hasattr(sock, '_fp') and hasattr(sock._fp, 'fp') and hasattr(sock._fp.fp, 'raw'):
+        raw_sock = sock._fp.fp.raw
+
+    # Make the raw socket non-blocking for asyncio
+    if hasattr(raw_sock, 'setblocking'):
+        raw_sock.setblocking(False)
+    else:
+        # Last resort: try settimeout(0) on the original object
+        try:
+            sock.settimeout(0)
+        except Exception:
+            logger.warning("Could not make exec socket non-blocking (type=%s)",
+                           type(sock).__name__)
+
+    logger.info("Interactive exec %s started in container %s (sock type=%s, raw type=%s)",
+                exec_id[:12], container_id[:12], type(sock).__name__, type(raw_sock).__name__)
+    return sock, exec_id, raw_sock
 
 
 def exec_resize(container_id: str, exec_id: str, height: int, width: int):

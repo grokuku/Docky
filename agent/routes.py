@@ -7,6 +7,7 @@ authentication via the ``Authorization: Bearer <key>`` header.
 import asyncio
 import json
 import logging
+import re
 
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -116,7 +117,7 @@ async def exec_in_container(websocket: WebSocket, container_id: str):
 
     # Create interactive exec instance
     try:
-        sock, exec_id = await asyncio.to_thread(
+        sock, exec_id, raw_sock = await asyncio.to_thread(
             docker_manager.exec_interactive_start, container_id
         )
     except Exception as e:
@@ -131,7 +132,7 @@ async def exec_in_container(websocket: WebSocket, container_id: str):
         """Read from Docker socket and send to WebSocket."""
         try:
             while True:
-                data = await loop.sock_recv(sock, 4096)
+                data = await loop.sock_recv(raw_sock, 4096)
                 if not data:
                     break
                 await websocket.send_bytes(data)
@@ -141,7 +142,12 @@ async def exec_in_container(websocket: WebSocket, container_id: str):
             logger.debug("read_docker ended: %s", e)
 
     async def read_websocket():
-        """Read from WebSocket and send to Docker socket."""
+        """Read from WebSocket and send to Docker socket.
+
+        Detects resize control messages (JSON like ``{"type":"resize",...}``)
+        and handles them by calling ``exec_resize`` instead of forwarding
+        them to the container's stdin.
+        """
         try:
             while True:
                 msg = await websocket.receive()
@@ -149,7 +155,7 @@ async def exec_in_container(websocket: WebSocket, container_id: str):
                     break
 
                 if msg["type"] == "websocket.receive":
-                    # Get data from text or bytes
+                    # Normalise to a string: handle both text and bytes frames
                     raw = None
                     if isinstance(msg.get("text"), str):
                         raw = msg["text"]
@@ -157,21 +163,47 @@ async def exec_in_container(websocket: WebSocket, container_id: str):
                         raw = msg["bytes"].decode('utf-8', errors='replace')
 
                     if raw is not None:
-                        # Check for resize JSON
+                        # --- Detect resize control messages ---
+                        is_resize = False
+
+                        # 1. Try standard JSON parsing
                         try:
                             cmd = json.loads(raw)
                             if isinstance(cmd, dict) and cmd.get("type") == "resize":
+                                rows = int(cmd.get("rows", 24))
+                                cols = int(cmd.get("cols", 80))
                                 await asyncio.to_thread(
                                     docker_manager.exec_resize,
-                                    container_id, exec_id,
-                                    cmd.get("rows", 24), cmd.get("cols", 80)
+                                    container_id, exec_id, rows, cols
                                 )
-                                continue
+                                is_resize = True
                         except (json.JSONDecodeError, TypeError, ValueError):
                             pass
 
-                        # Send as bytes to Docker socket
-                        await loop.sock_sendall(sock, raw.encode() if isinstance(raw, str) else raw)
+                        # 2. Fallback: detect non-standard JSON like
+                        #    {type:resize,cols:111,rows:39} (unquoted keys)
+                        if not is_resize:
+                            m = re.match(
+                                r'^\s*\{\s*"?type"?\s*:\s*"?resize"?\s*,',
+                                raw, re.IGNORECASE
+                            )
+                            if m:
+                                cols_match = re.search(r'"?cols"?\s*:\s*(\d+)', raw)
+                                rows_match = re.search(r'"?rows"?\s*:\s*(\d+)', raw)
+                                cols = int(cols_match.group(1)) if cols_match else 80
+                                rows = int(rows_match.group(1)) if rows_match else 24
+                                await asyncio.to_thread(
+                                    docker_manager.exec_resize,
+                                    container_id, exec_id, rows, cols
+                                )
+                                is_resize = True
+
+                        if is_resize:
+                            continue
+
+                        # --- Forward user input to the container's PTY ---
+                        payload = raw.encode() if isinstance(raw, str) else raw
+                        await loop.sock_sendall(raw_sock, payload)
         except asyncio.CancelledError:
             raise
         except WebSocketDisconnect:
@@ -197,6 +229,10 @@ async def exec_in_container(websocket: WebSocket, container_id: str):
             except asyncio.CancelledError:
                 pass
     finally:
+        try:
+            raw_sock.close()
+        except Exception:
+            pass
         try:
             sock.close()
         except Exception:
