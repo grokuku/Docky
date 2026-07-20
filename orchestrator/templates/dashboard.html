@@ -17,6 +17,15 @@
                 <span class="agent-selector-loading">Chargement…</span>
             </div>
         </div>
+        <div class="topbar-stats" id="stats-bar">
+            <span class="stats-item">📊 <span id="stats-agents">0</span> agents</span>
+            <span class="stats-sep">·</span>
+            <span class="stats-item"><span id="stats-stacks">0</span> stacks</span>
+            <span class="stats-sep">·</span>
+            <span class="stats-item"><span id="stats-containers">0</span> containers</span>
+            <span class="stats-sep">·</span>
+            <span class="stats-item stats-running"><span id="stats-running">0</span> running</span>
+        </div>
         <div class="topbar-right">
             <button class="btn btn-ghost btn-sm" id="ports-btn" onclick="DockyApp.togglePorts()">🔌 Ports</button>
             <button id="chat-toggle" class="topbar-btn active" title="Afficher/Masquer le chat" onclick="DockyApp.toggleChat()">💬</button>

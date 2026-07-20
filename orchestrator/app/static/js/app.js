@@ -124,6 +124,7 @@ const DockyApp = {
         // Expecting an array or {agents: [...]}
         this.agentsList = Array.isArray(data) ? data : (data.agents || []);
         this.renderAgentSelector();
+        this.updateStatsBar();
     },
 
     async refreshAgents() {
@@ -159,6 +160,26 @@ const DockyApp = {
         container.innerHTML = html;
     },
 
+    updateStatsBar() {
+        const agentsOnline = this.agentsList.filter(
+            a => a.status === 'online' || a.status === 'connected'
+        ).length;
+
+        let stacks = this.stacks || [];
+        let containers = this._allContainersCache || [];
+
+        if (this._hiddenAgents.size > 0) {
+            stacks = stacks.filter(s => !this._hiddenAgents.has(s.agent_name || ''));
+            containers = containers.filter(c => !this._hiddenAgents.has(c.agent_name || ''));
+        }
+
+        const el = id => document.getElementById(id);
+        if (el('stats-agents')) el('stats-agents').textContent = agentsOnline;
+        if (el('stats-stacks')) el('stats-stacks').textContent = stacks.length;
+        if (el('stats-containers')) el('stats-containers').textContent = containers.length;
+        if (el('stats-running')) el('stats-running').textContent = containers.filter(c => c.status === 'running').length;
+    },
+
     toggleAgentFilter(name) {
         if (this._hiddenAgents.has(name)) {
             this._hiddenAgents.delete(name);
@@ -175,6 +196,7 @@ const DockyApp = {
             // Premier chargement, pas encore de données
             this.refreshStacks();
         }
+        this.updateStatsBar();
         // Refresh ports if panel is open
         const portsPanel = document.getElementById("ports-panel");
         if (portsPanel && !portsPanel.classList.contains("hidden")) {
@@ -240,6 +262,7 @@ const DockyApp = {
         this._lastGridKey = gridKey;
 
         this.renderCurrentView();
+        this.updateStatsBar();
         this.updateStackSelector(stacksResp);
     },
 
@@ -2884,6 +2907,7 @@ const DockyApp = {
         this.loadAgents();
         this.startAgentsRefresh();
         this.refreshStacks();
+        this.updateStatsBar();
         this.startAutoRefresh();
 
         // Auto-refresh checkbox

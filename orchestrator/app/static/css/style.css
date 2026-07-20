@@ -2412,3 +2412,31 @@ body {
 .edit-status-dot.running { background: var(--success); }
 .edit-status-dot.exited { background: var(--danger); }
 .edit-status-dot.paused { background: #f0ad4e; }
+
+/* ============================================================
+   Topbar Stats Bar
+   ============================================================ */
+
+.topbar-stats {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 12px;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+.stats-item {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+.stats-sep {
+    color: var(--border-color);
+    font-size: 0.75rem;
+}
+.stats-running {
+    color: var(--success);
+}
+@media (max-width: 640px) {
+    .topbar-stats { display: none; }
+}

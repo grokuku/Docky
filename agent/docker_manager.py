@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import shutil
+import struct
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -259,17 +260,59 @@ def _get_container_full_spec(container_id: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def get_container_logs(container_id: str, tail: int = 100) -> List[str]:
-    """Return the last ``tail`` log lines of a container."""
+def get_container_logs(container_id: str, tail: int = 100) -> List[Dict]:
+    """Return the last ``tail`` log lines with timestamps and stream info.
+
+    Returns a list of dicts:
+        {"message": "2024-01-01T12:00:00.123456789Z log text", "stream": "stdout"|"stderr"}
+    """
     try:
         client = get_docker_client()
         c = client.containers.get(container_id)
-        raw = c.logs(stdout=True, stderr=True, tail=tail, timestamps=False)
+        # Use low-level API to get raw multiplexed bytes (8-byte headers)
+        raw = client.api.logs(
+            container_id,
+            stdout=True,
+            stderr=True,
+            tail=tail,
+            timestamps=True,
+        )
     except (NotFound, DockerException, APIError):
         return []
-    if isinstance(raw, bytes):
-        raw = raw.decode("utf-8", errors="replace")
-    return raw.splitlines()
+
+    if not raw or not isinstance(raw, bytes):
+        return []
+
+    result: List[Dict] = []
+    offset = 0
+    while offset + 8 <= len(raw):
+        stream_type = raw[offset]  # 1 = stdout, 2 = stderr
+        # Bytes 1-3 are padding
+        frame_len = struct.unpack_from(">I", raw, offset + 4)[0]
+        offset += 8
+
+        if offset + frame_len > len(raw):
+            break
+
+        frame_data = raw[offset : offset + frame_len]
+        offset += frame_len
+
+        try:
+            msg = frame_data.decode("utf-8", errors="replace")
+            # Strip trailing newlines (each frame may end with \n)
+            msg = msg.rstrip("\r\n")
+        except Exception:
+            continue
+
+        if not msg:
+            continue
+
+        result.append({
+            "message": msg,
+            "stream": "stdout" if stream_type == 1 else "stderr",
+        })
+
+    return result
 
 
 def get_container_logs_stream(container_id: str, tail: int = 0):

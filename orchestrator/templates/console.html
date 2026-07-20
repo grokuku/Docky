@@ -82,8 +82,11 @@
             ws.onopen = () => {
                 statusEl.textContent = 'connecté';
                 statusEl.className = 'status connected';
-                sendResize();
-                term.focus();
+                // Petit délai pour laisser l'exec s'initialiser avant le premier resize
+                setTimeout(() => {
+                    sendResize();
+                    term.focus();
+                }, 500);
             };
 
             ws.onmessage = (event) => {

@@ -220,8 +220,8 @@ class AgentManager:
         except Exception:
             return {}
 
-    async def get_container_logs(self, agent_name: str, container_id: str, tail: int = 100) -> List[str]:
-        """Return the last *tail* log lines of a container."""
+    async def get_container_logs(self, agent_name: str, container_id: str, tail: int = 100) -> List[Dict]:
+        """Return the last *tail* log lines with timestamps and stream info."""
         try:
             data = await self._request(
                 agent_name, "GET", f"/agent/containers/{container_id}/logs",

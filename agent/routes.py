@@ -142,24 +142,30 @@ async def exec_in_container(websocket: WebSocket, container_id: str):
                     break
 
                 if msg["type"] == "websocket.receive":
+                    # Get data from text or bytes
+                    raw = None
                     if isinstance(msg.get("text"), str):
-                        text = msg["text"]
+                        raw = msg["text"]
+                    elif isinstance(msg.get("bytes"), bytes):
+                        raw = msg["bytes"].decode('utf-8', errors='replace')
+
+                    if raw is not None:
+                        # Check for resize JSON
                         try:
                             import json
-                            cmd = json.loads(text)
-                            if cmd.get("type") == "resize":
+                            cmd = json.loads(raw)
+                            if isinstance(cmd, dict) and cmd.get("type") == "resize":
                                 await asyncio.to_thread(
                                     docker_manager.exec_resize,
                                     container_id, exec_id,
                                     cmd.get("rows", 24), cmd.get("cols", 80)
                                 )
                                 continue
-                        except (json.JSONDecodeError, TypeError):
+                        except (json.JSONDecodeError, TypeError, ValueError):
                             pass
-                        # Send as bytes
-                        await loop.sock_sendall(sock, text.encode())
-                    elif isinstance(msg.get("bytes"), bytes):
-                        await loop.sock_sendall(sock, msg["bytes"])
+
+                        # Send as bytes to Docker socket
+                        await loop.sock_sendall(sock, raw.encode() if isinstance(raw, str) else raw)
         except Exception:
             pass
 

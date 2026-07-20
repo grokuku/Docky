@@ -1162,6 +1162,9 @@ async def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
             )
             if not logs:
                 return "Aucun log disponible."
+            # Handle both old string format and new structured dict format
+            if isinstance(logs, list) and logs and isinstance(logs[0], dict):
+                return "\n".join(log["message"] for log in logs)
             return "\n".join(logs)
 
         elif tool_name == "exec_in_container":

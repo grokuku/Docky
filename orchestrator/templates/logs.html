@@ -78,8 +78,33 @@
         .logs-output::-webkit-scrollbar-track { background: #0d1117; }
         .logs-output::-webkit-scrollbar-thumb { background: #30363d; border-radius: 5px; }
         .log-line { color: #4caf50; }
+        .log-line.stderr {
+            color: #ff7b72; /* rouge doux pour stderr */
+        }
+        .log-time {
+            color: #8b949e;
+            font-size: 0.75rem;
+            margin-right: 8px;
+            white-space: nowrap;
+            user-select: none;
+        }
         .log-empty { color: #8b949e; font-style: italic; }
         .log-loading { color: #d29922; }
+        /* Indicateur visuel quand l'auto-scroll est désactivé */
+        .log-scroll-hint {
+            background: #21262d;
+            border-top: 1px solid #30363d;
+            color: #8b949e;
+            font-size: 11px;
+            padding: 4px 12px;
+            text-align: center;
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+        .log-scroll-hint:hover {
+            color: #c9d1d9;
+            background: #30363d;
+        }
     </style>
 </head>
 <body>
@@ -102,19 +127,75 @@
     <div class="logs-output" id="logs-output">
         <div class="log-loading">Chargement des logs…</div>
     </div>
+    <div class="log-scroll-hint" id="scroll-hint" style="display:none" onclick="PopupLogs.scrollToBottom()">
+        ⬇ Nouveaux logs en bas — cliquer pour descendre
+    </div>
 
     <script>
+        // ── Helpers ──────────────────────────────────────────────
+
+        function escapeHtml(text) {
+            if (!text) return "";
+            const div = document.createElement("div");
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function formatLogLine(line) {
+            // Docker timestamp format: 2024-01-01T12:00:00.123456789Z message
+            const tsMatch = line.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.\d+Z\s+(.*)/);
+            if (tsMatch) {
+                const time = tsMatch[1].replace("T", " ");
+                const msg = tsMatch[2];
+                return `<span class="log-time">${escapeHtml(time)}</span>${escapeHtml(msg)}`;
+            }
+            return `<span class="log-time">       </span>${escapeHtml(line)}`;
+        }
+
+        // ── PopupLogs ────────────────────────────────────────────
+
         const PopupLogs = {
             agent: "{{ agent }}",
             container: "{{ container }}",
             paused: false,
             pollInterval: null,
             pollTimer: 3000,
+            userScrolledUp: false,
+            _scrollThreshold: 50,
 
             init() {
+                this.setupScrollDetection();
                 this.fetchLogs();
                 this.startPolling();
-                // Auto-scroll on scroll-up detection could be added; keep simple
+            },
+
+            setupScrollDetection() {
+                const out = document.getElementById("logs-output");
+                if (!out) return;
+                out.addEventListener("scroll", () => {
+                    const atBottom = out.scrollHeight - out.scrollTop - out.clientHeight < this._scrollThreshold;
+                    this.userScrolledUp = !atBottom;
+                    this.updateScrollHint();
+                });
+            },
+
+            updateScrollHint() {
+                const hint = document.getElementById("scroll-hint");
+                if (!hint) return;
+                if (this.userScrolledUp) {
+                    hint.textContent = "⬇ Nouveaux logs en bas — cliquer pour descendre";
+                    hint.style.display = "block";
+                } else {
+                    hint.style.display = "none";
+                }
+            },
+
+            scrollToBottom() {
+                const out = document.getElementById("logs-output");
+                if (!out) return;
+                out.scrollTop = out.scrollHeight;
+                this.userScrolledUp = false;
+                this.updateScrollHint();
             },
 
             startPolling() {
@@ -181,17 +262,29 @@
                     out.innerHTML = '<div class="log-empty">— Aucun log —</div>';
                     return;
                 }
+
+                // Sauvegarder la position de scroll avant de remplacer
+                const prevScrollTop = out.scrollTop;
+                const prevScrollHeight = out.scrollHeight;
+
                 let html = "";
-                // Build with textContent for safety
-                out.innerHTML = "";
-                for (const line of lines) {
-                    const div = document.createElement("div");
-                    div.className = "log-line";
-                    div.textContent = line;
-                    out.appendChild(div);
+                for (const item of lines) {
+                    // Support à la fois l'ancien format (string) et le nouveau (objet)
+                    const msg = typeof item === "object" ? item.message : item;
+                    const stream = typeof item === "object" ? (item.stream || "stdout") : "stdout";
+                    const lineClass = stream === "stderr" ? "log-line stderr" : "log-line";
+                    html += `<div class="${lineClass}">${formatLogLine(msg)}</div>`;
                 }
-                // Auto-scroll to bottom
-                out.scrollTop = out.scrollHeight;
+                out.innerHTML = html;
+
+                // Gestion du scroll
+                if (this.userScrolledUp) {
+                    // L'utilisateur a scrollé vers le haut : on conserve la position relative
+                    out.scrollTop = prevScrollTop + (out.scrollHeight - prevScrollHeight);
+                } else {
+                    // Première fois ou scroll en bas : on descend automatiquement
+                    out.scrollTop = out.scrollHeight;
+                }
             },
         };
 
