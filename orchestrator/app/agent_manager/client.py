@@ -290,6 +290,23 @@ class AgentManager:
         except Exception:
             return None
 
+    async def get_stack_files_with_content(self, agent_name: str, stack_name: str) -> dict:
+        """List all files in a stack WITH their content in a single call.
+
+        Returns a dict with a ``files`` key containing a list of
+        ``{"filename": str, "content": str | None, "size": int}`` objects.
+        """
+        try:
+            data = await self._request(
+                agent_name, "GET", f"/agent/stacks/{stack_name}/files-with-content",
+                timeout=30,
+            )
+            if isinstance(data, dict):
+                return data
+            return {"files": []}
+        except Exception:
+            return {"files": []}
+
     async def save_stack_file(self, agent_name: str, stack_name: str, filename: str, content: str) -> bool:
         """Write content to a file in a stack directory on an agent."""
         try:

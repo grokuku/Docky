@@ -30,6 +30,8 @@ const DockyApp = {
     logsContainerAgent: null,    // agent for the container whose logs are open
     consoleContainerAgent: null, // agent for the container whose console is open
 
+    _pendingFetches: {},  // containerId -> true/false; 'update-'+id for update checks
+
     // WebSockets
     logsWs: null,
     logsStreamMode: false,
@@ -710,15 +712,16 @@ const DockyApp = {
             html += '</div>';
         }
         
-        // Éditeur compose (si managed)
+        // Éditeur compose (si managed) — show a loading indicator immediately
         if (isManaged) {
             html += '<div class="stack-context-compose">';
-            html += '<div class="compose-tabs" id="compose-tabs"></div>';
-            html += '<div class="code-editor-wrap">';
+            html += '<div class="stack-context-loading" id="compose-loading">⏳ Chargement du compose…</div>';
+            html += '<div class="compose-tabs" id="compose-tabs" style="display:none"></div>';
+            html += '<div class="code-editor-wrap" style="display:none">';
             html += '<div class="line-numbers" id="line-numbers"></div>';
             html += '<textarea class="code-textarea" id="code-editor" placeholder="Sélectionne un fichier..."></textarea>';
             html += '</div>';
-            html += '<div class="editor-actions">';
+            html += '<div class="editor-actions" style="display:none">';
             html += '<button class="btn btn-sm btn-success" onclick="DockyApp.saveCurrentFile()">💾 Sauvegarder</button>';
             html += '<button class="btn btn-sm btn-info" onclick="DockyApp.saveAndDeploy()">💾+🚀 Sauvegarder & Déployer</button>';
             html += '</div>';
@@ -907,9 +910,21 @@ const DockyApp = {
     // -------------------------------------------------------
 
     async loadContainerStats(containerId, agent) {
-        const data = await this.apiFetch("/api/containers/" + containerId + "/stats" + this.agentQuery(agent));
-        if (!data) return;
-        this.renderStats(containerId, data);
+        // Skip if a request is already in progress for this container
+        if (this._pendingFetches[containerId]) return;
+        this._pendingFetches[containerId] = true;
+
+        try {
+            const url = '/api/containers/' + encodeURIComponent(containerId) + '/stats' + this.agentQuery(agent);
+            const resp = await fetch(url, { credentials: 'same-origin' });
+            if (resp.status === 401) return;
+            const data = await resp.json();
+            this.renderStats(containerId, data);
+        } catch (e) {
+            // Ignorer les erreurs (réseau, annulation…)
+        } finally {
+            this._pendingFetches[containerId] = false;
+        }
     },
 
     renderStats(containerId, stats) {
@@ -963,11 +978,24 @@ const DockyApp = {
     // -------------------------------------------------------
 
     async checkUpdate(containerId, agent) {
-        const data = await this.apiFetch("/api/containers/" + containerId + "/update-check" + this.agentQuery(agent));
-        if (!data) return;
-        if (data.update_available) {
-            const badge = document.getElementById("update-" + containerId);
-            if (badge) badge.classList.remove("hidden");
+        // Éviter les appels concurrents pour le même container
+        const key = 'update-' + containerId;
+        if (this._pendingFetches[key]) return;
+        this._pendingFetches[key] = true;
+
+        try {
+            const url = '/api/containers/' + encodeURIComponent(containerId) + '/update-check' + this.agentQuery(agent);
+            const resp = await fetch(url, { credentials: 'same-origin' });
+            if (resp.status === 401) return;
+            const data = await resp.json();
+            if (data && data.update_available) {
+                const badge = document.getElementById('update-' + containerId);
+                if (badge) badge.classList.remove('hidden');
+            }
+        } catch (e) {
+            // Ignorer les erreurs (réseau, annulation…)
+        } finally {
+            this._pendingFetches[key] = false;
         }
     },
 
@@ -1198,29 +1226,63 @@ const DockyApp = {
         this.savedContents = {};
         this.renderEditorLoading();
 
-        const filesData = await this.apiFetch("/api/stacks/" + encodeURIComponent(name) + "/files" + this.agentQuery(agent));
-        if (!filesData || !filesData.files) {
-            this.renderEditorPlaceholder("Impossible de charger les fichiers de la stack.");
-            return;
-        }
-        this.stackFiles = filesData.files;
-        if (this.stackFiles.length === 0) {
-            this.renderEditorPlaceholder("Aucun fichier dans cette stack.");
-            return;
-        }
-        // Load all file contents
+        // --- Batch route: tries to fetch all files with content in one call ---
         const agentParam = this.agentQuery(agent);
-        for (const f of this.stackFiles) {
-            const resp = await fetch("/api/stacks/" + encodeURIComponent(name) + "/files/" + encodeURIComponent(f.name) + agentParam, { credentials: "same-origin" });
-            if (resp.ok) {
-                const text = await resp.text();
-                this.fileContents[f.name] = text;
-                this.savedContents[f.name] = text;
-            } else {
-                this.fileContents[f.name] = "";
-                this.savedContents[f.name] = "";
+        const batchUrl = "/api/stacks/" + encodeURIComponent(name) + "/files-with-content" + agentParam;
+
+        let batchOk = false;
+        try {
+            const batchResp = await fetch(batchUrl, { credentials: "same-origin" });
+            if (batchResp.status === 401) {
+                window.location.href = "/login";
+                return;
+            }
+            if (batchResp.ok) {
+                const batchData = await batchResp.json();
+                if (batchData && batchData.files && batchData.files.length > 0) {
+                    // Build stackFiles and fileContents from batch data
+                    this.stackFiles = batchData.files.map(f => ({
+                        name: f.filename,
+                        size: f.size || 0,
+                        is_dir: false
+                    }));
+                    for (const f of batchData.files) {
+                        this.fileContents[f.filename] = f.content || "";
+                        this.savedContents[f.filename] = f.content || "";
+                    }
+                    batchOk = true;
+                }
+            }
+        } catch (e) {
+            console.warn("Batch load failed, falling back to sequential:", e);
+        }
+
+        // --- Fallback: legacy sequential load ---
+        if (!batchOk) {
+            const filesData = await this.apiFetch("/api/stacks/" + encodeURIComponent(name) + "/files" + agentParam);
+            if (!filesData || !filesData.files) {
+                this.renderEditorPlaceholder("Impossible de charger les fichiers de la stack.");
+                return;
+            }
+            this.stackFiles = filesData.files;
+            if (this.stackFiles.length === 0) {
+                this.renderEditorPlaceholder("Aucun fichier dans cette stack.");
+                return;
+            }
+            // Load all file contents sequentially (legacy path)
+            for (const f of this.stackFiles) {
+                const resp = await fetch("/api/stacks/" + encodeURIComponent(name) + "/files/" + encodeURIComponent(f.name) + agentParam, { credentials: "same-origin" });
+                if (resp.ok) {
+                    const text = await resp.text();
+                    this.fileContents[f.name] = text;
+                    this.savedContents[f.name] = text;
+                } else {
+                    this.fileContents[f.name] = "";
+                    this.savedContents[f.name] = "";
+                }
             }
         }
+
         this.editorLoading = false;
         // Select first file (prefer docker-compose.yml)
         let first = this.stackFiles[0].name;

@@ -863,6 +863,30 @@ async def api_list_stack_files(request: Request, name: str, agent: str = Query(.
     return {"files": files}
 
 
+@router.get("/stacks/{name}/files-with-content")
+async def api_list_stack_files_with_content(
+    request: Request, name: str, agent: str = Query(...)
+):
+    """List all files in a stack WITH their content in a single request.
+
+    This avoids N+1 calls (1 list + N file reads) by returning everything
+    in one batch.  Falls back gracefully if the agent does not support the
+    endpoint (returns a 404).
+    """
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    try:
+        result = await agent_manager.get_stack_files_with_content(agent_name, name)
+        return result
+    except Exception as e:
+        logger.warning("files-with-content failed for %s/%s: %s", agent_name, name, e)
+        return JSONResponse(status_code=502, content={"error": str(e), "files": []})
+
+
 @router.get("/stacks/{name}/files/{filename:path}")
 async def api_get_stack_file(
     request: Request, name: str, filename: str, agent: str = Query(...)

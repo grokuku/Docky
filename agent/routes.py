@@ -396,6 +396,36 @@ async def get_stack_file(request: Request, name: str, filename: str):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+@router.get("/stacks/{stack_name}/files-with-content")
+async def list_stack_files_with_content(request: Request, stack_name: str):
+    """List all files in a stack WITH their content in a single call.
+
+    Returns a JSON object:
+    .. code-block:: json
+
+        {"files": [{"filename": "docker-compose.yml", "content": "..."}, ...]}
+    """
+    auth_error = require_api_key(request)
+    if auth_error:
+        return auth_error
+    try:
+        files = await asyncio.to_thread(docker_manager.get_stack_files, stack_name)
+        result = []
+        for f in files:
+            try:
+                content = await asyncio.to_thread(docker_manager.get_stack_file, stack_name, f["name"])
+                result.append({"filename": f["name"], "content": content, "size": f.get("size", 0)})
+            except Exception:
+                result.append({"filename": f["name"], "content": None, "size": f.get("size", 0)})
+        return {"files": result}
+    except FileNotFoundError:
+        return JSONResponse(status_code=404, content={"error": f"Stack '{stack_name}' not found"})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
 @router.put("/stacks/{name}/files/{filename}")
 async def save_stack_file(request: Request, name: str, filename: str):
     auth_err = require_api_key(request)
