@@ -19,6 +19,8 @@ const DockyApp = {
     refreshInterval: null,
     refreshTimer: 5000,
 
+    _viewMode: 'grid',  // 'grid' ou 'table'
+
     // Multi-agent
     _hiddenAgents: new Set(),  // Set vide = tous visibles. Les agents dedans sont cachés.
     agentsList: [],              // [{name, status, ...}]
@@ -167,7 +169,7 @@ const DockyApp = {
         this.renderAgentSelector();
         // Ne pas fetch tout depuis l'API, juste re-rendre le grid avec le nouveau filtre
         if (this._allContainersCache && this._allContainersCache.length > 0) {
-            this.renderGridDashboard();
+            this.renderCurrentView();
         } else {
             // Premier chargement, pas encore de données
             this.refreshStacks();
@@ -207,10 +209,10 @@ const DockyApp = {
         if (stacksResp === null) return;
         this.stacks = stacksResp;
 
-        // Build stackAgentMap
+        // Build stackAgentMap with composite key name@agent
         this.stackAgentMap = {};
         for (const s of stacksResp) {
-            if (s.agent_name) this.stackAgentMap[s.name] = s.agent_name;
+            if (s.agent_name) this.stackAgentMap[s.name + '@' + s.agent_name] = s.agent_name;
         }
 
         // Parse containers
@@ -236,7 +238,7 @@ const DockyApp = {
         if (this._lastGridKey === gridKey) return;
         this._lastGridKey = gridKey;
 
-        this.renderGridDashboard();
+        this.renderCurrentView();
         this.updateStackSelector(stacksResp);
 
         this._updateStackList();
@@ -297,8 +299,9 @@ const DockyApp = {
                 typeBadge = '<span class="stack-type-badge stack-badge-docky">Docky</span>';
             }
             // Edit button only for managed stacks (files are editable)
+            const escapedAgent = this.escapeHtml(stack.agent_name || '');
             const editBtn = isManaged
-                ? '<button class="icon-btn" title="Éditer" onclick="DockyApp.selectStackFromDashboard(\'' + this.escapeHtml(stack.name) + '\')">📝</button>'
+                ? '<button class="icon-btn" title="Éditer" onclick="DockyApp.selectStackFromDashboard(\'' + this.escapeHtml(stack.name) + '\', \'' + escapedAgent + '\')">📝</button>'
                 : '';
             // One-click import button for external stacks (not standalone)
             const importBtn = (!isManaged && !isStandalone)
@@ -307,10 +310,10 @@ const DockyApp = {
             // Stack-level start/stop/restart only for real stacks (not standalone)
             const stackActionBtns = isStandalone
                 ? ''
-                : '<button class="icon-btn btn-start" title="Démarrer" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'start\')">▶</button>'
-                  + '<button class="icon-btn btn-stop" title="Arrêter" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'stop\')">⏹</button>'
-                  + '<button class="icon-btn btn-restart" title="Redémarrer" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'restart\')">🔄</button>'
-                  + '<button class="icon-btn" title="Update" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'update\')">⬆</button>';
+                : '<button class="icon-btn btn-start" title="Démarrer" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'start\', \'' + escapedAgent + '\')">▶</button>'
+                  + '<button class="icon-btn btn-stop" title="Arrêter" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'stop\', \'' + escapedAgent + '\')">⏹</button>'
+                  + '<button class="icon-btn btn-restart" title="Redémarrer" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'restart\', \'' + escapedAgent + '\')">🔄</button>'
+                  + '<button class="icon-btn" title="Update" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'update\', \'' + escapedAgent + '\')">⬆</button>';
 
             html += `
                 <div class="stack-card ${isExpanded ? "expanded" : ""}" data-stack="${this.escapeHtml(stack.name)}">
@@ -380,7 +383,9 @@ const DockyApp = {
     loadContainers(stackName) {
         const target = document.getElementById("containers-" + stackName);
         if (!target) return;
-        const agent = this.stackAgentMap[stackName] || null;
+        // Trouver l'agent depuis l'objet stack (évite stackAgentMap[name] ambigu)
+        const stack = this.stacks.find(s => s.name === stackName);
+        const agent = stack ? (stack.agent_name || null) : null;
         this.expandedStackAgent = agent;
         // Display instantly from the pre-loaded cache (no API call)
         const containers = (this._allContainersCache || []).filter(c => {
@@ -489,7 +494,7 @@ const DockyApp = {
             
             // Si des filtres d'agents sont actifs, ignorer les stacks dont l'agent est caché
             if (this._hiddenAgents.size > 0) {
-                const stackAgent = this.stackAgentMap[stack.name] || '';
+                const stackAgent = stack.agent_name || '';
                 if (this._hiddenAgents.has(stackAgent)) {
                     continue; // Stack ignorée si son agent est caché
                 }
@@ -546,6 +551,7 @@ const DockyApp = {
             const borderColor = group.color.stroke;
             const bgColor = group.color.fill;
             const stackName = group.stack.name;
+            const stackAgent = group.stack.agent_name || null;
             
             for (let i = 0; i < group.containers.length; i++) {
                 // Position dans la grille
@@ -555,6 +561,7 @@ const DockyApp = {
                     row: row,
                     container: group.containers[i],
                     stackName: stackName,
+                    agent: stackAgent,
                     borderColor: borderColor,
                     bgColor: bgColor
                 });
@@ -579,7 +586,7 @@ const DockyApp = {
         for (const cell of allCells) {
             const cardX = cell.col * (cellW + gap);
             const cardY = cell.row * (cellH + gap);
-            const agent = this.stackAgentMap[cell.stackName] || null;
+            const agent = cell.agent;
             
             cardsHtml += this.renderGridContainerCard(cell.container, cardX, cardY, cellW, cellH, agent, cell.borderColor, cell.bgColor, cell.stackName);
             if (cell.container.status === "running") runningContainers.push({ id: cell.container.id, agent });
@@ -596,17 +603,171 @@ const DockyApp = {
         if (this._selectedStack) {
             const cards = document.querySelectorAll('.grid-container-card');
             cards.forEach(card => {
-                if (card.dataset.stack === this._selectedStack) {
+                const cardKey = (card.dataset.stack || '') + '@' + (card.dataset.agent || '');
+                if (cardKey === this._selectedStack) {
                     card.classList.remove('grid-dimmed');
                 } else {
                     card.classList.add('grid-dimmed');
                 }
             });
-            const stack = this.stacks.find(s => s.name === this._selectedStack);
+            // Extraire le nom et l'agent depuis la clé composite
+            const parts = this._selectedStack.split('@');
+            const selName = parts[0];
+            const selAgent = parts.slice(1).join('@') || null;
+            const stack = this.stacks.find(s => s.name === selName && (s.agent_name || '') === (selAgent || ''));
             if (stack) {
                 this.showStackContextPanel(stack, null);
             }
         }
+    },
+
+    // -------------------------------------------------------
+    // View Mode Toggle (grid / table)
+    // -------------------------------------------------------
+
+    toggleViewMode() {
+        this._viewMode = this._viewMode === 'grid' ? 'table' : 'grid';
+        const btn = document.getElementById('view-toggle');
+        if (btn) btn.textContent = this._viewMode === 'grid' ? '📋' : '🔲';
+        localStorage.setItem('docky-view-mode', this._viewMode);
+        if (this._allContainersCache && this._allContainersCache.length > 0) {
+            this.renderCurrentView();
+        }
+    },
+
+    renderCurrentView() {
+        if (this._viewMode === 'grid') {
+            this.renderGridDashboard();
+        } else {
+            this.renderTableDashboard();
+        }
+    },
+
+    // -------------------------------------------------------
+    // Table Dashboard (Option C)
+    // -------------------------------------------------------
+
+    renderTableDashboard() {
+        const container = document.getElementById("dashboard-content");
+        if (!container) return;
+
+        if (this.stacks.length === 0) {
+            container.innerHTML = '<div class="placeholder"><p>📭 Aucune stack trouvée</p></div>';
+            return;
+        }
+
+        const sortedStacks = [...this.stacks].sort((a, b) => a.name.localeCompare(b.name));
+        const allContainers = this._allContainersCache || [];
+
+        let html = '<div class="table-dashboard">';
+
+        for (const stack of sortedStacks) {
+            const containers = allContainers.filter(c => {
+                if (stack.name === 'Standalone') return !c.stack;
+                return c.stack === stack.name;
+            });
+            if (containers.length === 0) continue;
+
+            // Skip if agent is hidden
+            if (this._hiddenAgents.size > 0) {
+                const stackAgent = stack.agent_name || '';
+                if (this._hiddenAgents.has(stackAgent)) continue;
+            }
+
+            const color = this.stackColor(stack.name);
+            const borderColor = color.stroke;
+            const bgColor = color.fill;
+            const isManaged = stack.managed !== false;
+            const isStandalone = stack.standalone === true;
+
+            // Stack header
+            let typeBadge = '';
+            if (isStandalone) typeBadge = '<span class="stack-type-badge stack-badge-standalone">standalone</span>';
+            else if (!isManaged) typeBadge = '<span class="stack-type-badge stack-badge-external">⚠ Externe</span>';
+            else typeBadge = '<span class="stack-type-badge stack-badge-docky">Docky</span>';
+
+            const escapedName = this.escapeHtml(stack.name);
+
+            html += '<div class="table-stack-group" style="border-color:' + borderColor + ';background:' + bgColor + '">';
+            html += '<div class="table-stack-header">';
+            html += '<span class="table-stack-name">' + escapedName + '</span>' + typeBadge;
+            html += '<span class="meta-badge">🐳 ' + containers.length + '</span>';
+            html += '</div>';
+
+            // Container rows
+            for (const c of containers) {
+                const agent = stack.agent_name || '';
+                html += this.renderTableRow(c, agent, borderColor, stack.name);
+            }
+
+            html += '</div>';
+        }
+
+        if (html === '<div class="table-dashboard">') {
+            html += '<div class="placeholder"><p>🔇 Aucun agent affiché</p></div>';
+        }
+
+        html += '</div>';
+        container.innerHTML = html;
+
+        // Load stats for running containers
+        const runningContainers = allContainers.filter(c => c.status === 'running');
+        for (const rc of runningContainers) {
+            const rcStack = this.stacks.find(s => s.name === (rc.stack || ''));
+            const agent = rcStack ? (rcStack.agent_name || '') : '';
+            this.loadContainerStats(rc.id, agent);
+            this.checkUpdate(rc.id, agent);
+        }
+
+        // Ré-appliquer la sélection de stack après un re-render (auto-refresh)
+        if (this._selectedStack) {
+            const rows = document.querySelectorAll('.table-container-row');
+            rows.forEach(row => {
+                const rowKey = (row.dataset.stack || '') + '@' + (row.dataset.agent || '');
+                if (rowKey === this._selectedStack) {
+                    row.style.opacity = '';
+                } else {
+                    row.style.opacity = '0.3';
+                }
+            });
+            // Extraire le nom et l'agent depuis la clé composite
+            const parts = this._selectedStack.split('@');
+            const selName = parts[0];
+            const selAgent = parts.slice(1).join('@') || null;
+            const stack = this.stacks.find(s => s.name === selName && (s.agent_name || '') === (selAgent || ''));
+            if (stack) {
+                this.showStackContextPanel(stack, null);
+            }
+        }
+    },
+
+    renderTableRow(c, agent, borderColor, stackName) {
+        if (!c) return '';
+
+        const escapedId = this.escapeHtml(c.id);
+        const name = this.escapeHtml(c.name);
+        const image = this.escapeHtml(c.image);
+        const statusDot = this.containerStatusDot(c.status);
+        const agt = (agent || "").replace(/'/g, "\\'");
+        const escapedName = this.escapeHtml(stackName);
+        const ports = (c.ports || []).filter(p => p.host_port).map(p => p.host_port + '→' + p.container).join(", ");
+
+        return '<div class="table-container-row" data-id="' + escapedId + '" data-stack="' + escapedName + '" data-agent="' + this.escapeHtml(agent || '') + '" style="border-left-color:' + borderColor + '" onclick="event.stopPropagation(); DockyApp.selectContainerInGrid(\'' + escapedId + '\', \'' + escapedName + '\', \'' + this.escapeHtml(agent || '') + '\')">'
+            + '<div class="table-row-status">' + statusDot + '</div>'
+            + '<div class="table-row-name" title="' + name + '">' + name + '</div>'
+            + '<div class="table-row-image" title="' + image + '">📦 ' + image + '</div>'
+            + '<div class="table-row-resources">'
+            + '<div class="table-resource"><span class="resource-label">CPU</span><div class="progress-bar"><div class="progress-fill" id="stats-cpu-' + escapedId + '" style="width:0%"></div></div><span class="resource-value" id="stats-cpu-val-' + escapedId + '">—</span></div>'
+            + '<div class="table-resource"><span class="resource-label">RAM</span><div class="progress-bar"><div class="progress-fill ram" id="stats-ram-' + escapedId + '" style="width:0%"></div></div><span class="resource-value" id="stats-ram-val-' + escapedId + '">—</span></div>'
+            + '</div>'
+            + '<div class="table-row-ports" title="' + ports + '">' + (ports ? '🔌 ' + ports : '') + '</div>'
+            + '<div class="table-row-actions" onclick="event.stopPropagation()">'
+            + '<button class="grid-icon-btn btn-start" title="Start" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'start\', \'' + agt + '\')">▶</button>'
+            + '<button class="grid-icon-btn btn-stop" title="Stop" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'stop\', \'' + agt + '\')">⏹</button>'
+            + '<button class="grid-icon-btn btn-restart" title="Restart" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'restart\', \'' + agt + '\')">🔄</button>'
+            + '<button class="grid-icon-btn btn-logs" title="Logs" onclick="DockyApp.openLogs(\'' + escapedId + '\', \'' + name + '\', \'' + agt + '\')">📋</button>'
+            + '<button class="grid-icon-btn btn-console" title="Console" onclick="DockyApp.openConsole(\'' + escapedId + '\', \'' + name + '\', \'' + agt + '\')">🖥</button>'
+            + '</div></div>';
     },
 
     hashString(s) { let h = 0; for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0; return Math.abs(h); },
@@ -642,8 +803,8 @@ const DockyApp = {
         const ports = (c.ports || []).filter(p => p.host_port).map(p => p.host_port + '→' + p.container).join(", ");
         const portsBadge = ports ? '<span class="meta-badge meta-ports grid-card-ports">🔌 ' + this.escapeHtml(ports) + '</span>' : '';
         
-        return '<div class="grid-container-card" data-id="' + escapedId + '" data-stack="' + this.escapeHtml(stackName) + '" style="left:' + left + 'px;top:' + top + 'px;width:' + width + 'px;height:' + height + 'px;z-index:3;background-color:' + bgColor + ';border-color:' + borderColor + '"' 
-            + ' onclick="event.stopPropagation(); DockyApp.selectContainerInGrid(\'' + escapedId + '\', \'' + this.escapeHtml(stackName) + '\')">'
+        return '<div class="grid-container-card" data-id="' + escapedId + '" data-stack="' + this.escapeHtml(stackName) + '" data-agent="' + this.escapeHtml(agent || '') + '" style="left:' + left + 'px;top:' + top + 'px;width:' + width + 'px;height:' + height + 'px;z-index:3;background-color:' + bgColor + ';border-color:' + borderColor + '"' 
+            + ' onclick="event.stopPropagation(); DockyApp.selectContainerInGrid(\'' + escapedId + '\', \'' + this.escapeHtml(stackName) + '\', \'' + this.escapeHtml(agent || '') + '\')">'
             + '<div class="grid-card-top"><span class="grid-card-name" title="' + name + '">' + name + '</span>' + statusDot + '</div>'
             + '<div class="grid-card-image" title="' + image + '">📦 ' + image + '</div>'
             + '<div class="grid-card-resources" id="resources-' + escapedId + '"><div class="resource-line"><span class="resource-label">CPU</span><div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div><span class="resource-value">—</span></div><div class="resource-line"><span class="resource-label">RAM</span><div class="progress-bar"><div class="progress-fill ram" style="width:0%"></div></div><span class="resource-value">—</span></div></div>'
@@ -657,20 +818,36 @@ const DockyApp = {
             + '</div></div>';
     },
 
-    selectContainerInGrid(containerId, stackName) {
-        this._selectedStack = stackName;
-        // Assombrir les containers qui ne sont pas dans ce stack
+    selectContainerInGrid(containerId, stackName, agent) {
+        const key = stackName + '@' + (agent || '');
+        this._selectedStack = key;
+        // Assombrir les containers qui ne sont pas dans ce stack (mode grille)
         const cards = document.querySelectorAll('.grid-container-card');
         cards.forEach(card => {
-            if (card.dataset.stack === stackName) {
+            const cardStack = card.dataset.stack;
+            const cardAgent = card.dataset.agent;
+            const cardKey = cardStack + '@' + (cardAgent || '');
+            if (cardKey === key) {
                 card.classList.remove('grid-dimmed');
             } else {
                 card.classList.add('grid-dimmed');
             }
         });
+        // Assombrir les lignes qui ne sont pas dans ce stack (mode tableau)
+        const rows = document.querySelectorAll('.table-container-row');
+        rows.forEach(row => {
+            const rowStack = row.dataset.stack;
+            const rowAgent = row.dataset.agent;
+            const rowKey = rowStack + '@' + (rowAgent || '');
+            if (rowKey === key) {
+                row.style.opacity = '';
+            } else {
+                row.style.opacity = '0.3';
+            }
+        });
         
-        // Trouver la stack et l'afficher dans le panel droit
-        const stack = this.stacks.find(s => s.name === stackName);
+        // Trouver la stack avec le bon agent
+        const stack = this.stacks.find(s => s.name === stackName && (s.agent_name || '') === (agent || ''));
         if (stack) {
             this.showStackContextPanel(stack, containerId);
         }
@@ -682,10 +859,12 @@ const DockyApp = {
         
         const isManaged = stack.managed !== false;
         const isStandalone = stack.standalone === true;
+        const escapedName = this.escapeHtml(stack.name);
+        const escapedAgent = this.escapeHtml(stack.agent_name || '');
         
         let html = '<div class="stack-context-panel">';
         html += '<div class="stack-context-header">';
-        html += '<h2 class="stack-context-title">' + this.escapeHtml(stack.name) + '</h2>';
+        html += '<h2 class="stack-context-title">' + escapedName + '</h2>';
         if (isStandalone) html += '<span class="stack-type-badge stack-badge-standalone">standalone</span>';
         else if (!isManaged) html += '<span class="stack-type-badge stack-badge-external">⚠ Externe</span>';
         else html += '<span class="stack-type-badge stack-badge-docky">Docky</span>';
@@ -693,13 +872,12 @@ const DockyApp = {
         
         // Boutons de commande du stack
         if (!isStandalone) {
-            const escapedName = this.escapeHtml(stack.name);
             html += '<div class="stack-context-actions">';
-            html += '<button class="btn btn-sm btn-success" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'start\')">▶ Démarrer</button>';
-            html += '<button class="btn btn-sm btn-danger" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'stop\')">⏹ Arrêter</button>';
-            html += '<button class="btn btn-sm btn-warning" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'restart\')">🔄 Redémarrer</button>';
-            html += '<button class="btn btn-sm btn-info" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'update\')">⬆ Update</button>';
-            if (isManaged) html += '<button class="btn btn-sm" onclick="DockyApp.selectStackFromDashboard(\'' + escapedName + '\')">📝 Éditer</button>';
+            html += '<button class="btn btn-sm btn-success" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'start\', \'' + escapedAgent + '\')">▶ Démarrer</button>';
+            html += '<button class="btn btn-sm btn-danger" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'stop\', \'' + escapedAgent + '\')">⏹ Arrêter</button>';
+            html += '<button class="btn btn-sm btn-warning" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'restart\', \'' + escapedAgent + '\')">🔄 Redémarrer</button>';
+            html += '<button class="btn btn-sm btn-info" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'update\', \'' + escapedAgent + '\')">⬆ Update</button>';
+            if (isManaged) html += '<button class="btn btn-sm" onclick="DockyApp.selectStackFromDashboard(\'' + escapedName + '\', \'' + escapedAgent + '\')">📝 Éditer</button>';
             if (!isManaged && !isStandalone) {
                 if (stack.source_path) {
                     // Chemin détecté automatiquement → import direct avec preview
@@ -736,8 +914,8 @@ const DockyApp = {
         
         // Charger le compose si managed
         if (isManaged) {
-            this.selectedStackAgent = this.stackAgentMap[stack.name] || null;
-            this.loadEditor(stack.name);
+            this.selectedStackAgent = stack.agent_name || null;  // DIRECTEMENT depuis l'objet stack
+            this.loadEditor(stack.name, stack.agent_name);
         }
     },
 
@@ -762,8 +940,11 @@ const DockyApp = {
     _forceDeselect() {
         this._selectedStack = null;
         this.selectedStack = null;
+        this.selectedStackAgent = null;
         const cards = document.querySelectorAll('.grid-container-card');
         cards.forEach(card => card.classList.remove('grid-dimmed'));
+        const rows = document.querySelectorAll('.table-container-row');
+        rows.forEach(row => row.style.opacity = '');
         const selector = document.getElementById('stack-selector');
         if (selector) selector.value = '';
         this.renderEditorPlaceholder();
@@ -842,11 +1023,19 @@ const DockyApp = {
 
         input.addEventListener('change', () => {
             // Quand l'utilisateur sélectionne ou tape une valeur
-            const name = input.value.trim();
+            const raw = input.value.trim();
             input.value = '';
-            if (name) {
+            if (raw) {
+                // Extraire nom et agent (format possible: name@agent)
+                let stackName = raw;
+                let agent = null;
+                const atIdx = raw.indexOf('@');
+                if (atIdx > 0) {
+                    stackName = raw.substring(0, atIdx);
+                    agent = raw.substring(atIdx + 1);
+                }
                 // Trouver la stack
-                const stack = this.stacks.find(s => s.name === name);
+                const stack = this.stacks.find(s => s.name === stackName && (s.agent_name || '') === (agent || ''));
                 if (stack) {
                     // Sélectionner le premier container de cette stack
                     const container = (this._allContainersCache || []).find(c => {
@@ -854,7 +1043,7 @@ const DockyApp = {
                         return c.stack === stack.name;
                     });
                     if (container) {
-                        this.selectContainerInGrid(container.id, stack.name);
+                        this.selectContainerInGrid(container.id, stack.name, stack.agent_name);
                     }
                 }
             }
@@ -877,7 +1066,8 @@ const DockyApp = {
                 const container = (this._allContainersCache || []).find(c => c.name === name || c.id?.startsWith(name));
                 if (container) {
                     const stackName = container.stack || 'Standalone';
-                    this.selectContainerInGrid(container.id, stackName);
+                    const stack = this.stacks.find(s => s.name === stackName);
+                    this.selectContainerInGrid(container.id, stackName, stack ? stack.agent_name : '');
                 }
             }
         });
@@ -887,9 +1077,20 @@ const DockyApp = {
         const list = document.getElementById('stack-list');
         if (!list) return;
         list.innerHTML = '';
+        
+        // Compter les occurrences pour détecter les doublons
+        const nameCounts = {};
+        this.stacks.forEach(s => { nameCounts[s.name] = (nameCounts[s.name] || 0) + 1; });
+        
         for (const stack of this.stacks) {
             const opt = document.createElement('option');
-            opt.value = stack.name;
+            if (nameCounts[stack.name] > 1) {
+                opt.value = stack.name + '@' + (stack.agent_name || '');
+                opt.textContent = stack.name + ' (@' + (stack.agent_name || '') + ')';
+            } else {
+                opt.value = stack.name;
+                opt.textContent = stack.name;
+            }
             list.appendChild(opt);
         }
     },
@@ -928,15 +1129,28 @@ const DockyApp = {
     },
 
     renderStats(containerId, stats) {
-        const target = document.getElementById("resources-" + containerId);
-        if (!target) return;
         const cpuPct = Math.min(stats.cpu_percent, 100);
         const memPct = Math.min(stats.mem_percent, 100);
 
-        const cpuFill = target.querySelector(".resource-line:nth-child(1) .progress-fill");
-        const cpuVal = target.querySelector(".resource-line:nth-child(1) .resource-value");
-        const memFill = target.querySelector(".resource-line:nth-child(2) .progress-fill");
-        const memVal = target.querySelector(".resource-line:nth-child(2) .resource-value");
+        // Grid mode: #resources-{id} container
+        const target = document.getElementById("resources-" + containerId);
+        if (target) {
+            const cpuFill = target.querySelector(".resource-line:nth-child(1) .progress-fill");
+            const cpuVal = target.querySelector(".resource-line:nth-child(1) .resource-value");
+            const memFill = target.querySelector(".resource-line:nth-child(2) .progress-fill");
+            const memVal = target.querySelector(".resource-line:nth-child(2) .resource-value");
+
+            if (cpuFill) cpuFill.style.width = cpuPct + "%";
+            if (cpuVal) cpuVal.textContent = stats.cpu_percent.toFixed(1) + "%";
+            if (memFill) memFill.style.width = memPct + "%";
+            if (memVal) memVal.textContent = this.formatBytes(stats.mem_usage) + " / " + this.formatBytes(stats.mem_limit);
+        }
+
+        // Table mode: #stats-cpu-{id} and #stats-ram-{id} elements
+        const cpuFill = document.getElementById("stats-cpu-" + containerId);
+        const cpuVal = document.getElementById("stats-cpu-val-" + containerId);
+        const memFill = document.getElementById("stats-ram-" + containerId);
+        const memVal = document.getElementById("stats-ram-val-" + containerId);
 
         if (cpuFill) cpuFill.style.width = cpuPct + "%";
         if (cpuVal) cpuVal.textContent = stats.cpu_percent.toFixed(1) + "%";
@@ -960,10 +1174,10 @@ const DockyApp = {
         setTimeout(() => this.refreshStacks(), 1000);
     },
 
-    async stackAction(name, action) {
+    async stackAction(name, action, agent) {
+        const agt = agent || null;
         this.showToast(`${action} stack "${name}"…`, "info");
-        const agent = this.stackAgentMap[name] || null;
-        const result = await this.apiPost(`/api/stacks/${encodeURIComponent(name)}/${action}` + this.agentQuery(agent));
+        const result = await this.apiPost(`/api/stacks/${encodeURIComponent(name)}/${action}` + this.agentQuery(agt));
         if (result && result.success) {
             this.showToast(`Stack ${action} OK`, "success");
         } else {
@@ -1185,23 +1399,35 @@ const DockyApp = {
     onStackSelect(name) {
         if (!name) {
             this.selectedStack = null;
+            this.selectedStackAgent = null;
             this.renderEditorPlaceholder();
             return;
         }
-        this.loadEditor(name);
+        // Extraire l'agent si le nom contient le suffixe @agent
+        let stackName = name;
+        let agent = null;
+        const atIdx = name.indexOf('@');
+        if (atIdx > 0) {
+            stackName = name.substring(0, atIdx);
+            agent = name.substring(atIdx + 1);
+        } else {
+            const stack = this.stacks.find(s => s.name === name);
+            if (stack) agent = stack.agent_name;
+        }
+        this.loadEditor(stackName, agent);
     },
 
-    selectStackFromDashboard(name) {
+    selectStackFromDashboard(name, agent) {
         // Called when clicking a stack card in the dashboard
         const selector = document.getElementById("stack-selector");
         if (selector) selector.value = name;
-        this.loadEditor(name);
+        this.loadEditor(name, agent || this.stacks.find(s => s.name === name)?.agent_name);
     },
 
-    async loadEditor(name) {
-        this.selectedStack = name;
-        this.selectedStackAgent = this.stackAgentMap[name] || null;
-        const agent = this.selectedStackAgent;
+    async loadEditor(name, agent) {
+        this.selectedStack = name + '@' + (agent || '');
+        this.selectedStackAgent = agent || null;
+
 
         // External / standalone stacks cannot be edited (files are not in /data/stacks/)
         const stackInfo = this.stacks.find((s) => s.name === name);
@@ -1444,9 +1670,12 @@ const DockyApp = {
 
     async saveCurrentFile() {
         if (!this.selectedStack || !this.currentFile) return;
+        // Extraire le nom de stack depuis la clé composite (name@agent)
+        const atIdx = this.selectedStack.indexOf('@');
+        const stackName = atIdx > 0 ? this.selectedStack.substring(0, atIdx) : this.selectedStack;
         const content = this.fileContents[this.currentFile];
         const agentParam = this.agentQuery(this.selectedStackAgent);
-        const resp = await fetch("/api/stacks/" + encodeURIComponent(this.selectedStack) + "/files/" + encodeURIComponent(this.currentFile) + agentParam, {
+        const resp = await fetch("/api/stacks/" + encodeURIComponent(stackName) + "/files/" + encodeURIComponent(this.currentFile) + agentParam, {
             method: "PUT",
             headers: { "Content-Type": "text/plain" },
             body: content,
@@ -1465,15 +1694,17 @@ const DockyApp = {
 
     async saveAndDeploy() {
         if (!this.selectedStack) return;
+        // Extraire le nom de stack depuis la clé composite (name@agent)
+        const atIdx = this.selectedStack.indexOf('@');
+        const stackName = atIdx > 0 ? this.selectedStack.substring(0, atIdx) : this.selectedStack;
         // Save all modified files
-        const stack = this.selectedStack;
         const agent = this.selectedStackAgent;
         const agentParam = this.agentQuery(agent);
         this.showToast("Sauvegarde et déploiement…", "info");
         let allOk = true;
         for (const fname of Object.keys(this.fileContents)) {
             if (this.isModified(fname)) {
-                const resp = await fetch("/api/stacks/" + encodeURIComponent(stack) + "/files/" + encodeURIComponent(fname) + agentParam, {
+                const resp = await fetch("/api/stacks/" + encodeURIComponent(stackName) + "/files/" + encodeURIComponent(fname) + agentParam, {
                     method: "PUT",
                     headers: { "Content-Type": "text/plain" },
                     body: this.fileContents[fname],
@@ -1488,7 +1719,7 @@ const DockyApp = {
             return;
         }
         // Deploy
-        const result = await this.apiPost("/api/stacks/" + encodeURIComponent(stack) + "/deploy" + agentParam);
+        const result = await this.apiPost("/api/stacks/" + encodeURIComponent(stackName) + "/deploy" + agentParam);
         if (result && result.success) {
             this.showToast("Déploiement réussi ✅", "success");
         } else {
@@ -1572,7 +1803,8 @@ const DockyApp = {
     },
 
     async _doImportPreview(sourcePath, stackName) {
-        const agent = this.stackAgentMap[stackName] || null;
+        const stack = this.stacks.find(s => s.name === stackName);
+        const agent = stack ? (stack.agent_name || null) : null;
         if (!agent) {
             this.showToast('Agent non trouvé pour cette stack', "error");
             return;
@@ -1686,7 +1918,8 @@ const DockyApp = {
     },
 
     async doImportDirect(sourcePath, stackName) {
-        const agent = this.stackAgentMap[stackName] || null;
+        const stack = this.stacks.find(s => s.name === stackName);
+        const agent = stack ? (stack.agent_name || null) : null;
         if (!agent) {
             this.showToast('Agent non trouvé pour cette stack', "error");
             return;
@@ -1796,7 +2029,7 @@ const DockyApp = {
             this.closeNewStackModal();
             this.showToast("Stack créée : " + name, "success");
             await this.refreshStacks();
-            this.loadEditor(name);
+            this.loadEditor(name, this.selectedStackAgent);
         } else {
             const data = await resp.json().catch(() => ({}));
             this.showToast("Erreur création : " + (data.detail || resp.statusText), "error");
@@ -1819,20 +2052,28 @@ const DockyApp = {
     },
 
     async confirmDeleteStack() {
-        const name = this.deleteTargetStack;
-        if (!name) return;
-        const agent = this.stackAgentMap[name] || null;
+        const raw = this.deleteTargetStack;
+        if (!raw) return;
+        // Extraire le nom et l'agent depuis la clé composite (name@agent)
+        let stackName = raw;
+        let agent = null;
+        const atIdx = raw.indexOf('@');
+        if (atIdx > 0) {
+            stackName = raw.substring(0, atIdx);
+            agent = raw.substring(atIdx + 1);
+        }
         const agentParam = this.agentQuery(agent);
-        const resp = await fetch("/api/stacks/" + encodeURIComponent(name) + agentParam, {
+        const resp = await fetch("/api/stacks/" + encodeURIComponent(stackName) + agentParam, {
             method: "DELETE",
             credentials: "same-origin",
         });
         if (resp.status === 401) { window.location.href = "/login"; return; }
         if (resp.ok) {
             this.closeDeleteStackModal();
-            this.showToast("Stack supprimée : " + name, "success");
-            if (this.selectedStack === name) {
+            this.showToast("Stack supprimée : " + stackName, "success");
+            if (this.selectedStack === raw) {
                 this.selectedStack = null;
+                this.selectedStackAgent = null;
                 this.renderEditorPlaceholder();
             }
             const selector = document.getElementById("stack-selector");
@@ -1871,8 +2112,11 @@ const DockyApp = {
             this.showToast("Mode invalide (ex: 644)", "error");
             return;
         }
+        // Extraire le nom de stack depuis la clé composite (name@agent)
+        const atIdx = this.selectedStack.indexOf('@');
+        const stackName = atIdx > 0 ? this.selectedStack.substring(0, atIdx) : this.selectedStack;
         const agentParam = this.agentQuery(this.selectedStackAgent);
-        const resp = await fetch("/api/stacks/" + encodeURIComponent(this.selectedStack) + "/files/" + encodeURIComponent(this.permsTargetFile) + "/permissions" + agentParam, {
+        const resp = await fetch("/api/stacks/" + encodeURIComponent(stackName) + "/files/" + encodeURIComponent(this.permsTargetFile) + "/permissions" + agentParam, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ mode }),
@@ -2436,6 +2680,11 @@ const DockyApp = {
             this.chatVisible = true;
         }
         this.applyChatVisibility();
+
+        // Load view mode preference
+        this._viewMode = localStorage.getItem('docky-view-mode') || 'grid';
+        const toggleBtn = document.getElementById('view-toggle');
+        if (toggleBtn) toggleBtn.textContent = this._viewMode === 'grid' ? '📋' : '🔲';
 
         this.initResizers();
         this.initStackSearch();

@@ -18,6 +18,7 @@
     --info: #60a5fa;
     --radius: 12px;
     --radius-sm: 8px;
+    --radius-md: 10px;
     --shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
     --transition: 0.2s ease;
 }
@@ -2129,6 +2130,152 @@ body {
 .grid-card-extra { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; min-height: 16px; }
 .grid-card-ports { font-size: 0.6rem !important; padding: 1px 5px !important; }
 .grid-card-actions { display: flex; gap: 3px; justify-content: center; margin-top: auto; }
+
+/* ============================================================
+   Table Dashboard — mode tableau
+   ============================================================ */
+
+.table-dashboard {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 8px;
+}
+
+.table-stack-group {
+    border: 1px solid;
+    border-radius: var(--radius-md);
+    overflow: hidden;
+}
+
+.table-stack-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    font-weight: 700;
+    font-size: 0.85rem;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+
+.table-stack-name {
+    color: var(--text-primary);
+}
+
+.table-container-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border-left: 3px solid transparent;
+    cursor: pointer;
+    transition: background var(--transition);
+    font-size: 0.8rem;
+}
+
+.table-container-row:hover {
+    background: rgba(255,255,255,0.03);
+}
+
+.table-row-status {
+    width: 20px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.table-row-name {
+    width: 180px;
+    flex-shrink: 0;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.table-row-image {
+    width: 160px;
+    flex-shrink: 0;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.table-row-resources {
+    display: flex;
+    gap: 12px;
+    flex: 1;
+    min-width: 0;
+}
+
+.table-resource {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.7rem;
+    min-width: 100px;
+}
+
+.table-resource .resource-label {
+    color: var(--text-muted);
+    width: 28px;
+    text-align: right;
+    flex-shrink: 0;
+}
+
+.table-resource .progress-bar {
+    flex: 1;
+    height: 5px;
+    background: rgba(0,0,0,0.3);
+    border-radius: 3px;
+    overflow: hidden;
+    min-width: 30px;
+}
+
+.table-resource .progress-fill {
+    height: 100%;
+    background: var(--info);
+    border-radius: 3px;
+    transition: width 0.4s ease;
+    min-width: 0;
+}
+
+.table-resource .progress-fill.ram { background: var(--warning); }
+
+.table-resource .resource-value {
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    width: 50px;
+    text-align: right;
+}
+
+.table-row-ports {
+    width: 120px;
+    flex-shrink: 0;
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.table-row-actions {
+    display: flex;
+    gap: 2px;
+    flex-shrink: 0;
+}
+
+@media (max-width: 1000px) {
+    .table-row-image { display: none; }
+    .table-row-ports { display: none; }
+    .table-row-name { width: 120px; }
+}
 
 /* Stack context panel (right column) */
 
