@@ -192,14 +192,21 @@ def _get_container_full_spec(container_id: str) -> Optional[Dict[str, Any]]:
 
     attrs = c.attrs
 
-    # Ports
+    # Ports (dédupliqués avec un set)
+    seen_ports = set()
     ports = []
     for container_port, bindings in (attrs.get("NetworkSettings", {}).get("Ports", {}) or {}).items():
         if bindings:
             for b in bindings:
-                ports.append({"host_port": b.get("HostPort", ""), "container_port": container_port})
+                key = (container_port, b.get("HostPort", ""))
+                if key not in seen_ports:
+                    seen_ports.add(key)
+                    ports.append({"host_port": b.get("HostPort", ""), "container_port": container_port})
         else:
-            ports.append({"host_port": "", "container_port": container_port})
+            key = (container_port, "")
+            if key not in seen_ports:
+                seen_ports.add(key)
+                ports.append({"host_port": "", "container_port": container_port})
 
     # Volumes (mounts)
     volumes = []
@@ -752,6 +759,18 @@ async def _update_compose_container(project: str, container_id: str, spec: Dict,
     service = compose["services"][service_name]
 
     # Apply changes
+    # Image
+    new_image = spec.get("image", "")
+    if new_image:
+        service["image"] = new_image
+
+    # Container name
+    new_name = spec.get("name", "")
+    if new_name:
+        service["container_name"] = new_name
+    elif "container_name" in service:
+        del service["container_name"]
+
     # Ports
     ports = []
     for p in spec.get("ports", []):
@@ -820,12 +839,34 @@ async def _recreate_container(c, container_id: str, spec: Dict, client, attrs: D
     """Stop, remove, recreate with new params. Rollback on failure."""
     try:
         old_name = c.name.lstrip("/")
-        image = attrs.get("Config", {}).get("Image", "")
+        old_image = attrs.get("Config", {}).get("Image", "")
+        new_name = spec.get("name", old_name)
+        new_image = spec.get("image", old_image)
+
+        # If only the name changed (no other settings), just rename
+        name_changed = new_name != old_name
+        image_changed = new_image != old_image
+
+        # Collect all spec changes to detect if anything besides name changed
+        spec_changed = image_changed
+        old_rp = attrs.get("HostConfig", {}).get("RestartPolicy", {}).get("Name", "no")
+        new_rp = spec.get("restart_policy", old_rp)
+        if new_rp != old_rp:
+            spec_changed = True
+        # Check ports, volumes, env, labels for changes by comparing to current spec
+        # (Fetching old spec fully would be heavy, so we check if any of these are provided)
+        if spec.get("ports") or spec.get("volumes") or spec.get("env") or spec.get("labels"):
+            spec_changed = True
+
+        if name_changed and not spec_changed:
+            # Simple rename, no recreate needed
+            await asyncio.to_thread(c.rename, new_name)
+            return {"success": True, "output": f"Container renommé en {new_name}"}
 
         # Build docker run params
         run_kwargs = {
-            "image": image,
-            "name": old_name,
+            "image": new_image,
+            "name": new_name,
             "detach": True,
         }
 
@@ -873,9 +914,9 @@ async def _recreate_container(c, container_id: str, spec: Dict, client, attrs: D
         # Create new container
         new_c = await asyncio.to_thread(
             client.containers.run,
-            image,
+            new_image,
             detach=True,
-            name=old_name,
+            name=new_name,
             restart_policy=run_kwargs["restart_policy"],
             ports=port_bindings or None,
             volumes=volumes_dict or None,
@@ -889,7 +930,7 @@ async def _recreate_container(c, container_id: str, spec: Dict, client, attrs: D
             lambda: client.containers.get(f"{old_name}_backup").remove(force=True)
         )
 
-        return {"success": True, "output": f"Container {old_name} recréé avec les nouvelles configurations"}
+        return {"success": True, "output": f"Container {new_name} recréé avec les nouvelles configurations"}
 
     except Exception as e:
         # Rollback: try to restore backup container

@@ -1247,6 +1247,22 @@ const DockyApp = {
             this._editSpec = spec;
             document.getElementById("container-edit-title").textContent = `✏️ ${this.escapeHtml(spec.name || containerId)}`;
             this._renderContainerEditForm(spec);
+            // Scroll spy pour mettre à jour l'onglet actif
+            const editBody = document.getElementById('container-edit-body');
+            if (editBody) {
+                editBody.addEventListener('scroll', () => {
+                    const sections = editBody.querySelectorAll('.edit-section');
+                    const tabs = editBody.querySelectorAll('.edit-section-tab');
+                    let currentSection = sections[0]?.id || '';
+                    sections.forEach(s => {
+                        const rect = s.getBoundingClientRect();
+                        if (rect.top <= 150) currentSection = s.id;
+                    });
+                    tabs.forEach(t => {
+                        t.classList.toggle('active', t.dataset.section === currentSection.replace('edit-section-', ''));
+                    });
+                });
+            }
         } catch(e) {
             this.showToast("Erreur: " + e.message, "error");
             this.closeContainerEdit();
@@ -1256,7 +1272,7 @@ const DockyApp = {
     _renderContainerEditForm(spec) {
         const body = document.getElementById("container-edit-body");
         
-        // Tabs
+        // Tabs (ancres de scroll)
         let html = '<div class="edit-section-tabs">';
         const tabs = [
             {id:'info', label:'ℹ️ Infos'},
@@ -1264,18 +1280,17 @@ const DockyApp = {
             {id:'volumes', label:'💾 Volumes'},
             {id:'env', label:'🌿 Env'},
             {id:'network', label:'🌐 Réseau'},
-            {id:'labels', label:'🏷️ Labels'},
         ];
-        tabs.forEach((t,i) => {
-            html += `<button class="edit-section-tab ${i===0?'active':''}" data-section="${t.id}" onclick="DockyApp._switchEditSection('${t.id}')">${t.label}</button>`;
+        tabs.forEach((t) => {
+            html += `<button class="edit-section-tab ${t.id==='info'?'active':''}" data-section="${t.id}" onclick="document.getElementById('edit-section-${t.id}').scrollIntoView({behavior:'smooth'})">${t.label}</button>`;
         });
         html += '</div>';
         
         // Info section
-        html += '<div class="edit-section active" data-section="info">';
+        html += '<div class="edit-section" id="edit-section-info">';
         html += '<div class="edit-info-grid">';
-        html += `<div class="edit-info-group"><label>Nom</label><div class="edit-value">${this.escapeHtml(spec.name)}</div></div>`;
-        html += `<div class="edit-info-group"><label>Image</label><div class="edit-value">${this.escapeHtml(spec.image)}</div></div>`;
+        html += `<div class="edit-info-group"><label>Nom</label><input type="text" id="edit-container-name" class="form-input" value="${this.escapeHtml(spec.name)}"></div>`;
+        html += `<div class="edit-info-group"><label>Image</label><input type="text" id="edit-container-image" class="form-input" value="${this.escapeHtml(spec.image)}"></div>`;
         const statusDot = spec.status === 'running' ? 'running' : (spec.status === 'exited' ? 'exited' : 'paused');
         html += `<div class="edit-info-group"><label>Statut</label><div class="edit-value"><span class="edit-status-dot ${statusDot}"></span>${this.escapeHtml(spec.status)}</div></div>`;
         html += `<div class="edit-info-group"><label>Stack</label><div class="edit-value">${this.escapeHtml(spec.stack || 'Standalone')}</div></div>`;
@@ -1289,7 +1304,7 @@ const DockyApp = {
         html += '</div>'; // end info
         
         // Ports section
-        html += '<div class="edit-section" data-section="ports">';
+        html += '<div class="edit-section" id="edit-section-ports">';
         html += '<table class="edit-table"><thead><tr><th>Port hôte</th><th>Port container</th><th>Protocole</th><th></th></tr></thead><tbody id="edit-ports-body">';
         (spec.ports||[]).forEach(p => {
             const cp = p.container_port || '';
@@ -1308,7 +1323,7 @@ const DockyApp = {
         html += '</div>'; // end ports
         
         // Volumes section
-        html += '<div class="edit-section" data-section="volumes">';
+        html += '<div class="edit-section" id="edit-section-volumes">';
         html += '<table class="edit-table"><thead><tr><th>Chemin hôte</th><th>Chemin container</th><th>Mode</th><th></th></tr></thead><tbody id="edit-volumes-body">';
         (spec.volumes||[]).forEach(v => {
             html += `<tr>
@@ -1322,7 +1337,7 @@ const DockyApp = {
         html += '</div>'; // end volumes
         
         // Env section
-        html += '<div class="edit-section" data-section="env">';
+        html += '<div class="edit-section" id="edit-section-env">';
         html += '<table class="edit-table"><thead><tr><th>Variable</th><th>Valeur</th><th></th></tr></thead><tbody id="edit-env-body">';
         (spec.env||[]).forEach(e => {
             html += `<tr>
@@ -1335,7 +1350,7 @@ const DockyApp = {
         html += '</div>'; // end env
         
         // Network section (read-only)
-        html += '<div class="edit-section" data-section="network">';
+        html += '<div class="edit-section" id="edit-section-network">';
         const nets = spec.networks || [];
         if (nets.length === 0) {
             html += '<p class="placeholder-hint">Aucun réseau configuré</p>';
@@ -1349,29 +1364,7 @@ const DockyApp = {
         }
         html += '</div>'; // end network
         
-        // Labels section
-        html += '<div class="edit-section" data-section="labels">';
-        html += '<table class="edit-table"><thead><tr><th>Clé</th><th>Valeur</th><th></th></tr></thead><tbody id="edit-labels-body">';
-        (spec.labels||[]).forEach(l => {
-            html += `<tr>
-                <td><input type="text" class="edit-label-key" value="${this.escapeHtml(l.key||'')}" placeholder="key"></td>
-                <td><input type="text" class="edit-label-val" value="${this.escapeHtml(l.value||'')}" placeholder="value"></td>
-                <td><button class="btn-icon-row" onclick="this.closest('tr').remove()">✕</button></td>
-            </tr>`;
-        });
-        html += '</tbody></table><button class="edit-add-row" onclick="DockyApp._addEditRow(\'labels\')">➕ Ajouter un label</button>';
-        html += '</div>'; // end labels
-        
         body.innerHTML = html;
-    },
-
-    _switchEditSection(sectionId) {
-        document.querySelectorAll('#container-edit-body .edit-section-tab').forEach(t => {
-            t.classList.toggle('active', t.dataset.section === sectionId);
-        });
-        document.querySelectorAll('#container-edit-body .edit-section').forEach(s => {
-            s.classList.toggle('active', s.dataset.section === sectionId);
-        });
     },
 
     _addEditRow(section) {
@@ -1381,18 +1374,22 @@ const DockyApp = {
             ports: '<tr><td><input type="text" class="edit-port-host" placeholder="8080"></td><td><input type="text" class="edit-port-ctn" placeholder="80"></td><td><select class="edit-select edit-port-proto"><option value="tcp">TCP</option><option value="udp">UDP</option></select></td><td><button class="btn-icon-row" onclick="this.closest(\'tr\').remove()">✕</button></td></tr>',
             volumes: '<tr><td><input type="text" class="edit-vol-host" placeholder="/host/path"></td><td><input type="text" class="edit-vol-ctn" placeholder="/container/path"></td><td><select class="edit-select edit-vol-mode"><option value="rw">RW</option><option value="ro">RO</option></select></td><td><button class="btn-icon-row" onclick="this.closest(\'tr\').remove()">✕</button></td></tr>',
             env: '<tr><td><input type="text" class="edit-env-key" placeholder="KEY"></td><td><input type="text" class="edit-env-val" placeholder="value"></td><td><button class="btn-icon-row" onclick="this.closest(\'tr\').remove()">✕</button></td></tr>',
-            labels: '<tr><td><input type="text" class="edit-label-key" placeholder="key"></td><td><input type="text" class="edit-label-val" placeholder="value"></td><td><button class="btn-icon-row" onclick="this.closest(\'tr\').remove()">✕</button></td></tr>',
+
         };
         if (rows[section]) tbody.insertAdjacentHTML('beforeend', rows[section]);
     },
 
     async applyContainerEdit() {
+        const name = document.getElementById('edit-container-name')?.value?.trim() || this._editSpec?.name || '';
+        const image = document.getElementById('edit-container-image')?.value?.trim() || this._editSpec?.image || '';
+
         const spec = {
+            name: name,
+            image: image,
             restart_policy: document.getElementById('edit-restart-policy')?.value || 'no',
             ports: [],
             volumes: [],
             env: [],
-            labels: [],
         };
         
         // Collect ports
@@ -1416,13 +1413,6 @@ const DockyApp = {
             const key = tr.querySelector('.edit-env-key')?.value?.trim();
             const val = tr.querySelector('.edit-env-val')?.value?.trim();
             if (key) spec.env.push({ key, value: val || '' });
-        });
-        
-        // Collect labels
-        document.querySelectorAll('#edit-labels-body tr').forEach(tr => {
-            const key = tr.querySelector('.edit-label-key')?.value?.trim();
-            const val = tr.querySelector('.edit-label-val')?.value?.trim();
-            if (key) spec.labels.push({ key, value: val || '' });
         });
         
         // Confirm if running

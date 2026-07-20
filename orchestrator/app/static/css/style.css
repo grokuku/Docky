@@ -2338,6 +2338,7 @@ body {
     border-bottom: 1px solid var(--border-color);
     margin-bottom: 16px;
     flex-wrap: wrap;
+    justify-content: center;
 }
 .edit-section-tab {
     padding: 8px 14px;
@@ -2353,8 +2354,11 @@ body {
 }
 .edit-section-tab:hover { color: var(--text-primary); }
 .edit-section-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
-.edit-section { display: none; }
-.edit-section.active { display: block; }
+.edit-section { display: block; }
+.modal-container-edit {
+    scroll-behavior: smooth;
+}
+
 .edit-table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
 .edit-table th { color: var(--text-secondary); font-weight: 500; text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border-color); }
 .edit-table td { padding: 4px 8px; vertical-align: middle; }
