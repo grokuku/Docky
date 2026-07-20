@@ -20,7 +20,7 @@ const DockyApp = {
     refreshTimer: 5000,
 
     // Multi-agent
-    _filteredAgents: new Set(),  // Set vide = tous les agents affichés
+    _hiddenAgents: new Set(),  // Set vide = tous visibles. Les agents dedans sont cachés.
     agentsList: [],              // [{name, status, ...}]
     agentsRefreshInterval: null,
     agentsRefreshTimer: 30000,
@@ -136,16 +136,17 @@ const DockyApp = {
             return;
         }
 
-        let html = '<button class="agent-btn' + (this._filteredAgents.size === 0 ? ' active' : '') + '" onclick="DockyApp.toggleAgentFilter(\'all\')" title="Tous les agents">🌍 Tous</button>';
+        let html = '<span class="agent-selector-label">Filtrer:</span>';
 
         for (const agent of this.agentsList) {
             const name = agent.name || agent;
             const status = agent.status || "offline";
             const isOnline = status === "online" || status === "connected" || status === true;
             const dotClass = isOnline ? "online" : "offline";
-            const isActive = this._filteredAgents.size === 0 || this._filteredAgents.has(name);
+            const isHidden = this._hiddenAgents.has(name);
+            const activeClass = isHidden ? '' : 'active';
             const escapedName = name.replace(/'/g, "\\'");
-            html += '<button class="agent-btn' + (isActive ? ' active' : '') + '" onclick="DockyApp.toggleAgentFilter(\'' + escapedName + '\')" title="' + this.escapeHtml(name) + ' — ' + this.escapeHtml(status) + '">'
+            html += '<button class="agent-btn ' + activeClass + '" onclick="DockyApp.toggleAgentFilter(\'' + escapedName + '\')" title="' + this.escapeHtml(name) + ' — ' + this.escapeHtml(status) + '">'
                 + '<span class="agent-status-dot ' + dotClass + '"></span>'
                 + this.escapeHtml(name)
                 + '</button>';
@@ -155,24 +156,10 @@ const DockyApp = {
     },
 
     toggleAgentFilter(name) {
-        if (name === 'all') {
-            // "Tous" = vide = tout afficher
-            this._filteredAgents = new Set();
+        if (this._hiddenAgents.has(name)) {
+            this._hiddenAgents.delete(name);  // Réafficher
         } else {
-            if (this._filteredAgents.has(name)) {
-                // Déjà actif → retirer
-                this._filteredAgents.delete(name);
-                if (this._filteredAgents.size === 0) {
-                    // Si plus aucun agent de sélectionné, garder "Tous"
-                    this._filteredAgents = new Set();
-                    this.renderAgentSelector();
-                    this.refreshStacks();
-                    return;
-                }
-            } else {
-                // Pas actif → ajouter
-                this._filteredAgents.add(name);
-            }
+            this._hiddenAgents.add(name);     // Cacher
         }
         this.expandedStack = null;
         this.renderAgentSelector();
@@ -243,6 +230,9 @@ const DockyApp = {
 
         this.renderGridDashboard();
         this.updateStackSelector(stacksResp);
+
+        this._updateStackList();
+        this._updateContainerList();
     },
 
     updateStackSelector(stacks) {
@@ -489,11 +479,11 @@ const DockyApp = {
             });
             if (containers.length === 0) continue;
             
-            // Si des filtres d'agents sont actifs, ne garder que les stacks dont l'agent est filtré
-            if (this._filteredAgents.size > 0) {
+            // Si des filtres d'agents sont actifs, ignorer les stacks dont l'agent est caché
+            if (this._hiddenAgents.size > 0) {
                 const stackAgent = this.stackAgentMap[stack.name] || '';
-                if (!this._filteredAgents.has(stackAgent)) {
-                    continue; // Stack entièrement ignorée si son agent n'est pas filtré
+                if (this._hiddenAgents.has(stackAgent)) {
+                    continue; // Stack ignorée si son agent est caché
                 }
             }
             
@@ -504,7 +494,7 @@ const DockyApp = {
         }
         
         if (stackGroups.length === 0) {
-            container.innerHTML = '<div class="placeholder"><p>📭 Aucun container trouvé</p></div>';
+            container.innerHTML = '<div class="placeholder"><p>🔇 Aucun agent affiché</p><p class="placeholder-hint">Active des agents via les boutons de filtre</p></div>';
             return;
         }
         
@@ -743,14 +733,167 @@ const DockyApp = {
     },
 
     clearStackSelection() {
+        // Vérifier si le compose a été modifié
+        if (this.anyModified && this.anyModified()) {
+            // Afficher un dialog de confirmation
+            this.showUnsavedDialog(() => {
+                // Sauvegarder puis désélectionner
+                this._saveAndDeselect();
+            }, () => {
+                // Ne pas sauvegarder, désélectionner directement
+                this._forceDeselect();
+            }, () => {
+                // Annuler, ne rien faire
+            });
+            return;
+        }
+        this._forceDeselect();
+    },
+
+    _forceDeselect() {
         this._selectedStack = null;
+        this.selectedStack = null;
         const cards = document.querySelectorAll('.grid-container-card');
         cards.forEach(card => card.classList.remove('grid-dimmed'));
+        const selector = document.getElementById('stack-selector');
+        if (selector) selector.value = '';
+        this.renderEditorPlaceholder();
+    },
+
+    _saveAndDeselect() {
+        // Sauvegarder d'abord, puis désélectionner
+        if (typeof this.saveCurrentFile === 'function') {
+            this.saveCurrentFile().then(() => {
+                this._forceDeselect();
+            }).catch(() => {
+                this._forceDeselect();  // Forcer même si erreur
+            });
+        } else {
+            this._forceDeselect();
+        }
+    },
+
+    showUnsavedDialog(onSave, onDiscard, onCancel) {
+        // Afficher un dialog modal
+        const modal = document.getElementById('unsaved-dialog');
+        if (!modal) return;
+
+        // Stocker les callbacks
+        this._unsavedCallbacks = { onSave, onDiscard, onCancel };
+        modal.classList.remove('hidden');
+    },
+
+    _onUnsavedSave() {
+        const modal = document.getElementById('unsaved-dialog');
+        if (modal) modal.classList.add('hidden');
+        if (this._unsavedCallbacks && this._unsavedCallbacks.onSave) {
+            this._unsavedCallbacks.onSave();
+        }
+        this._unsavedCallbacks = null;
+    },
+
+    _onUnsavedDiscard() {
+        const modal = document.getElementById('unsaved-dialog');
+        if (modal) modal.classList.add('hidden');
+        if (this._unsavedCallbacks && this._unsavedCallbacks.onDiscard) {
+            this._unsavedCallbacks.onDiscard();
+        }
+        this._unsavedCallbacks = null;
+    },
+
+    _onUnsavedCancel() {
+        const modal = document.getElementById('unsaved-dialog');
+        if (modal) modal.classList.add('hidden');
+        if (this._unsavedCallbacks && this._unsavedCallbacks.onCancel) {
+            this._unsavedCallbacks.onCancel();
+        }
+        this._unsavedCallbacks = null;
     },
 
     _debouncedGridRender() {
         if (this._gridRenderTimer) clearTimeout(this._gridRenderTimer);
         this._gridRenderTimer = setTimeout(() => { if (this.stacks.length > 0) this.renderGridDashboard(); }, 200);
+    },
+
+    // -------------------------------------------------------
+    // Stack / Container Search (combobox)
+    // -------------------------------------------------------
+
+    initStackSearch() {
+        const input = document.getElementById('stack-search');
+        const list = document.getElementById('stack-list');
+        if (!input || !list) return;
+
+        // Mettre à jour la datalist avec les noms de stacks
+        this._updateStackList();
+
+        input.addEventListener('input', () => {
+            // Rien de spécial, le navigateur gère le filtrage avec datalist
+        });
+
+        input.addEventListener('change', () => {
+            // Quand l'utilisateur sélectionne ou tape une valeur
+            const name = input.value.trim();
+            input.value = '';
+            if (name) {
+                // Trouver la stack
+                const stack = this.stacks.find(s => s.name === name);
+                if (stack) {
+                    // Sélectionner le premier container de cette stack
+                    const container = (this._allContainersCache || []).find(c => {
+                        if (stack.name === 'Standalone') return !c.stack;
+                        return c.stack === stack.name;
+                    });
+                    if (container) {
+                        this.selectContainerInGrid(container.id, stack.name);
+                    }
+                }
+            }
+        });
+    },
+
+    initContainerSearch() {
+        const input = document.getElementById('container-search');
+        const list = document.getElementById('container-list');
+        if (!input || !list) return;
+
+        // Mettre à jour la datalist avec les noms de containers
+        this._updateContainerList();
+
+        input.addEventListener('change', () => {
+            const name = input.value.trim();
+            input.value = '';
+            if (name) {
+                // Chercher le container par nom
+                const container = (this._allContainersCache || []).find(c => c.name === name || c.id?.startsWith(name));
+                if (container) {
+                    const stackName = container.stack || 'Standalone';
+                    this.selectContainerInGrid(container.id, stackName);
+                }
+            }
+        });
+    },
+
+    _updateStackList() {
+        const list = document.getElementById('stack-list');
+        if (!list) return;
+        list.innerHTML = '';
+        for (const stack of this.stacks) {
+            const opt = document.createElement('option');
+            opt.value = stack.name;
+            list.appendChild(opt);
+        }
+    },
+
+    _updateContainerList() {
+        const list = document.getElementById('container-list');
+        if (!list) return;
+        list.innerHTML = '';
+        for (const c of (this._allContainersCache || [])) {
+            const opt = document.createElement('option');
+            opt.value = c.name || c.id;
+            list.appendChild(opt);
+        }
     },
 
     // -------------------------------------------------------
@@ -2227,6 +2370,8 @@ const DockyApp = {
         this.applyChatVisibility();
 
         this.initResizers();
+        this.initStackSearch();
+        this.initContainerSearch();
 
         this.loadAgents();
         this.startAgentsRefresh();
@@ -2284,6 +2429,12 @@ const DockyApp = {
                 if (e.target === soulModal) this.closeSoulEditor();
             });
         }
+        const unsavedDialog = document.getElementById("unsaved-dialog");
+        if (unsavedDialog) {
+            unsavedDialog.addEventListener("click", (e) => {
+                if (e.target === unsavedDialog) this._onUnsavedCancel();
+            });
+        }
 
         // Enter key shortcuts in modal inputs
         const newNameInput = document.getElementById("new-stack-name");
@@ -2314,6 +2465,7 @@ const DockyApp = {
                 this.closeDeleteStackModal();
                 this.closePermsModal();
                 this.closeSoulEditor();
+                this._onUnsavedCancel();
             }
         });
 

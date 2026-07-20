@@ -511,7 +511,11 @@ async def api_list_containers(request: Request, agent: str = Query("all")):
     if username is None:
         return _unauthorized()
     if agent == "all":
-        return await agent_manager.get_all_containers()
+        containers = await agent_manager.get_cached_containers()
+        if containers is None:
+            # Premier appel, cache pas encore rempli → fetch direct
+            containers = await agent_manager.get_all_containers()
+        return containers
     agent_name, err = _resolve_agent(agent)
     if err is not None:
         return err
@@ -707,7 +711,10 @@ async def api_get_ports(request: Request, agent: str = Query("all")):
     if username is None:
         return _unauthorized()
     if agent == "all":
-        return await agent_manager.get_all_ports()
+        ports = await agent_manager.get_cached_ports()
+        if ports is None:
+            ports = await agent_manager.get_all_ports()
+        return ports
     agent_name, err = _resolve_agent(agent)
     if err is not None:
         return err
@@ -741,7 +748,10 @@ async def api_list_stacks(request: Request, agent: str = Query("all")):
     if username is None:
         return _unauthorized()
     if agent == "all":
-        return await agent_manager.get_all_stacks()
+        stacks = await agent_manager.get_cached_stacks()
+        if stacks is None:
+            stacks = await agent_manager.get_all_stacks()
+        return stacks
     agent_name, err = _resolve_agent(agent)
     if err is not None:
         return err

@@ -44,6 +44,12 @@
             <section class="panel dashboard-panel">
                 <div class="panel-header">
                     <h2>📊 Dashboard</h2>
+                    <div class="topbar-search">
+                        <input type="text" id="stack-search" class="search-input" placeholder="🔍 Stack..." autocomplete="off">
+                        <datalist id="stack-list"></datalist>
+                        <input type="text" id="container-search" class="search-input" placeholder="🔍 Container..." autocomplete="off">
+                        <datalist id="container-list"></datalist>
+                    </div>
                     <div class="dashboard-controls">
                         <label class="auto-refresh">
                             <input type="checkbox" id="auto-refresh" checked>
@@ -284,6 +290,24 @@
             <div class="modal-footer">
                 <button class="btn btn-ghost" onclick="DockyApp.closeSoulEditor()">Annuler</button>
                 <button class="btn btn-primary" onclick="DockyApp.saveSoul()">Sauvegarder</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Unsaved changes dialog -->
+    <div id="unsaved-dialog" class="modal hidden">
+        <div class="modal-content modal-small">
+            <div class="modal-header">
+                <h2>⚠️ Modifications non sauvegardées</h2>
+            </div>
+            <div class="modal-body">
+                <p>Le fichier compose a été modifié mais n'a pas été sauvegardé.</p>
+                <p>Que veux-tu faire ?</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-success" onclick="DockyApp._onUnsavedSave()">💾 Sauvegarder</button>
+                <button class="btn btn-danger" onclick="DockyApp._onUnsavedDiscard()">🗑 Ne pas sauvegarder</button>
+                <button class="btn btn-ghost" onclick="DockyApp._onUnsavedCancel()">Annuler</button>
             </div>
         </div>
     </div>

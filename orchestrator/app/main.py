@@ -1,5 +1,7 @@
 """Docky FastAPI application entry point."""
 
+import asyncio
+
 from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -9,6 +11,7 @@ from app.config import ensure_config_files, get_base_dir, load_settings
 from app.auth.router import router as auth_router
 from app.routes.dashboard import router as dashboard_router
 from app.routes.api import router as api_router
+from app.agent_manager.client import agent_manager
 
 # ---------------------------------------------------------------------------#
 # App setup
@@ -40,6 +43,10 @@ async def startup_event():
     ensure_config_files()
     settings = load_settings()
     app.state.settings = settings
+
+    # Démarre la tâche de fond qui rafraîchit le cache des containers,
+    # stacks et ports toutes les 5 secondes (stale-while-revalidate).
+    asyncio.create_task(agent_manager.start_background_refresh())
 
 
 # ---------------------------------------------------------------------------#

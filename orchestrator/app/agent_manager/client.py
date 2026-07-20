@@ -34,6 +34,13 @@ class AgentManager:
     def __init__(self):
         self.agents: Dict[str, Dict[str, Any]] = {}  # name -> {url, api_key, status, last_check}
         self.cache: Dict[str, Dict[str, Any]] = {}   # name -> {containers, stacks, ports, timestamp}
+        # Aggregate stale-while-revalidate cache (for "all" views)
+        self._cache = {
+            "containers": {"data": None, "timestamp": 0, "pending": False},
+            "stacks": {"data": None, "timestamp": 0, "pending": False},
+            "ports": {"data": None, "timestamp": 0, "pending": False},
+        }
+        self._bg_task = None
         self._load_agents()
 
     # ------------------------------------------------------------------
@@ -56,6 +63,11 @@ class AgentManager:
         """Reload the agent configuration from disk."""
         self.agents = {}
         self.cache = {}
+        self._cache = {
+            "containers": {"data": None, "timestamp": 0, "pending": False},
+            "stacks": {"data": None, "timestamp": 0, "pending": False},
+            "ports": {"data": None, "timestamp": 0, "pending": False},
+        }
         self._load_agents()
 
     def list_agents(self) -> List[Dict[str, Any]]:
@@ -428,7 +440,7 @@ class AgentManager:
             return {"success": False, "error": str(e)}
 
     # ------------------------------------------------------------------
-    # Cache management
+    # Per-agent cache management
     # ------------------------------------------------------------------
 
     async def refresh_cache(self, agent_name: str):
@@ -446,8 +458,129 @@ class AgentManager:
             "timestamp": time.time(),
         }
 
+    def _get_cached_containers(self, agent_name: str) -> List[Dict[str, Any]]:
+        """Return cached containers for an agent, or an empty list."""
+        return self.cache.get(agent_name, {}).get("containers", [])
+
+    def _get_cached_stacks(self, agent_name: str) -> List[Dict[str, Any]]:
+        """Return cached stacks for an agent, or an empty list."""
+        return self.cache.get(agent_name, {}).get("stacks", [])
+
+    def _get_cached_ports(self, agent_name: str) -> List[Dict[str, Any]]:
+        """Return cached ports for an agent, or an empty list."""
+        return self.cache.get(agent_name, {}).get("ports", [])
+
+    # ------------------------------------------------------------------
+    # Aggregate stale-while-revalidate cache (for "all" views)
+    # ------------------------------------------------------------------
+
+    def _get_cached_or_refresh(self, key: str, fetch_func) -> Optional[List[Dict[str, Any]]]:
+        """Stale-while-revalidate: retourne le cache immédiatement, refresh en arrière-plan.
+
+        Returns cached data (even if stale) or None if no cache exists yet.
+        When stale data is returned, a background refresh is triggered.
+        """
+        cache = self._cache[key]
+        now = time.time()
+
+        # Cache frais (< 5s) → retour immédiat
+        if cache["data"] is not None and now - cache["timestamp"] < 5:
+            return cache["data"]
+
+        # Cache périmé mais existant → retourne le cache + refresh en arrière-plan
+        if cache["data"] is not None and not cache["pending"]:
+            cache["pending"] = True
+            loop = asyncio.get_event_loop()
+            if loop and loop.is_running():
+                asyncio.ensure_future(self._refresh_cache_entry(key, fetch_func))
+            return cache["data"]
+
+        # Pas de cache du tout → retourne None (le caller fera un fetch direct)
+        return None
+
+    async def _refresh_cache_entry(self, key: str, fetch_func):
+        """Rafraîchit une entrée du cache en arrière-plan."""
+        try:
+            data = await fetch_func()
+            self._cache[key]["data"] = data
+            self._cache[key]["timestamp"] = time.time()
+        except Exception as e:
+            logger.error("Cache refresh failed for %s: %s", key, e)
+        finally:
+            self._cache[key]["pending"] = False
+
+    async def start_background_refresh(self):
+        """Boucle de rafraîchissement périodique du cache agrégé."""
+        logger.info("Starting background cache refresh every 5s")
+        while True:
+            try:
+                await self.refresh_all_caches()
+            except Exception as e:
+                logger.error("Background refresh error: %s", e)
+            await asyncio.sleep(5)
+
+    async def ensure_cache(self, key: str) -> Optional[List[Dict[str, Any]]]:
+        """Attend que le cache soit rempli s'il est vide (premier appel)."""
+        cache = self._cache[key]
+        if cache["data"] is not None:
+            return cache["data"]
+
+        if not cache["pending"]:
+            if key == "containers":
+                coro = self.get_all_containers()
+            elif key == "stacks":
+                coro = self.get_all_stacks()
+            elif key == "ports":
+                coro = self.get_all_ports()
+            else:
+                return None
+
+            cache["pending"] = True
+            try:
+                data = await coro
+                cache["data"] = data
+                cache["timestamp"] = time.time()
+                return data
+            finally:
+                cache["pending"] = False
+
+        # Si déjà en refresh mais pas de données, le caller attendra un retry
+        return None
+
+    async def get_cached_containers(self) -> Optional[List[Dict[str, Any]]]:
+        """Retourne les containers de tous les agents (cachés si possible).
+
+        Utilise le stale-while-revalidate: retourne les données périmées
+        immédiatement et rafraîchit en arrière-plan.
+        """
+        data = self._get_cached_or_refresh("containers", self.get_all_containers)
+        if data is not None:
+            return data
+        # Cache vide (premier appel) → fetch direct et attend
+        return await self.ensure_cache("containers")
+
+    async def get_cached_stacks(self) -> Optional[List[Dict[str, Any]]]:
+        """Retourne les stacks de tous les agents (cachées si possible)."""
+        data = self._get_cached_or_refresh("stacks", self.get_all_stacks)
+        if data is not None:
+            return data
+        return await self.ensure_cache("stacks")
+
+    async def get_cached_ports(self) -> Optional[List[Dict[str, Any]]]:
+        """Retourne les ports de tous les agents (cachés si possible)."""
+        data = self._get_cached_or_refresh("ports", self.get_all_ports)
+        if data is not None:
+            return data
+        return await self.ensure_cache("ports")
+
     async def refresh_all_caches(self):
-        """Refresh the cache for every online agent in parallel."""
+        """Refresh per-agent caches and populate the aggregate cache.
+
+        Called periodically by ``start_background_refresh`` or on demand.
+        Each category is fetched independently so a single failure does not
+        block the others.
+        """
+        # 1) Refresh per-agent caches (existing behaviour)
         names = [
             name
             for name, info in self.agents.items()
@@ -457,17 +590,27 @@ class AgentManager:
         if tasks:
             await asyncio.gather(*tasks)
 
-    def get_cached_containers(self, agent_name: str) -> List[Dict[str, Any]]:
-        """Return cached containers for an agent, or an empty list."""
-        return self.cache.get(agent_name, {}).get("containers", [])
+        # 2) Populate the aggregate cache
+        try:
+            containers = await self.get_all_containers()
+            self._cache["containers"]["data"] = containers
+            self._cache["containers"]["timestamp"] = time.time()
+        except Exception as e:
+            logger.warning("refresh_all_caches containers failed: %s", e)
 
-    def get_cached_stacks(self, agent_name: str) -> List[Dict[str, Any]]:
-        """Return cached stacks for an agent, or an empty list."""
-        return self.cache.get(agent_name, {}).get("stacks", [])
+        try:
+            stacks = await self.get_all_stacks()
+            self._cache["stacks"]["data"] = stacks
+            self._cache["stacks"]["timestamp"] = time.time()
+        except Exception as e:
+            logger.warning("refresh_all_caches stacks failed: %s", e)
 
-    def get_cached_ports(self, agent_name: str) -> List[Dict[str, Any]]:
-        """Return cached ports for an agent, or an empty list."""
-        return self.cache.get(agent_name, {}).get("ports", [])
+        try:
+            ports = await self.get_all_ports()
+            self._cache["ports"]["data"] = ports
+            self._cache["ports"]["timestamp"] = time.time()
+        except Exception as e:
+            logger.warning("refresh_all_caches ports failed: %s", e)
 
     # ------------------------------------------------------------------
     # Global views (aggregate across all agents)
