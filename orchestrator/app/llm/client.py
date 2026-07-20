@@ -13,7 +13,7 @@ Provides:
   ``agent_manager``.
 - ``run_chat``: full agentic loop — call LLM, execute tools, feed results
   back, repeat until a final textual answer is produced.
-- Firecrawl helpers: ``firecrawl_search``, ``firecrawl_scrape``,
+- WebClaw/Firecrawl helpers: ``firecrawl_search``, ``firecrawl_scrape``,
   ``firecrawl_map``.
 - Soul helpers: ``read_soul``, ``update_soul``.
 """
@@ -45,9 +45,6 @@ class LLMClient:
         self.endpoint: str = (llm_cfg.get("endpoint") or "").rstrip("/")
         self.api_key: str = llm_cfg.get("api_key") or ""
         self.model: str = llm_cfg.get("model") or ""
-        firecrawl_cfg = settings.get("firecrawl", {}) or {}
-        self.firecrawl_key: str = firecrawl_cfg.get("api_key") or ""
-
     # -- configuration -------------------------------------------------------
 
     def is_configured(self) -> bool:
@@ -409,7 +406,7 @@ async def build_system_prompt() -> str:
         "- get_stack_files / read_stack_file\n"
         "- set_file_permissions\n"
         "- get_used_ports / check_ports_available\n"
-        "- web_search / web_scrape / web_map (via Firecrawl)\n"
+        "- web_search / web_scrape / web_map (via Firecrawl/WebClaw)\n"
         "- read_compose_reference (référence de syntaxe docker-compose)\n"
         "- update_soul / read_soul\n\n"
         "Règles:\n"
@@ -787,7 +784,7 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "Recherche sur le web via Firecrawl. Retourne des résultats pertinents.",
+            "description": "Recherche sur le web via Firecrawl/WebClaw. Retourne des résultats pertinents.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -808,7 +805,7 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "web_scrape",
-            "description": "Scrape le contenu d'une URL via Firecrawl.",
+            "description": "Scrape le contenu d'une URL via Firecrawl/WebClaw.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -825,7 +822,7 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "web_map",
-            "description": "Liste les URLs d'un site via Firecrawl (site map).",
+            "description": "Liste les URLs d'un site via Firecrawl/WebClaw (site map).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -981,30 +978,42 @@ TOOLS: List[Dict[str, Any]] = [
 
 
 # ---------------------------------------------------------------------------
-# Firecrawl integration
+# WebClaw / Firecrawl integration (API /v1 compatible)
 # ---------------------------------------------------------------------------
 
-FIRECRAWL_BASE = "https://api.firecrawl.dev/v1"
+_DEFAULT_WEB_ENDPOINT = "https://api.firecrawl.dev/v1"
+
+
+def _get_web_endpoint():
+    """Get the web extraction endpoint and API key from settings.
+
+    Returns a tuple ``(endpoint, api_key)``.
+    If ``endpoint`` is empty in settings, the default Firecrawl cloud URL
+    is returned.  If ``api_key`` is empty, no ``Authorization`` header is
+    needed (e.g. self-hosted WebClaw).
+    """
+    settings = load_settings()
+    fc_settings = settings.get("firecrawl", {}) or {}
+    api_key = fc_settings.get("api_key", "")
+    endpoint = fc_settings.get("endpoint", "") or _DEFAULT_WEB_ENDPOINT
+    return endpoint.rstrip("/"), api_key
 
 
 def _firecrawl_headers(api_key: str) -> Dict[str, str]:
-    return {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+    headers: Dict[str, str] = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
 
 
 async def firecrawl_search(query: str, limit: int = 5) -> str:
-    """Search the web using the Firecrawl API.
+    """Search the web using Firecrawl/WebClaw API.
 
     Returns a text summary of the results.
     """
-    settings = load_settings()
-    api_key = (settings.get("firecrawl", {}) or {}).get("api_key", "")
-    if not api_key:
-        return "[error] Firecrawl API key is not configured."
+    endpoint, api_key = _get_web_endpoint()
 
-    url = f"{FIRECRAWL_BASE}/search"
+    url = f"{endpoint}/search"
     body = {"query": query, "limit": limit}
     try:
         async with httpx.AsyncClient(timeout=60.0) as http:
@@ -1012,9 +1021,9 @@ async def firecrawl_search(query: str, limit: int = 5) -> str:
             resp.raise_for_status()
             data = resp.json()
     except httpx.HTTPStatusError as exc:
-        return f"[error] Firecrawl search HTTP {exc.response.status_code}: {exc.response.text}"
+        return f"[error] Firecrawl/WebClaw search HTTP {exc.response.status_code}: {exc.response.text}"
     except httpx.RequestError as exc:
-        return f"[error] Firecrawl search request error: {exc}"
+        return f"[error] Firecrawl/WebClaw search request error: {exc}"
 
     results = data.get("data") or data.get("results") or []
     if not results:
@@ -1032,16 +1041,13 @@ async def firecrawl_search(query: str, limit: int = 5) -> str:
 
 
 async def firecrawl_scrape(url: str) -> str:
-    """Scrape a URL using the Firecrawl API.
+    """Scrape a URL using the Firecrawl/WebClaw API.
 
     Returns the page content as text.
     """
-    settings = load_settings()
-    api_key = (settings.get("firecrawl", {}) or {}).get("api_key", "")
-    if not api_key:
-        return "[error] Firecrawl API key is not configured."
+    endpoint, api_key = _get_web_endpoint()
 
-    api_url = f"{FIRECRAWL_BASE}/scrape"
+    api_url = f"{endpoint}/scrape"
     body = {"url": url}
     try:
         async with httpx.AsyncClient(timeout=90.0) as http:
@@ -1049,9 +1055,9 @@ async def firecrawl_scrape(url: str) -> str:
             resp.raise_for_status()
             data = resp.json()
     except httpx.HTTPStatusError as exc:
-        return f"[error] Firecrawl scrape HTTP {exc.response.status_code}: {exc.response.text}"
+        return f"[error] Firecrawl/WebClaw scrape HTTP {exc.response.status_code}: {exc.response.text}"
     except httpx.RequestError as exc:
-        return f"[error] Firecrawl scrape request error: {exc}"
+        return f"[error] Firecrawl/WebClaw scrape request error: {exc}"
 
     page_data = data.get("data") or data
     content = (
@@ -1069,16 +1075,13 @@ async def firecrawl_scrape(url: str) -> str:
 
 
 async def firecrawl_map(url: str) -> str:
-    """Map URLs on a site using the Firecrawl API.
+    """Map URLs on a site using the Firecrawl/WebClaw API.
 
     Returns a list of URLs as text.
     """
-    settings = load_settings()
-    api_key = (settings.get("firecrawl", {}) or {}).get("api_key", "")
-    if not api_key:
-        return "[error] Firecrawl API key is not configured."
+    endpoint, api_key = _get_web_endpoint()
 
-    api_url = f"{FIRECRAWL_BASE}/map"
+    api_url = f"{endpoint}/map"
     body = {"url": url}
     try:
         async with httpx.AsyncClient(timeout=60.0) as http:
@@ -1086,9 +1089,9 @@ async def firecrawl_map(url: str) -> str:
             resp.raise_for_status()
             data = resp.json()
     except httpx.HTTPStatusError as exc:
-        return f"[error] Firecrawl map HTTP {exc.response.status_code}: {exc.response.text}"
+        return f"[error] Firecrawl/WebClaw map HTTP {exc.response.status_code}: {exc.response.text}"
     except httpx.RequestError as exc:
-        return f"[error] Firecrawl map request error: {exc}"
+        return f"[error] Firecrawl/WebClaw map request error: {exc}"
 
     links = data.get("data") or data.get("links") or []
     if not links:
@@ -1610,8 +1613,13 @@ async def run_chat(
                 "Voici ce que j'ai fait jusqu'à présent:\n" + tool_summary
             )
 
+    # Build the full conversation history (excluding the system prompt)
+    # so the frontend can persist it and send it back on the next message.
+    full_history = [m for m in messages if m["role"] != "system"]
+
     return {
         "response": final_response,
         "tool_calls_made": tool_calls_made,
         "needs_human_validation": needs_human_validation,
+        "history": full_history,
     }

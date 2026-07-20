@@ -9,7 +9,8 @@ llm:
   model: ""          # Nom du modèle (ex: llama3.1, deepseek-chat, etc.)
 
 firecrawl:
-  api_key: ""        # Clé API Firecrawl
+  endpoint: ""        # URL de l'API compatible Firecrawl/WebClaw (ex: http://webclaw:3002/v1). Vide = https://api.firecrawl.dev/v1
+  api_key: ""         # Clé API Firecrawl cloud (pas nécessaire pour WebClaw self-hosté)
 
 security:
   jwt_secret: "CHANGE_ME"  # Secret pour signer les tokens JWT

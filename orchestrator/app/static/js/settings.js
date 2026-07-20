@@ -103,6 +103,7 @@ const SettingsApp = {
                 modelSelect.appendChild(opt);
             }
         }
+        document.getElementById("firecrawl-endpoint").value = data.firecrawl_endpoint || "";
         document.getElementById("firecrawl-api-key").value = "";
         document.getElementById("firecrawl-api-key").placeholder = data.firecrawl_key || "••••••••";
     },
@@ -112,6 +113,7 @@ const SettingsApp = {
             endpoint: document.getElementById("llm-endpoint").value.trim(),
             api_key: document.getElementById("llm-api-key").value,
             model: document.getElementById("llm-model").value.trim(),
+            firecrawl_endpoint: document.getElementById("firecrawl-endpoint").value.trim(),
             firecrawl_key: document.getElementById("firecrawl-api-key").value,
         };
         const data = await this.apiPut("/api/settings/llm", body);

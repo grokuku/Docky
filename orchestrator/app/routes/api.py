@@ -197,6 +197,7 @@ async def api_get_llm_settings(request: Request):
         "endpoint": llm.get("endpoint", ""),
         "api_key": _mask_api_key(llm.get("api_key", "")),
         "model": llm.get("model", ""),
+        "firecrawl_endpoint": firecrawl.get("endpoint", ""),
         "firecrawl_key": _mask_api_key(firecrawl.get("api_key", "")),
     }
 
@@ -235,8 +236,11 @@ async def api_update_llm_settings(request: Request):
     else:
         firecrawl_key = new_firecrawl_key
 
+    # Firecrawl endpoint (optional, self-hosted WebClaw)
+    firecrawl_endpoint = data.get("firecrawl_endpoint", firecrawl.get("endpoint", ""))
+
     settings["llm"] = {"endpoint": endpoint, "api_key": api_key, "model": model}
-    settings["firecrawl"] = {"api_key": firecrawl_key}
+    settings["firecrawl"] = {"endpoint": firecrawl_endpoint, "api_key": firecrawl_key}
     save_settings(settings)
     return {"success": True}
 
@@ -1125,6 +1129,7 @@ async def chat_endpoint(request: Request):
         "response": result["response"],
         "tool_calls": result["tool_calls_made"],
         "needs_validation": result["needs_human_validation"],
+        "history": result.get("history", []),
     }
 
 

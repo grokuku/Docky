@@ -2136,26 +2136,23 @@ const DockyApp = {
                 this.renderToolCalls(data.tool_calls);
             }
 
-            // Now that the exchange succeeded, add the user message to the
-            // local history (it was excluded from the request payload to
-            // avoid duplication with the backend).
-            this.chatHistory.push({ role: "user", content: message });
+            // Use the full history returned by the backend, which includes
+            // user message, assistant responses, tool_calls AND tool results.
+            // This guarantees the LLM sees the complete context on the next
+            // message instead of losing tool call results.
+            if (data.history && Array.isArray(data.history)) {
+                this.chatHistory = data.history;
+            } else {
+                // Fallback: construct manually as before.
+                this.chatHistory.push({ role: "user", content: message });
+                if (data.response) {
+                    this.chatHistory.push({ role: "assistant", content: data.response });
+                }
+            }
 
             // LLM response bubble
-            const responseText = data.response || "";
-            if (responseText || (data.tool_calls && data.tool_calls.length > 0)) {
-                this.renderChatMessage("assistant", responseText || "");
-
-                // Include tool calls in the content saved to history so the
-                // LLM sees what actions were taken in previous turns.
-                let historyContent = responseText || "";
-                if (data.tool_calls && data.tool_calls.length > 0) {
-                    const toolSummary = data.tool_calls.map(tc =>
-                        `[Action: ${tc.name}]`
-                    ).join(" ");
-                    historyContent = (historyContent + "\n" + toolSummary).trim();
-                }
-                this.chatHistory.push({ role: "assistant", content: historyContent });
+            if (data.response) {
+                this.renderChatMessage("assistant", data.response);
             }
 
             // Human validation requests

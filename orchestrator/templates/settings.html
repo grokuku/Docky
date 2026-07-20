@@ -60,9 +60,14 @@
                     <p class="form-hint">Cliquez sur « Scanner » pour récupérer la liste des modèles disponibles sur l'endpoint.</p>
                 </div>
                 <div class="form-group">
+                    <label for="firecrawl-endpoint">Endpoint Firecrawl/WebClaw</label>
+                    <input type="text" id="firecrawl-endpoint" placeholder="https://api.firecrawl.dev/v1" autocomplete="off">
+                    <p class="form-hint">URL de l'API compatible Firecrawl /v1. Vide = Firecrawl cloud. Mettre <code>http://webclaw:3002/v1</code> pour WebClaw self-hosté.</p>
+                </div>
+                <div class="form-group">
                     <label for="firecrawl-api-key">Firecrawl API Key</label>
                     <input type="password" id="firecrawl-api-key" placeholder="••••••••" autocomplete="off">
-                    <p class="form-hint">Optionnel. Clé pour la recherche web via Firecrawl.</p>
+                    <p class="form-hint">Optionnel. Clé pour Firecrawl cloud (pas nécessaire pour WebClaw self-hosté).</p>
                 </div>
                 <div class="settings-actions">
                     <button class="btn btn-ghost" id="llm-test-btn" onclick="SettingsApp.testLLM()">Tester la connexion</button>

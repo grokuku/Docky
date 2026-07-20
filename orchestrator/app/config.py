@@ -120,7 +120,7 @@ def ensure_config_files():
         default_settings = {
             "server": {"host": "0.0.0.0", "port": 8000},
             "llm": {"endpoint": "", "api_key": "", "model": ""},
-            "firecrawl": {"api_key": ""},
+            "firecrawl": {"endpoint": "", "api_key": ""},
             "security": {
                 "jwt_secret": os.urandom(32).hex(),
                 "jwt_algorithm": "HS256",
