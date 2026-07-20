@@ -801,7 +801,7 @@ const DockyApp = {
         
         return '<div class="grid-container-card" data-id="' + escapedId + '" data-stack="' + this.escapeHtml(stackName) + '" data-agent="' + this.escapeHtml(agent || '') + '" style="left:' + left + 'px;top:' + top + 'px;width:' + width + 'px;height:' + height + 'px;z-index:3;background-color:' + bgColor + ';border-color:' + borderColor + '"' 
             + ' onclick="event.stopPropagation(); DockyApp.selectContainerInGrid(\'' + escapedId + '\', \'' + this.escapeHtml(stackName) + '\', \'' + this.escapeHtml(agent || '') + '\')"'
-            + ' ondblclick="event.stopPropagation(); DockyApp.openContainerEdit(\'' + escapedId + '\', \'' + this.escapeHtml(stackName) + '\', \'' + this.escapeHtml(agent || '') + '\')"'
+            + ' ondblclick="event.stopPropagation(); DockyApp.openContainerEdit(\'' + escapedId + '\', \'' + this.escapeHtml(stackName) + '\', \'' + this.escapeHtml(agent || '') + '\')">'
             + '<div class="grid-card-top"><span class="grid-card-name" title="' + name + '">' + name + '</span>' + statusDot + '</div>'
             + '<div class="grid-card-image" title="' + image + '">📦 ' + image + '</div>'
             + '<div class="grid-card-resources" id="resources-' + escapedId + '"><div class="resource-line"><span class="resource-label">CPU</span><div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div><span class="resource-value">—</span></div><div class="resource-line"><span class="resource-label">RAM</span><div class="progress-bar"><div class="progress-fill ram" style="width:0%"></div></div><span class="resource-value">—</span></div></div>'
