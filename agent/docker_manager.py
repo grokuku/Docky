@@ -375,7 +375,7 @@ def list_stacks() -> List[Dict[str, Any]]:
                     "standalone": False,
                 }
             )
-            seen.add(entry.name)
+            seen.add(entry.name.lower())
 
     # 2. External stacks detected via container labels
     try:
@@ -392,9 +392,9 @@ def list_stacks() -> List[Dict[str, Any]]:
         if not project:
             has_standalone = True
             continue
-        if project in seen:
+        if project.lower() in seen:
             continue
-        seen.add(project)
+        seen.add(project.lower())
         working_dir = labels.get("com.docker.compose.project.working_dir", "")
         config_files = labels.get("com.docker.compose.project.config_files", "")
         # Deduce a source path for one-click import: prefer the explicit
