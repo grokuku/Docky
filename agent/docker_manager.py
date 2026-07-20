@@ -50,8 +50,15 @@ def get_docker_client() -> docker.DockerClient:
 # Containers
 # ---------------------------------------------------------------------------
 
-def _container_to_dict(c) -> Dict[str, Any]:
-    """Convert a Docker container object to a serialisable dict."""
+def _container_to_dict(c, managed_stacks: Optional[set] = None) -> Dict[str, Any]:
+    """Convert a Docker container object to a serialisable dict.
+
+    If *managed_stacks* is provided (a set of stack directory names), the
+    ``stack`` field is normalised to match the original case of the stack
+    name as stored on the filesystem.  This prevents case-mismatch bugs
+    between Docker labels (always lowercased) and directory names (original
+    case).
+    """
     labels = c.attrs.get("Config", {}).get("Labels", {}) or {}
     state = c.attrs.get("State", {})
     ports_raw = c.ports or {}
@@ -72,6 +79,17 @@ def _container_to_dict(c) -> Dict[str, Any]:
     status_label = c.status
     health = state.get("Health", {}).get("Status") if isinstance(state.get("Health"), dict) else None
 
+    # Extract the project name from Docker labels (always lowercased by Docker)
+    project = labels.get("com.docker.compose.project") or None
+
+    # Normalise to original case if it matches a managed stack
+    if project is not None and managed_stacks:
+        project_lower = project.lower()
+        for ms in managed_stacks:
+            if ms.lower() == project_lower:
+                project = ms
+                break
+
     return {
         "id": c.short_id,
         "name": c.name.lstrip("/") if c.name else "",
@@ -81,7 +99,7 @@ def _container_to_dict(c) -> Dict[str, Any]:
         "state": status_label,
         "health": health,
         "ports": port_list,
-        "stack": labels.get("com.docker.compose.project") or None,
+        "stack": project,
         "service": labels.get("com.docker.compose.service", ""),
         "managed": False,  # filled in by list_containers()
         "labels": labels,
@@ -103,10 +121,10 @@ def list_containers(all: bool = True) -> List[Dict[str, Any]]:
     except DockerException:
         return []
 
-    result: List[Dict[str, Any]] = []
     managed_names = _managed_stack_names()
+    result: List[Dict[str, Any]] = []
     for c in containers:
-        d = _container_to_dict(c)
+        d = _container_to_dict(c, managed_stacks=managed_names)
         stack = d.get("stack", "")
         if stack is None:
             d["managed"] = True
@@ -123,7 +141,8 @@ def get_container(container_id: str) -> Optional[Dict[str, Any]]:
         c = client.containers.get(container_id)
     except (NotFound, DockerException):
         return None
-    return _container_to_dict(c)
+    managed_names = _managed_stack_names()
+    return _container_to_dict(c, managed_stacks=managed_names)
 
 
 def start_container(container_id: str) -> bool:
