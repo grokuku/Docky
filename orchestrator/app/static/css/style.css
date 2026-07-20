@@ -2096,6 +2096,10 @@ body {
     border-radius: var(--radius-sm);
     overflow: hidden;
     cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
     transition: opacity 0.3s, filter 0.3s, border-color var(--transition), box-shadow var(--transition);
 }
 .grid-container-card:hover {
@@ -2169,6 +2173,10 @@ body {
     padding: 6px 12px;
     border-left: 3px solid transparent;
     cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
     transition: background var(--transition);
     font-size: 0.8rem;
 }

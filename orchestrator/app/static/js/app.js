@@ -1228,6 +1228,15 @@ const DockyApp = {
     // -------------------------------------------------------
 
     async openContainerEdit(containerId, stackName, agent) {
+        // Vérifier si le container est géré (managed)
+        const container = this._allContainersCache?.find(c => 
+            c.id === containerId || c.id?.startsWith?.(containerId)
+        );
+        if (container && container.managed === false) {
+            this.showToast("Les containers externes ne peuvent pas être édités", "warning");
+            return;
+        }
+
         const modal = document.getElementById("container-edit-modal");
         if (!modal) return;
         
