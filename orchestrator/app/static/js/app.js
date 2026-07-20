@@ -1228,54 +1228,51 @@ const DockyApp = {
     // -------------------------------------------------------
 
     async openContainerEdit(containerId, stackName, agent) {
-        // Vérifier si le container est géré (managed)
-        const container = this._allContainersCache?.find(c => 
-            c.id === containerId || c.id?.startsWith?.(containerId)
-        );
-        if (container && container.managed === false) {
-            this.showToast("Les containers externes ne peuvent pas être édités", "warning");
-            return;
-        }
-
-        const modal = document.getElementById("container-edit-modal");
-        if (!modal) return;
-        
         this._editContainerId = containerId;
         this._editContainerAgent = agent;
         this._editContainerStack = stackName;
-        
-        document.getElementById("container-edit-title").textContent = "✏️ Chargement…";
-        document.getElementById("container-edit-body").innerHTML = '<p class="placeholder-hint">Chargement des données…</p>';
-        modal.classList.remove("hidden");
-        
+
+        // Fetch spec first (without showing modal)
         try {
             const resp = await fetch(`/api/containers/${encodeURIComponent(containerId)}/edit-spec?agent=${encodeURIComponent(agent || '')}`);
             if (!resp.ok) throw new Error("Erreur " + resp.status);
             const spec = await resp.json();
-            
-            this._editSpec = spec;
-            document.getElementById("container-edit-title").textContent = `✏️ ${this.escapeHtml(spec.name || containerId)}`;
-            this._renderContainerEditForm(spec);
-            // Scroll spy pour mettre à jour l'onglet actif
-            const editBody = document.getElementById('container-edit-body');
-            if (editBody) {
-                editBody.addEventListener('scroll', () => {
-                    const sections = editBody.querySelectorAll('.edit-section');
-                    const tabs = editBody.querySelectorAll('.edit-section-tab');
-                    let currentSection = sections[0]?.id || '';
-                    sections.forEach(s => {
-                        const rect = s.getBoundingClientRect();
-                        if (rect.top <= 150) currentSection = s.id;
-                    });
-                    tabs.forEach(t => {
-                        t.classList.toggle('active', t.dataset.section === currentSection.replace('edit-section-', ''));
-                    });
-                });
+
+            // Check if container is managed
+            if (spec.managed === false) {
+                this.showToast("Les containers externes ne peuvent pas être édités", "warning");
+                return;
             }
+
+            // Now show modal
+            this._editSpec = spec;
+            const modal = document.getElementById("container-edit-modal");
+            if (!modal) return;
+
+            document.getElementById("container-edit-title").textContent = `✏️ ${this.escapeHtml(spec.name || containerId)}`;
+            modal.classList.remove("hidden");
+            this._renderContainerEditForm(spec);
+            this._attachEditScrollSpy();
         } catch(e) {
             this.showToast("Erreur: " + e.message, "error");
-            this.closeContainerEdit();
         }
+    },
+
+    _attachEditScrollSpy() {
+        const editBody = document.getElementById('container-edit-body');
+        if (!editBody) return;
+        editBody.addEventListener('scroll', () => {
+            const sections = editBody.querySelectorAll('.edit-section');
+            const tabs = editBody.querySelectorAll('.edit-section-tab');
+            let currentSection = sections[0]?.id || '';
+            sections.forEach(s => {
+                const rect = s.getBoundingClientRect();
+                if (rect.top <= 150) currentSection = s.id;
+            });
+            tabs.forEach(t => {
+                t.classList.toggle('active', t.dataset.section === currentSection.replace('edit-section-', ''));
+            });
+        });
     },
 
     _renderContainerEditForm(spec) {
