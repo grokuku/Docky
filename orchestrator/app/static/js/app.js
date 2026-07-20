@@ -705,7 +705,7 @@ const DockyApp = {
 
             const escapedName = this.escapeHtml(stack.name);
 
-            html += '<div class="table-stack-group" style="border-color:' + borderColor + ';background:' + bgColor + '">';
+            html += '<div class="table-stack-group" data-stack="' + escapedName + '" data-agent="' + this.escapeHtml(stack.agent_name || '') + '" style="border-color:' + borderColor + ';background:' + bgColor + '">';
             html += '<div class="table-stack-header">';
             html += '<span class="table-stack-name">' + escapedName + '</span>' + typeBadge;
             html += '<span class="meta-badge">🐳 ' + containers.length + '</span>';
@@ -738,13 +738,13 @@ const DockyApp = {
 
         // Ré-appliquer la sélection de stack après un re-render (auto-refresh)
         if (this._selectedStack) {
-            const rows = document.querySelectorAll('.table-container-row');
-            rows.forEach(row => {
-                const rowKey = (row.dataset.stack || '') + '@' + (row.dataset.agent || '');
-                if (rowKey === this._selectedStack) {
-                    row.classList.remove('grid-dimmed');
+            const sections = document.querySelectorAll('.table-stack-group');
+            sections.forEach(section => {
+                const sectionKey = (section.dataset.stack || '') + '@' + (section.dataset.agent || '');
+                if (sectionKey === this._selectedStack) {
+                    section.classList.remove('grid-dimmed');
                 } else {
-                    row.classList.add('grid-dimmed');
+                    section.classList.add('grid-dimmed');
                 }
             });
             // Extraire le nom et l'agent depuis la clé composite
@@ -851,16 +851,14 @@ const DockyApp = {
                 card.classList.add('grid-dimmed');
             }
         });
-        // Assombrir les lignes qui ne sont pas dans ce stack (mode tableau)
-        const rows = document.querySelectorAll('.table-container-row');
-        rows.forEach(row => {
-            const rowStack = row.dataset.stack;
-            const rowAgent = row.dataset.agent;
-            const rowKey = rowStack + '@' + (rowAgent || '');
-            if (rowKey === key) {
-                row.classList.remove('grid-dimmed');
+        // Assombrir les sections entières qui ne sont pas dans ce stack (mode tableau)
+        const sections = document.querySelectorAll('.table-stack-group');
+        sections.forEach(section => {
+            const sectionKey = (section.dataset.stack || '') + '@' + (section.dataset.agent || '');
+            if (sectionKey === key) {
+                section.classList.remove('grid-dimmed');
             } else {
-                row.classList.add('grid-dimmed');
+                section.classList.add('grid-dimmed');
             }
         });
         
@@ -961,8 +959,8 @@ const DockyApp = {
         this.selectedStackAgent = null;
         const cards = document.querySelectorAll('.grid-container-card');
         cards.forEach(card => card.classList.remove('grid-dimmed'));
-        const rows = document.querySelectorAll('.table-container-row');
-        rows.forEach(row => row.classList.remove('grid-dimmed'));
+        const sections = document.querySelectorAll('.table-stack-group');
+        sections.forEach(section => section.classList.remove('grid-dimmed'));
         const selector = document.getElementById('stack-selector');
         if (selector) selector.value = '';
         this.renderEditorPlaceholder();
@@ -1592,16 +1590,14 @@ const DockyApp = {
             }
         });
 
-        // Assombrir les lignes qui ne sont pas dans ce stack (mode tableau)
-        const rows = document.querySelectorAll('.table-container-row');
-        rows.forEach(row => {
-            const rowStack = row.dataset.stack;
-            const rowAgent = row.dataset.agent;
-            const rowKey = rowStack + '@' + (rowAgent || '');
-            if (rowKey === key) {
-                row.classList.remove('grid-dimmed');
+        // Assombrir les sections entières qui ne sont pas dans ce stack (mode tableau)
+        const sections = document.querySelectorAll('.table-stack-group');
+        sections.forEach(section => {
+            const sectionKey = (section.dataset.stack || '') + '@' + (section.dataset.agent || '');
+            if (sectionKey === key) {
+                section.classList.remove('grid-dimmed');
             } else {
-                row.classList.add('grid-dimmed');
+                section.classList.add('grid-dimmed');
             }
         });
 

@@ -2151,6 +2151,7 @@ body {
     border: 1px solid;
     border-radius: var(--radius-md);
     overflow: hidden;
+    transition: opacity 0.3s ease, filter 0.3s ease;
 }
 
 .table-stack-header {

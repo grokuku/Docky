@@ -142,11 +142,13 @@
         }
 
         function formatLogLine(line) {
+            // Safety: coerce to string in case we receive a non-string
+            line = (line === null || line === undefined) ? "" : String(line);
             // Docker timestamp format: 2024-01-01T12:00:00.123456789Z message
             const tsMatch = line.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.\d+Z\s+(.*)/);
             if (tsMatch) {
                 const time = tsMatch[1].replace("T", " ");
-                const msg = tsMatch[2];
+                msg = tsMatch[2];
                 return `<span class="log-time">${escapeHtml(time)}</span>${escapeHtml(msg)}`;
             }
             return `<span class="log-time">       </span>${escapeHtml(line)}`;
@@ -269,9 +271,17 @@
 
                 let html = "";
                 for (const item of lines) {
-                    // Support à la fois l'ancien format (string) et le nouveau (objet)
-                    const msg = typeof item === "object" ? item.message : item;
-                    const stream = typeof item === "object" ? (item.stream || "stdout") : "stdout";
+                    // Support à la fois l'ancien format (string) et le nouveau (dict)
+                    let msg, stream;
+                    if (typeof item === "object" && item !== null) {
+                        // Nouveau format: {"message": "...", "stream": "stdout"}
+                        msg = item.message || "";
+                        stream = item.stream || "stdout";
+                    } else {
+                        // Ancien format: string simple
+                        msg = String(item);
+                        stream = "stdout";
+                    }
                     const lineClass = stream === "stderr" ? "log-line stderr" : "log-line";
                     html += `<div class="${lineClass}">${formatLogLine(msg)}</div>`;
                 }
