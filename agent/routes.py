@@ -318,7 +318,7 @@ async def delete_stack(request: Request, name: str):
     if auth_err:
         return auth_err
     try:
-        result = docker_manager.delete_stack(name)
+        result = await docker_manager.delete_stack(name)
         return result
     except FileNotFoundError:
         return JSONResponse(status_code=404, content={"error": "Stack not found"})

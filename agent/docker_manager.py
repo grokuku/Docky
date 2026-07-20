@@ -1106,14 +1106,22 @@ def create_stack(name: str, compose_content: str, env_content: str = "") -> Dict
     return {"name": name, "path": str(base)}
 
 
-def delete_stack(name: str) -> Dict[str, Any]:
-    """Delete a stack directory entirely."""
+async def delete_stack(name: str) -> Dict[str, Any]:
+    """Delete a stack: stop/remove containers, then delete the stack directory."""
     base = _stack_dir(name)
     if not base.exists():
         raise FileNotFoundError(f"Stack '{name}' not found")
     stacks_dir = get_stacks_dir().resolve()
     if base != stacks_dir and stacks_dir not in base.parents:
         raise ValueError("Refusing to delete: path outside stacks directory")
+
+    # 1. Stop and remove containers before deleting files
+    try:
+        await compose_down(name)
+    except Exception as e:
+        logger.warning("compose_down failed during stack deletion of '%s': %s", name, e)
+
+    # 2. Remove the stack directory
     shutil.rmtree(base)
     return {"name": name, "deleted": True}
 
