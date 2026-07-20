@@ -240,25 +240,21 @@ const DockyApp = {
 
         this.renderCurrentView();
         this.updateStackSelector(stacksResp);
-
-        this._updateStackList();
-        this._updateContainerList();
     },
 
     updateStackSelector(stacks) {
         const selector = document.getElementById("stack-selector");
         if (!selector) return;
-        const current = selector.value;
-        selector.innerHTML = '<option value="">— Sélectionner une stack —</option>';
-        stacks.forEach((s) => {
+        selector.innerHTML = '<option value="">-- Choisir une stack --</option>';
+        for (const stack of stacks) {
             // Only managed stacks are editable; skip external and standalone
-            if (s.managed === false) return;
+            if (stack.managed === false) continue;
             const opt = document.createElement("option");
-            opt.value = s.name;
-            opt.textContent = s.name;
+            opt.value = stack.name + '@' + (stack.agent_name || '');
+            const agentLabel = stack.agent_name ? ' (@' + stack.agent_name + ')' : '';
+            opt.textContent = stack.name + agentLabel;
             selector.appendChild(opt);
-        });
-        if (current) selector.value = current;
+        }
     },
 
     renderStacks() {
@@ -1005,106 +1001,13 @@ const DockyApp = {
         this._gridRenderTimer = setTimeout(() => { if (this.stacks.length > 0) this.renderGridDashboard(); }, 200);
     },
 
-    // -------------------------------------------------------
-    // Stack / Container Search (combobox)
-    // -------------------------------------------------------
 
-    initStackSearch() {
-        const input = document.getElementById('stack-search');
-        const list = document.getElementById('stack-list');
-        if (!input || !list) return;
 
-        // Mettre à jour la datalist avec les noms de stacks
-        this._updateStackList();
 
-        input.addEventListener('input', () => {
-            // Rien de spécial, le navigateur gère le filtrage avec datalist
-        });
 
-        input.addEventListener('change', () => {
-            // Quand l'utilisateur sélectionne ou tape une valeur
-            const raw = input.value.trim();
-            input.value = '';
-            if (raw) {
-                // Extraire nom et agent (format possible: name@agent)
-                let stackName = raw;
-                let agent = null;
-                const atIdx = raw.indexOf('@');
-                if (atIdx > 0) {
-                    stackName = raw.substring(0, atIdx);
-                    agent = raw.substring(atIdx + 1);
-                }
-                // Trouver la stack
-                const stack = this.stacks.find(s => s.name === stackName && (s.agent_name || '') === (agent || ''));
-                if (stack) {
-                    // Sélectionner le premier container de cette stack
-                    const container = (this._allContainersCache || []).find(c => {
-                        if (stack.name === 'Standalone') return !c.stack;
-                        return c.stack === stack.name;
-                    });
-                    if (container) {
-                        this.selectContainerInGrid(container.id, stack.name, stack.agent_name);
-                    }
-                }
-            }
-        });
-    },
 
-    initContainerSearch() {
-        const input = document.getElementById('container-search');
-        const list = document.getElementById('container-list');
-        if (!input || !list) return;
 
-        // Mettre à jour la datalist avec les noms de containers
-        this._updateContainerList();
 
-        input.addEventListener('change', () => {
-            const name = input.value.trim();
-            input.value = '';
-            if (name) {
-                // Chercher le container par nom
-                const container = (this._allContainersCache || []).find(c => c.name === name || c.id?.startsWith(name));
-                if (container) {
-                    const stackName = container.stack || 'Standalone';
-                    const stack = this.stacks.find(s => s.name === stackName);
-                    this.selectContainerInGrid(container.id, stackName, stack ? stack.agent_name : '');
-                }
-            }
-        });
-    },
-
-    _updateStackList() {
-        const list = document.getElementById('stack-list');
-        if (!list) return;
-        list.innerHTML = '';
-        
-        // Compter les occurrences pour détecter les doublons
-        const nameCounts = {};
-        this.stacks.forEach(s => { nameCounts[s.name] = (nameCounts[s.name] || 0) + 1; });
-        
-        for (const stack of this.stacks) {
-            const opt = document.createElement('option');
-            if (nameCounts[stack.name] > 1) {
-                opt.value = stack.name + '@' + (stack.agent_name || '');
-                opt.textContent = stack.name + ' (@' + (stack.agent_name || '') + ')';
-            } else {
-                opt.value = stack.name;
-                opt.textContent = stack.name;
-            }
-            list.appendChild(opt);
-        }
-    },
-
-    _updateContainerList() {
-        const list = document.getElementById('container-list');
-        if (!list) return;
-        list.innerHTML = '';
-        for (const c of (this._allContainersCache || [])) {
-            const opt = document.createElement('option');
-            opt.value = c.name || c.id;
-            list.appendChild(opt);
-        }
-    },
 
     // -------------------------------------------------------
     // Stats / Resources
@@ -1396,32 +1299,69 @@ const DockyApp = {
     deleteTargetStack: null,
     permsTargetFile: null,
 
-    onStackSelect(name) {
-        if (!name) {
-            this.selectedStack = null;
-            this.selectedStackAgent = null;
-            this.renderEditorPlaceholder();
+    onStackSelect() {
+        const selector = document.getElementById("stack-selector");
+        if (!selector) return;
+        const value = selector.value;
+        if (!value) {
+            this.clearStackSelection();
             return;
         }
-        // Extraire l'agent si le nom contient le suffixe @agent
-        let stackName = name;
-        let agent = null;
-        const atIdx = name.indexOf('@');
-        if (atIdx > 0) {
-            stackName = name.substring(0, atIdx);
-            agent = name.substring(atIdx + 1);
-        } else {
-            const stack = this.stacks.find(s => s.name === name);
-            if (stack) agent = stack.agent_name;
-        }
-        this.loadEditor(stackName, agent);
+        // value = "stackName@agentName"
+        const atIdx = value.lastIndexOf('@');
+        const name = atIdx > 0 ? value.substring(0, atIdx) : value;
+        const agent = atIdx > 0 ? value.substring(atIdx + 1) : null;
+
+        this.selectStackFromDashboard(name, agent);
     },
 
     selectStackFromDashboard(name, agent) {
-        // Called when clicking a stack card in the dashboard
+        const key = name + '@' + (agent || '');
+        this._selectedStack = key;
+
+        // Assombrir les containers qui ne sont pas dans ce stack (mode grille)
+        const cards = document.querySelectorAll('.grid-container-card');
+        cards.forEach(card => {
+            const cardStack = card.dataset.stack;
+            const cardAgent = card.dataset.agent;
+            const cardKey = cardStack + '@' + (cardAgent || '');
+            if (cardKey === key) {
+                card.classList.remove('grid-dimmed');
+            } else {
+                card.classList.add('grid-dimmed');
+            }
+        });
+
+        // Assombrir les lignes qui ne sont pas dans ce stack (mode tableau)
+        const rows = document.querySelectorAll('.table-container-row');
+        rows.forEach(row => {
+            const rowStack = row.dataset.stack;
+            const rowAgent = row.dataset.agent;
+            const rowKey = rowStack + '@' + (rowAgent || '');
+            if (rowKey === key) {
+                row.style.opacity = '';
+            } else {
+                row.style.opacity = '0.3';
+            }
+        });
+
+        // Mettre à jour le sélecteur
         const selector = document.getElementById("stack-selector");
-        if (selector) selector.value = name;
-        this.loadEditor(name, agent || this.stacks.find(s => s.name === name)?.agent_name);
+        if (selector) selector.value = key;
+
+        // Afficher le panel contextuel
+        const stack = this.stacks.find(s => s.name === name && (s.agent_name || '') === (agent || ''));
+        if (stack) {
+            this.showStackContextPanel(stack, null);
+        }
+
+        // Charger l'éditeur
+        if (agent) {
+            this.selectedStackAgent = agent;
+            this.loadEditor(name, agent);
+        } else {
+            this.loadEditor(name, agent || this.stacks.find(s => s.name === name)?.agent_name);
+        }
     },
 
     async loadEditor(name, agent) {
@@ -2687,8 +2627,6 @@ const DockyApp = {
         if (toggleBtn) toggleBtn.textContent = this._viewMode === 'grid' ? '📋' : '🔲';
 
         this.initResizers();
-        this.initStackSearch();
-        this.initContainerSearch();
 
         this.loadAgents();
         this.startAgentsRefresh();
