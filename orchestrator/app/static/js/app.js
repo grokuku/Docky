@@ -626,7 +626,7 @@ const DockyApp = {
         this._viewMode = this._viewMode === 'grid' ? 'table' : 'grid';
         const btn = document.getElementById('view-toggle');
         if (btn) btn.textContent = this._viewMode === 'grid' ? '📋' : '🔲';
-        localStorage.setItem('docky-view-mode', this._viewMode);
+        localStorage.setItem('docky_view_mode', this._viewMode);
         if (this._allContainersCache && this._allContainersCache.length > 0) {
             this.renderCurrentView();
         }
@@ -2867,8 +2867,15 @@ const DockyApp = {
             this._hiddenAgents = new Set();
         }
 
-        // Load view mode preference
-        this._viewMode = localStorage.getItem('docky-view-mode') || 'grid';
+        // Restaurer le mode d'affichage depuis localStorage
+        try {
+            const saved = localStorage.getItem('docky_view_mode');
+            if (saved === 'grid' || saved === 'table') {
+                this._viewMode = saved;
+            }
+        } catch (e) {
+            this._viewMode = 'grid'; // défaut
+        }
         const toggleBtn = document.getElementById('view-toggle');
         if (toggleBtn) toggleBtn.textContent = this._viewMode === 'grid' ? '📋' : '🔲';
 
