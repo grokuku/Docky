@@ -10,6 +10,7 @@ parameter or, for POST bodies, the ``agent`` field). The special value
 import asyncio
 import json
 import logging
+import urllib.parse
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -707,7 +708,7 @@ async def ws_container_exec(websocket: WebSocket, container_id: str):
     # Build target WS URL
     ws_proto = "wss" if agent_url.startswith("https") else "ws"
     agent_path = agent_url.split("://", 1)[1] if "://" in agent_url else agent_url
-    target_url = f"{ws_proto}://{agent_path}/agent/containers/{container_id}/exec"
+    target_url = f"{ws_proto}://{agent_path}/agent/containers/{urllib.parse.quote(container_id, safe='')}/exec"
     if agent_api_key:
         target_url += f"?api_key={agent_api_key}"
 

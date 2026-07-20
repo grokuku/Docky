@@ -31,8 +31,8 @@
     </div>
     <script>
         // Variables from server
-        const AGENT = '{{ agent }}';
-        const CONTAINER = '{{ container }}';
+        const AGENT = {{ agent|tojson|safe }};
+        const CONTAINER = {{ container|tojson|safe }};
 
         const term = new Terminal({
             cursorBlink: true,

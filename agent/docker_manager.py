@@ -391,7 +391,7 @@ def exec_interactive_start(container_id: str, shell: str = "/bin/bash") -> tuple
     sock = client.api.exec_start(exec_id, tty=True, socket=True)
 
     # Make socket non-blocking for asyncio
-    sock._sock.setblocking(False)
+    sock.setblocking(False)
 
     return sock, exec_id
 

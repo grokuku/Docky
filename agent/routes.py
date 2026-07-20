@@ -126,7 +126,7 @@ async def exec_in_container(websocket: WebSocket, container_id: str):
         """Read from Docker socket and send to WebSocket."""
         try:
             while True:
-                data = await loop.sock_recv(sock._sock, 4096)
+                data = await loop.sock_recv(sock, 4096)
                 if not data:
                     break
                 await websocket.send_bytes(data)
@@ -157,9 +157,9 @@ async def exec_in_container(websocket: WebSocket, container_id: str):
                         except (json.JSONDecodeError, TypeError):
                             pass
                         # Send as bytes
-                        await loop.sock_sendall(sock._sock, text.encode())
+                        await loop.sock_sendall(sock, text.encode())
                     elif isinstance(msg.get("bytes"), bytes):
-                        await loop.sock_sendall(sock._sock, msg["bytes"])
+                        await loop.sock_sendall(sock, msg["bytes"])
         except Exception:
             pass
 

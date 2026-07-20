@@ -17,7 +17,9 @@ All network calls are performed asynchronously with ``httpx``.
 """
 
 import asyncio
+import json
 import logging
+import os
 import time
 from typing import Any, Dict, List, Optional
 
@@ -40,6 +42,8 @@ class AgentManager:
             "stacks": {"data": None, "timestamp": 0, "pending": False},
             "ports": {"data": None, "timestamp": 0, "pending": False},
         }
+        self._cache_path = "/data/cache.json"
+        self._load_cache()
         self._bg_task = None
         self._load_agents()
 
@@ -76,6 +80,34 @@ class AgentManager:
             {"name": name, "url": info["url"], "status": info["status"]}
             for name, info in self.agents.items()
         ]
+
+    # ------------------------------------------------------------------
+    # Cache persistence
+    # ------------------------------------------------------------------
+
+    def _load_cache(self):
+        """Load cache from disk if available."""
+        try:
+            if os.path.exists(self._cache_path):
+                with open(self._cache_path) as f:
+                    saved = json.load(f)
+                    if isinstance(saved, dict):
+                        self._cache = saved
+        except Exception:
+            self._cache = {
+                "containers": {"data": None, "timestamp": 0, "pending": False},
+                "stacks": {"data": None, "timestamp": 0, "pending": False},
+                "ports": {"data": None, "timestamp": 0, "pending": False},
+            }
+
+    def _save_cache(self):
+        """Persist cache to disk."""
+        try:
+            os.makedirs(os.path.dirname(self._cache_path), exist_ok=True)
+            with open(self._cache_path, "w") as f:
+                json.dump(self._cache, f, default=str)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Path mappings
@@ -647,6 +679,9 @@ class AgentManager:
             self._cache["ports"]["timestamp"] = time.time()
         except Exception as e:
             logger.warning("refresh_all_caches ports failed: %s", e)
+
+        # 3) Persist cache to disk
+        self._save_cache()
 
     # ------------------------------------------------------------------
     # Global views (aggregate across all agents)

@@ -291,9 +291,9 @@ const DockyApp = {
             if (isStandalone) {
                 typeBadge = '<span class="stack-type-badge stack-badge-standalone">standalone</span>';
             } else if (!isManaged) {
-                typeBadge = '<span class="stack-type-badge stack-badge-external">⚠ Externe</span>';
+                typeBadge = '<span class="stack-type-badge stack-badge-external">externe</span>';
             } else {
-                typeBadge = '<span class="stack-type-badge stack-badge-docky">Docky</span>';
+                typeBadge = '<span class="stack-type-badge stack-badge-docky">' + this.escapeHtml(stack.agent_name || stack.agent || 'agent') + '</span>';
             }
             // Edit button only for managed stacks (files are editable)
             const escapedAgent = this.escapeHtml(stack.agent_name || '');
@@ -680,8 +680,8 @@ const DockyApp = {
             // Stack header
             let typeBadge = '';
             if (isStandalone) typeBadge = '<span class="stack-type-badge stack-badge-standalone">standalone</span>';
-            else if (!isManaged) typeBadge = '<span class="stack-type-badge stack-badge-external">⚠ Externe</span>';
-            else typeBadge = '<span class="stack-type-badge stack-badge-docky">Docky</span>';
+            else if (!isManaged) typeBadge = '<span class="stack-type-badge stack-badge-external">externe</span>';
+            else typeBadge = '<span class="stack-type-badge stack-badge-docky">' + this.escapeHtml(stack.agent_name || stack.agent || 'agent') + '</span>';
 
             const escapedName = this.escapeHtml(stack.name);
 
@@ -864,8 +864,8 @@ const DockyApp = {
         html += '<div class="stack-context-header">';
         html += '<h2 class="stack-context-title">' + escapedName + '</h2>';
         if (isStandalone) html += '<span class="stack-type-badge stack-badge-standalone">standalone</span>';
-        else if (!isManaged) html += '<span class="stack-type-badge stack-badge-external">⚠ Externe</span>';
-        else html += '<span class="stack-type-badge stack-badge-docky">Docky</span>';
+        else if (!isManaged) html += '<span class="stack-type-badge stack-badge-external">externe</span>';
+        else html += '<span class="stack-type-badge stack-badge-docky">' + this.escapeHtml(stack.agent_name || stack.agent || 'agent') + '</span>';
         html += '</div>';
         
         // Boutons de commande du stack
