@@ -157,13 +157,19 @@ const DockyApp = {
 
     toggleAgentFilter(name) {
         if (this._hiddenAgents.has(name)) {
-            this._hiddenAgents.delete(name);  // Réafficher
+            this._hiddenAgents.delete(name);
         } else {
-            this._hiddenAgents.add(name);     // Cacher
+            this._hiddenAgents.add(name);
         }
         this.expandedStack = null;
         this.renderAgentSelector();
-        this.refreshStacks();
+        // Ne pas fetch tout depuis l'API, juste re-rendre le grid avec le nouveau filtre
+        if (this._allContainersCache && this._allContainersCache.length > 0) {
+            this.renderGridDashboard();
+        } else {
+            // Premier chargement, pas encore de données
+            this.refreshStacks();
+        }
         // Refresh ports if panel is open
         const portsPanel = document.getElementById("ports-panel");
         if (portsPanel && !portsPanel.classList.contains("hidden")) {
