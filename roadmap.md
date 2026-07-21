@@ -1,6 +1,6 @@
 # Docky — Roadmap
 
-> **Dernière mise à jour :** 2025-06-15
+> **Dernière mise à jour :** 2025-07-08
 > **Version courante :** 0.0.1
 
 ## 🎯 Vision
@@ -32,7 +32,7 @@ L'orchestrateur se connecte aux agents, centralise la configuration, et offre un
 │  SOUL.md (mémoire LLM)                     │
 │  compose_reference.md (référence LLM)     │
 └──────────────────────────────────────────┘
-         │ REST API          │ REST API          │ REST API
+         │ REST + WS        │ REST + WS         │ REST + WS
          ▼                   ▼                    ▼
 ┌──────────┐         ┌──────────┐         ┌──────────┐
 │  AGENT A │         │  AGENT B │         │  AGENT C │
@@ -49,7 +49,7 @@ L'orchestrateur se connecte aux agents, centralise la configuration, et offre un
 
 - **Orchestrateur** : Python + FastAPI, HTML/JS/CSS vanilla (frontend)
 - **Agent** : Python + FastAPI (service léger, pas d'UI)
-- **Communication** : REST API (JSON) + WebSocket (logs, console — TODO: proxy WS)
+- **Communication** : REST API (JSON) + WebSocket (events, logs, console — TODO: proxy WS)
 - **LLM** : Client API compatible OpenAI (Ollama, Deepseek, Ollama Cloud, etc.)
 - **Recherche web** : Firecrawl API / WebClaw auto-hébergé (endpoint configurable)
 - **Stockage Orchestrateur** :
@@ -67,8 +67,32 @@ L'orchestrateur se connecte aux agents, centralise la configuration, et offre un
 
 - Cache en mémoire (dict Python) des états des containers et stacks par agent
 - **Stale-while-revalidate** : le cache sert les données immédiatement pour le rendu, le rafraîchissement se fait en arrière-plan
-- Rafraîchi à chaque cycle de refresh du dashboard
+- Rafraîchi via les **Docker events** (temps réel) + **sanity check** toutes les 10min
 - Pas de cache pour les fichiers (toujours fetch frais)
+
+### Architecture event-driven (remplacement du polling)
+
+Le système est passé d'une architecture basée sur le **polling** (requêtes REST répétées) à une architecture **event-driven** en temps réel :
+
+- **Docker events (agent → orchestrateur)** : l'agent écoute les events Docker via le SDK (`docker events`) et les transmet à l'orchestrateur via une connexion WebSocket dédiée (WS agent → orchestrateur)
+- **WebSocket events (orchestrateur → frontend)** : l'orchestrateur relaye les événements au frontend via une WebSocket, permettant des mises à jour instantanées du dashboard
+- **Heartbeat frontend (30s)** : le frontend envoie un heartbeat toutes les 30s pour maintenir la connexion WebSocket active et détecter les déconnexions
+- **Sanity check (10min)** : toutes les 10 minutes, l'orchestrateur fait une vérification complète des états via REST (rattrapage si des events ont été manqués)
+- **Full refresh au startup seulement** : au démarrage, un refresh complet REST est fait pour initialiser le cache ; ensuite, seuls les events Docker mettent à jour l'état
+
+**Avantages** :
+- Temps réel (plus d'attente de 3s de polling)
+- Moins de charge réseau (events seulement quand ça change)
+- Plus fiable (sanity check en backup)
+
+### Historique git des stacks
+
+Chaque stack sur l'agent bénéficie d'un **historique versionné via Git** :
+
+- **Dépôt Git** : initialisé automatiquement dans `/data/stacks/` (un seul repo pour toutes les stacks)
+- **Commit automatique** : à chaque sauvegarde de fichier (compose, .env, etc.), un commit est créé avec un message descriptif
+- **Modale d'historique** : interface frontend listant les commits (date, message, auteur), avec **preview** des fichiers modifiés et bouton **restore** pour revenir à une version antérieure
+- **Rétention configurable** : paramètre `max_versions` dans la config (défaut : 50), les commits les plus anciens sont automatiquement purgés si le seuil est dépassé
 
 ---
 
@@ -94,6 +118,55 @@ Le dashboard est composé de panneaux redimensionnables (click'n'drag, sauvegard
 │  Chat LLM (toggle 💬)       │                      │
 └─────────────────────────────┴──────────────────────┘
 ```
+
+### Icônes Lucide SVG (remplacement des emoji)
+
+Le projet migre progressivement des emoji vers des icônes SVG **Lucide** pour un rendu plus cohérent et professionnel :
+
+- **CDN Lucide** : intégré via `<script src="https://unpkg.com/lucide@latest">` dans le layout HTML
+- **Helper `icon()`** : une fonction utilitaire dans `app.js` pour injecter des icônes Lucide facilement (`icon('check-circle')`)
+- **Composants refactorisés** : les icônes ont été remplacées dans :
+  - `renderGridContainerCard` (cards du dashboard)
+  - `renderTableRow` (lignes du mode table)
+  - `renderStacks` (liste des stacks)
+  - `renderContainers` (liste des containers)
+  - `toggleViewMode` (bouton de切换 de vue)
+
+#### Emoji restant à remplacer
+
+**Dans modale édition container (`_renderContainerEditForm`) :**
+- ℹ️ → `info`
+- 🔌 → `cable`
+- 💾 (volumes section) → `hard-drive`
+- 🌿 (env section) → `code`
+- 🌐 (network section) → `globe`
+- ➕ → `plus`
+- ✕ → `x`
+
+**Dans panneau contextuel stack (`showStackContextPanel`) :**
+- ▶ → `play`
+- ⏹ → `square`
+- 🔄 → `refresh-cw`
+- ⬆ → `arrow-up`
+- 📝 → `pen-square`
+- 📥 → `download`
+- 🐳 → (garder ? icône Docker native)
+
+**Dans barre de stats (`updateStatsBar` — template HTML) :**
+- 📊 → `bar-chart-3`
+
+**Dans chat :**
+- 💬 → `message-circle`
+- 🤖 → `bot` (garder ?)
+- 🗑 → `trash-2`
+
+**Divers :**
+- ✅ toast → `check-circle`
+- ⏳ loading → `loader`
+- 📭 no stacks → `inbox`
+- 🔇 no agents → `volume-x`
+- 👤 user → `user`
+- 🔒 perms → `lock`
 
 ### Dashboard (vues grille et table)
 
@@ -514,13 +587,35 @@ Ces métadonnées sont parsées et affichées dans le contexte du LLM.
 - [x] **WebClaw/Firecrawl : endpoint configurable** dans settings.yaml + page Settings
 - [x] Scripts supprimés (install.sh, update.sh) — utilisation des images Docker
 
-### Phase 6 — API Agent externe (Discord) 🔜
+### Phase 6 — Architecture event-driven & Git history ✅
+- [x] **Docker events** via WebSocket agent → orchestrateur (remplacement du polling)
+- [x] **WebSocket events** orchestrateur → frontend (mise à jour temps réel du dashboard)
+- [x] **Heartbeat frontend** (30s) pour maintenir la connexion WS active
+- [x] **Sanity check** toutes les 10min (rattrapage si events manqués)
+- [x] **Full refresh au startup seulement** (plus de polling périodique)
+- [x] **Git dans /data/stacks/** : dépôt Git initialisé automatiquement sur l'agent
+- [x] **Commit automatique** à chaque sauvegarde de fichier (compose, .env, etc.)
+- [x] **Modale d'historique** avec preview des fichiers et restore vers une version antérieure
+- [x] **Rétention configurable** (`max_versions`, défaut 50) — purge automatique des plus anciens
+
+### Phase 7 — Icônes Lucide SVG ✅
+- [x] **CDN Lucide** intégré dans le layout HTML
+- [x] **Helper `icon()`** dans app.js pour injecter des icônes Lucide
+- [x] Remplacé dans : `renderGridContainerCard`, `renderTableRow`, `renderStacks`, `renderContainers`, `toggleViewMode`
+- [ ] Remplacer les emoji restants dans :
+  - `_renderContainerEditForm` (ℹ️🔌💾🌿🌐➕✕ → info, cable, hard-drive, code, globe, plus, x)
+  - `showStackContextPanel` (▶⏹🔄⬆📝📥🐳 → play, square, refresh-cw, arrow-up, pen-square, download, ?)
+  - `updateStatsBar` (📊 → bar-chart-3)
+  - Chat (💬🤖🗑 → message-circle, bot?, trash-2)
+  - Divers (✅⏳📭🔇👤🔒 → check-circle, loader, inbox, volume-x, user, lock)
+
+### Phase 8 — API Agent externe (Discord) 🔜
 - [ ] Endpoints REST orchestrateur (agents, containers, stacks, logs)
 - [ ] Système de clé API + whitelist IP
 - [ ] Validation humaine à la première connexion
 - [ ] Documentation de l'API
 
-### Phase 7 — Polish et Sécurité 🔜
+### Phase 9 — Polish et Sécurité 🔜
 - [ ] Proxy WebSocket pour logs/console (actuellement popups HTTP)
 - [ ] Design final et cohérent (refonte UI)
 - [ ] Gestion des erreurs et notifications
@@ -539,7 +634,7 @@ Ces métadonnées sont parsées et affichées dans le contexte du LLM.
 - Images Docker publiées sur ghcr.io (multi-arch amd64 + arm64)
 - Installation via docker pull + docker-compose (plus besoin de scripts d'install)
 - L'outil est destiné à un usage personnel dans un premier temps, mais conçu pour pouvoir évoluer
-- Les Phases 1-5 et améliorations post-Phase 5 ont été réalisées
+- Les Phases 1-7 (Phases 1-5 + améliorations post-Phase 5 + Phase 6 event-driven & Git history + Phase 7 Lucide icons) ont été réalisées
 
 ## 🔑 Décisions clés
 

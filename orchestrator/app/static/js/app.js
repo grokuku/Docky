@@ -110,6 +110,11 @@ const DockyApp = {
         return val.toFixed(i > 0 ? 1 : 0) + " " + units[i];
     },
 
+    // Helper pour générer des icônes Lucide
+    icon(name, className = '') {
+        return `<i data-lucide="${name}" class="${className}"></i>`;
+    },
+
     // -------------------------------------------------------
     // Multi-agent management
     // -------------------------------------------------------
@@ -307,7 +312,7 @@ const DockyApp = {
                 ? stack.ports.join(", ")
                 : "";
             const agentBadge = stack.agent_name
-                ? '<span class="stack-agent-badge">🖥 ' + this.escapeHtml(stack.agent_name) + '</span>'
+                ? '<span class="stack-agent-badge">' + this.icon('terminal') + ' ' + this.escapeHtml(stack.agent_name) + '</span>'
                 : "";
             // Managed / external / standalone indicator
             const isManaged = stack.managed !== false;
@@ -323,19 +328,19 @@ const DockyApp = {
             // Edit button only for managed stacks (files are editable)
             const escapedAgent = this.escapeHtml(stack.agent_name || '');
             const editBtn = isManaged
-                ? '<button class="icon-btn" title="Éditer" onclick="DockyApp.selectStackFromDashboard(\'' + this.escapeHtml(stack.name) + '\', \'' + escapedAgent + '\')">📝</button>'
+                ? '<button class="icon-btn" title="Éditer" onclick="DockyApp.selectStackFromDashboard(\'' + this.escapeHtml(stack.name) + '\', \'' + escapedAgent + '\')">' + this.icon('pen-square') + '</button>'
                 : '';
             // One-click import button for external stacks (not standalone)
             const importBtn = (!isManaged && !isStandalone)
-                ? '<button class="icon-btn" title="Importer dans Docky" onclick="DockyApp.importExternal(\'' + this.escapeHtml(stack.source_path || '') + '\', \'' + this.escapeHtml(stack.name) + '\', \'' + escapedAgent + '\')">📥</button>'
+                ? '<button class="icon-btn" title="Importer dans Docky" onclick="DockyApp.importExternal(\'' + this.escapeHtml(stack.source_path || '') + '\', \'' + this.escapeHtml(stack.name) + '\', \'' + escapedAgent + '\')">' + this.icon('download') + '</button>'
                 : '';
             // Stack-level start/stop/restart only for real stacks (not standalone)
             const stackActionBtns = isStandalone
                 ? ''
-                : '<button class="icon-btn btn-start" title="Démarrer" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'start\', \'' + escapedAgent + '\')">▶</button>'
-                  + '<button class="icon-btn btn-stop" title="Arrêter" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'stop\', \'' + escapedAgent + '\')">⏹</button>'
-                  + '<button class="icon-btn btn-restart" title="Redémarrer" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'restart\', \'' + escapedAgent + '\')">🔄</button>'
-                  + '<button class="icon-btn" title="Update" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'update\', \'' + escapedAgent + '\')">⬆</button>';
+                : '<button class="icon-btn btn-start" title="Démarrer" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'start\', \'' + escapedAgent + '\')">' + this.icon('play') + '</button>'
+                  + '<button class="icon-btn btn-stop" title="Arrêter" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'stop\', \'' + escapedAgent + '\')">' + this.icon('square') + '</button>'
+                  + '<button class="icon-btn btn-restart" title="Redémarrer" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'restart\', \'' + escapedAgent + '\')">' + this.icon('refresh-cw') + '</button>'
+                  + '<button class="icon-btn" title="Update" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'update\', \'' + escapedAgent + '\')">' + this.icon('arrow-up') + '</button>';
 
             html += `
                 <div class="stack-card ${isExpanded ? "expanded" : ""}" data-stack="${this.escapeHtml(stack.name)}" data-agent="${escapedAgent}">
@@ -348,7 +353,7 @@ const DockyApp = {
                         </div>
                         <div class="stack-card-meta">
                             <span class="meta-badge">🐳 ${containerInfo}</span>
-                            ${portsInfo ? `<span class="meta-badge meta-ports">🔌 ${this.escapeHtml(portsInfo)}</span>` : ""}
+                            ${portsInfo ? `<span class="meta-badge meta-ports">${this.icon('cable')} ${this.escapeHtml(portsInfo)}</span>` : ""}
                         </div>
                         <div class="stack-card-actions" onclick="event.stopPropagation()">
                             ${editBtn}
@@ -364,6 +369,10 @@ const DockyApp = {
         });
         html += "</div>";
         container.innerHTML = html;
+
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
 
         // If a stack is expanded, load its containers
         if (this.expandedStack) {
@@ -444,7 +453,7 @@ const DockyApp = {
                             <span class="container-name-text">${name}</span>
                             ${statusBadge}
                         </div>
-                        <div class="container-image">📦 ${image}</div>
+                        <div class="container-image">${this.icon('package')} ${image}</div>
                     </div>
                     <div class="container-resources" id="resources-${this.escapeHtml(c.id)}">
                         <div class="resource-line">
@@ -459,20 +468,24 @@ const DockyApp = {
                         </div>
                     </div>
                     <div class="container-extra">
-                        ${ports ? `<span class="meta-badge meta-ports">🔌 ${this.escapeHtml(ports)}</span>` : ""}
-                        <span class="update-badge hidden" id="update-${this.escapeHtml(c.id)}">⬆ Update dispo</span>
+                        ${ports ? `<span class="meta-badge meta-ports">${this.icon('cable')} ${this.escapeHtml(ports)}</span>` : ""}
+                        <span class="update-badge hidden" id="update-${this.escapeHtml(c.id)}">${this.icon('arrow-up')} Update dispo</span>
                     </div>
                     <div class="container-actions">
-                        <button class="icon-btn btn-start" title="Start" onclick="DockyApp.containerAction('${this.escapeHtml(c.id)}', 'start', '${agt}')">▶</button>
-                        <button class="icon-btn btn-stop" title="Stop" onclick="DockyApp.containerAction('${this.escapeHtml(c.id)}', 'stop', '${agt}')">⏹</button>
-                        <button class="icon-btn btn-restart" title="Restart" onclick="DockyApp.containerAction('${this.escapeHtml(c.id)}', 'restart', '${agt}')">🔄</button>
-                        <button class="icon-btn btn-logs" title="Logs" onclick="DockyApp.openLogs('${this.escapeHtml(c.id)}', '${name}', '${agt}')">📋</button>
-                        <button class="icon-btn btn-console" title="Console" onclick="DockyApp.openConsole('${this.escapeHtml(c.id)}', '${name}', '${agt}')">🖥</button>
+                        <button class="icon-btn btn-start" title="Start" onclick="DockyApp.containerAction('${this.escapeHtml(c.id)}', 'start', '${agt}')">${this.icon('play')}</button>
+                        <button class="icon-btn btn-stop" title="Stop" onclick="DockyApp.containerAction('${this.escapeHtml(c.id)}', 'stop', '${agt}')">${this.icon('square')}</button>
+                        <button class="icon-btn btn-restart" title="Restart" onclick="DockyApp.containerAction('${this.escapeHtml(c.id)}', 'restart', '${agt}')">${this.icon('refresh-cw')}</button>
+                        <button class="icon-btn btn-logs" title="Logs" onclick="DockyApp.openLogs('${this.escapeHtml(c.id)}', '${name}', '${agt}')">${this.icon('clipboard-list')}</button>
+                        <button class="icon-btn btn-console" title="Console" onclick="DockyApp.openConsole('${this.escapeHtml(c.id)}', '${name}', '${agt}')">${this.icon('terminal')}</button>
                     </div>
                 </div>`;
         }
         html += "</div>";
         target.innerHTML = html;
+
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
 
         // Load resources for running containers
         for (const c of containers) {
@@ -624,6 +637,10 @@ const DockyApp = {
             this.checkUpdate(rc.id, rc.agent);
         }
 
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
+
         // Ré-appliquer la sélection de stack après un re-render (auto-refresh)
         if (this._selectedStack) {
             const cards = document.querySelectorAll('.grid-container-card');
@@ -653,7 +670,7 @@ const DockyApp = {
     toggleViewMode() {
         this._viewMode = this._viewMode === 'grid' ? 'table' : 'grid';
         const btn = document.getElementById('view-toggle');
-        if (btn) btn.textContent = this._viewMode === 'grid' ? '📋' : '🔲';
+        if (btn) btn.innerHTML = this._viewMode === 'grid' ? this.icon('list') : this.icon('layout-grid');
         localStorage.setItem('docky_view_mode', this._viewMode);
         if (this._allContainersCache && this._allContainersCache.length > 0) {
             this.renderCurrentView();
@@ -744,6 +761,10 @@ const DockyApp = {
             this.checkUpdate(rc.id, agent);
         }
 
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
+
         // Ré-appliquer la sélection de stack après un re-render (auto-refresh)
         if (this._selectedStack) {
             const sections = document.querySelectorAll('.table-stack-group');
@@ -780,18 +801,18 @@ const DockyApp = {
         return '<div class="table-container-row" data-id="' + escapedId + '" data-stack="' + escapedName + '" data-agent="' + this.escapeHtml(agent || '') + '" style="border-left-color:' + borderColor + '" onclick="event.stopPropagation(); DockyApp.selectContainerInGrid(\'' + escapedId + '\', \'' + escapedName + '\', \'' + this.escapeHtml(agent || '') + '\')" ondblclick="event.stopPropagation(); DockyApp.openContainerEdit(\'' + escapedId + '\', \'' + escapedName + '\', \'' + this.escapeHtml(agent || '') + '\')">'
             + '<div class="table-row-status">' + statusDot + '</div>'
             + '<div class="table-row-name" title="' + name + '">' + name + '</div>'
-            + '<div class="table-row-image" title="' + image + '">📦 ' + image + '</div>'
+            + '<div class="table-row-image" title="' + image + '">' + this.icon('package') + ' ' + image + '</div>'
             + '<div class="table-row-resources">'
             + '<div class="table-resource"><span class="resource-label">CPU</span><div class="progress-bar"><div class="progress-fill" id="stats-cpu-' + escapedId + '" style="width:0%"></div></div><span class="resource-value" id="stats-cpu-val-' + escapedId + '">—</span></div>'
             + '<div class="table-resource"><span class="resource-label">RAM</span><div class="progress-bar"><div class="progress-fill ram" id="stats-ram-' + escapedId + '" style="width:0%"></div></div><span class="resource-value" id="stats-ram-val-' + escapedId + '">—</span></div>'
             + '</div>'
-            + '<div class="table-row-ports" title="' + ports + '">' + (ports ? '🔌 ' + ports : '') + '</div>'
+            + '<div class="table-row-ports" title="' + ports + '">' + (ports ? this.icon('cable') + ' ' + ports : '') + '</div>'
             + '<div class="table-row-actions" onclick="event.stopPropagation()">'
-            + '<button class="grid-icon-btn btn-start" title="Start" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'start\', \'' + agt + '\')">▶</button>'
-            + '<button class="grid-icon-btn btn-stop" title="Stop" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'stop\', \'' + agt + '\')">⏹</button>'
-            + '<button class="grid-icon-btn btn-restart" title="Restart" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'restart\', \'' + agt + '\')">🔄</button>'
-            + '<button class="grid-icon-btn btn-logs" title="Logs" onclick="DockyApp.openLogs(\'' + escapedId + '\', \'' + name + '\', \'' + agt + '\')">📋</button>'
-            + '<button class="grid-icon-btn btn-console" title="Console" onclick="DockyApp.openConsole(\'' + escapedId + '\', \'' + name + '\', \'' + agt + '\')">🖥</button>'
+            + '<button class="grid-icon-btn btn-start" title="Start" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'start\', \'' + agt + '\')">' + this.icon('play') + '</button>'
+            + '<button class="grid-icon-btn btn-stop" title="Stop" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'stop\', \'' + agt + '\')">' + this.icon('square') + '</button>'
+            + '<button class="grid-icon-btn btn-restart" title="Restart" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'restart\', \'' + agt + '\')">' + this.icon('refresh-cw') + '</button>'
+            + '<button class="grid-icon-btn btn-logs" title="Logs" onclick="DockyApp.openLogs(\'' + escapedId + '\', \'' + name + '\', \'' + agt + '\')">' + this.icon('clipboard-list') + '</button>'
+            + '<button class="grid-icon-btn btn-console" title="Console" onclick="DockyApp.openConsole(\'' + escapedId + '\', \'' + name + '\', \'' + agt + '\')">' + this.icon('terminal') + '</button>'
             + '</div></div>';
     },
 
@@ -826,21 +847,21 @@ const DockyApp = {
         const statusDot = this.containerStatusDot(c.status);
         const agt = (agent || "").replace(/'/g, "\\'");
         const ports = (c.ports || []).filter(p => p.host_port).map(p => p.host_port + '→' + p.container).join(", ");
-        const portsBadge = ports ? '<span class="meta-badge meta-ports grid-card-ports">🔌 ' + this.escapeHtml(ports) + '</span>' : '';
+        const portsBadge = ports ? '<span class="meta-badge meta-ports grid-card-ports">' + this.icon('cable') + ' ' + this.escapeHtml(ports) + '</span>' : '';
         
         return '<div class="grid-container-card" data-id="' + escapedId + '" data-stack="' + this.escapeHtml(stackName) + '" data-agent="' + this.escapeHtml(agent || '') + '" style="left:' + left + 'px;top:' + top + 'px;width:' + width + 'px;height:' + height + 'px;z-index:3;background-color:' + bgColor + ';border-color:' + borderColor + '"' 
             + ' onclick="event.stopPropagation(); DockyApp.selectContainerInGrid(\'' + escapedId + '\', \'' + this.escapeHtml(stackName) + '\', \'' + this.escapeHtml(agent || '') + '\')"'
             + ' ondblclick="event.stopPropagation(); DockyApp.openContainerEdit(\'' + escapedId + '\', \'' + this.escapeHtml(stackName) + '\', \'' + this.escapeHtml(agent || '') + '\')">'
             + '<div class="grid-card-top"><span class="grid-card-name" title="' + name + '">' + name + '</span>' + statusDot + '</div>'
-            + '<div class="grid-card-image" title="' + image + '">📦 ' + image + '</div>'
+            + '<div class="grid-card-image" title="' + image + '">' + this.icon('package') + ' ' + image + '</div>'
             + '<div class="grid-card-resources" id="resources-' + escapedId + '"><div class="resource-line"><span class="resource-label">CPU</span><div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div><span class="resource-value">—</span></div><div class="resource-line"><span class="resource-label">RAM</span><div class="progress-bar"><div class="progress-fill ram" style="width:0%"></div></div><span class="resource-value">—</span></div></div>'
-            + '<div class="grid-card-extra">' + portsBadge + '<span class="update-badge hidden" id="update-' + escapedId + '">⬆</span></div>'
+            + '<div class="grid-card-extra">' + portsBadge + '<span class="update-badge hidden" id="update-' + escapedId + '">' + this.icon('arrow-up') + '</span></div>'
             + '<div class="grid-card-actions" onclick="event.stopPropagation()">'
-            + '<button class="grid-icon-btn btn-start" title="Start" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'start\', \'' + agt + '\')">▶</button>'
-            + '<button class="grid-icon-btn btn-stop" title="Stop" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'stop\', \'' + agt + '\')">⏹</button>'
-            + '<button class="grid-icon-btn btn-restart" title="Restart" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'restart\', \'' + agt + '\')">🔄</button>'
-            + '<button class="grid-icon-btn btn-logs" title="Logs" onclick="DockyApp.openLogs(\'' + escapedId + '\', \'' + name + '\', \'' + agt + '\')">📋</button>'
-            + '<button class="grid-icon-btn btn-console" title="Console" onclick="DockyApp.openConsole(\'' + escapedId + '\', \'' + name + '\', \'' + agt + '\')">🖥</button>'
+            + '<button class="grid-icon-btn btn-start" title="Start" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'start\', \'' + agt + '\')">' + this.icon('play') + '</button>'
+            + '<button class="grid-icon-btn btn-stop" title="Stop" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'stop\', \'' + agt + '\')">' + this.icon('square') + '</button>'
+            + '<button class="grid-icon-btn btn-restart" title="Restart" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'restart\', \'' + agt + '\')">' + this.icon('refresh-cw') + '</button>'
+            + '<button class="grid-icon-btn btn-logs" title="Logs" onclick="DockyApp.openLogs(\'' + escapedId + '\', \'' + name + '\', \'' + agt + '\')">' + this.icon('clipboard-list') + '</button>'
+            + '<button class="grid-icon-btn btn-console" title="Console" onclick="DockyApp.openConsole(\'' + escapedId + '\', \'' + name + '\', \'' + agt + '\')">' + this.icon('terminal') + '</button>'
             + '</div></div>';
     },
 
@@ -936,6 +957,10 @@ const DockyApp = {
         
         panel.innerHTML = html;
         
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
+
         // Charger le compose si managed
         if (isManaged) {
             this.selectedStackAgent = stack.agent_name || null;  // DIRECTEMENT depuis l'objet stack
@@ -1401,6 +1426,10 @@ const DockyApp = {
         }
         html += '</div>'; // end network
         
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
+
         body.innerHTML = html;
     },
 
@@ -1882,6 +1911,10 @@ const DockyApp = {
 
         body.innerHTML = tabsHtml + toolbarHtml + editorHtml + statusHtml;
         this.updateLineNumbers();
+
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
     },
 
     updateLineNumbers() {
@@ -2993,6 +3026,10 @@ const DockyApp = {
 
             document.getElementById("history-body").innerHTML = html;
 
+            if (typeof lucide !== 'undefined') {
+                lucide.createIcons();
+            }
+
             // Auto-select first
             const first = document.querySelector('.history-item');
             if (first) this._selectHistory(first.dataset.hash);
@@ -3033,6 +3070,9 @@ const DockyApp = {
                 <div class="history-preview-header">📄 ${this.escapeHtml(data.message || '')} — ${this.escapeHtml(data.date || '')}</div>
                 <div class="history-preview-code">${this.escapeHtml(content)}</div>
             `;
+            if (typeof lucide !== 'undefined') {
+                lucide.createIcons();
+            }
         } catch(e) {
             previewDiv.innerHTML = `<div class="history-preview-header">Erreur</div><div class="history-preview-code">${this.escapeHtml(e.message)}</div>`;
         }
@@ -3097,7 +3137,7 @@ const DockyApp = {
             this._viewMode = 'grid'; // défaut
         }
         const toggleBtn = document.getElementById('view-toggle');
-        if (toggleBtn) toggleBtn.textContent = this._viewMode === 'grid' ? '📋' : '🔲';
+        if (toggleBtn) toggleBtn.innerHTML = this._viewMode === 'grid' ? this.icon('list') : this.icon('layout-grid');
 
         this.initResizers();
 

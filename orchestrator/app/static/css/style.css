@@ -2509,3 +2509,45 @@ body {
 @media (max-width: 640px) {
     .topbar-stats { display: none; }
 }
+
+/* ============================================================
+   Lucide Icons
+   ============================================================ */
+
+[data-lucide] {
+    width: 16px;
+    height: 16px;
+    display: inline-block;
+    vertical-align: middle;
+    stroke: currentColor;
+    stroke-width: 2;
+    fill: none;
+    flex-shrink: 0;
+}
+
+/* Taille pour les buttons d'action */
+.icon-btn [data-lucide],
+.grid-icon-btn [data-lucide] {
+    width: 14px;
+    height: 14px;
+}
+
+/* Taille stats bar */
+.stats-item [data-lucide] {
+    width: 14px;
+    height: 14px;
+    margin-right: 2px;
+}
+
+/* Loading animation */
+[data-lucide="loader"] {
+    animation: lucide-spin 1s linear infinite;
+}
+
+@keyframes lucide-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+.icon-sm { width: 14px; height: 14px; }
+.icon-lg { width: 20px; height: 20px; }
