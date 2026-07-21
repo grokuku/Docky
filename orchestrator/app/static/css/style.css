@@ -1898,6 +1898,13 @@ body {
     border-color: var(--accent);
 }
 
+/* Input masking for API key fields (prevents password manager detection) */
+.input-masked {
+    -webkit-text-security: disc;
+    -moz-text-security: disc;
+    text-security: disc;
+}
+
 .form-hint-list {
     margin: 6px 0 0 18px;
     padding: 0;
