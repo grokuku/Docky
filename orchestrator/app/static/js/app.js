@@ -1130,8 +1130,8 @@ const DockyApp = {
         } else {
             this.showToast(`Échec ${action} container`, "error");
         }
-        // Refresh after a short delay
-        setTimeout(() => this.refreshStacks(), 1000);
+        // Refresh immédiat
+        this.refreshStacks();
     },
 
     async stackAction(name, action, agent) {
@@ -1144,7 +1144,7 @@ const DockyApp = {
             const err = result && result.error ? result.error : "";
             this.showToast(`Échec ${action} stack: ${err}`, "error");
         }
-        setTimeout(() => this.refreshStacks(), 2000);
+        this.refreshStacks();
     },
 
     // -------------------------------------------------------
@@ -2046,7 +2046,7 @@ const DockyApp = {
             this.showToast("Déploiement échoué : " + err, "error");
         }
         this.updateModifiedIndicators();
-        setTimeout(() => this.refreshStacks(), 2500);
+        this.refreshStacks();
     },
 
     // -------------------------------------------------------
@@ -3149,6 +3149,7 @@ const DockyApp = {
         // Event-driven: WebSocket events + heartbeat
         this.connectEvents();
         this.startHeartbeat();
+        this.startAutoRefresh();
         this._debouncedEventRefresh();
 
         // Pause quand l'onglet est caché
