@@ -13,7 +13,7 @@ import shutil
 import struct
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Generator, List, Optional
 
 import docker
 from docker.errors import DockerException, NotFound, APIError
@@ -45,6 +45,14 @@ def get_docker_client() -> docker.DockerClient:
     except DockerException:
         pass
     return docker.from_env()
+
+
+def watch_docker_events() -> Generator[Dict[str, Any], None, None]:
+    """Generate Docker events as they happen (blocking generator)."""
+    client = get_docker_client()
+    for event in client.events(decode=True):
+        if isinstance(event, dict):
+            yield event
 
 
 # ---------------------------------------------------------------------------
@@ -1206,6 +1214,8 @@ def save_stack_file(stack_name: str, filename: str, content: str) -> Path:
         raise FileNotFoundError(f"Stack '{stack_name}' not found")
     target = _stack_file_path(stack_name, filename)
     target.write_text(content, encoding="utf-8")
+    from datetime import datetime
+    _git_save(stack_name, f"Save {filename} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     return target
 
 
@@ -1224,6 +1234,8 @@ def create_stack(name: str, compose_content: str, env_content: str = "") -> Dict
     if env_content:
         env_path = base / ".env"
         env_path.write_text(env_content, encoding="utf-8")
+    _git_init()
+    _git_save(name, f"Création de {name}")
     return {"name": name, "path": str(base)}
 
 
@@ -1536,6 +1548,207 @@ def set_file_permissions(stack_name: str, filename: str, mode: str) -> Dict[str,
     os.chmod(target, mode_int)
     new_mode = oct(target.stat().st_mode & 0o777)
     return {"name": filename, "mode": new_mode}
+
+
+# ---------------------------------------------------------------------------
+# Git history for stacks
+# ---------------------------------------------------------------------------
+
+
+def _git_init() -> None:
+    """Initialize git repo in stacks directory if not exists."""
+    stacks_dir = Path(get_data_dir()) / 'stacks'
+    git_dir = stacks_dir / '.git'
+    if not git_dir.exists():
+        subprocess.run(["git", "init"], cwd=str(stacks_dir), capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Docky"], cwd=str(stacks_dir), capture_output=True)
+        subprocess.run(["git", "config", "user.email", "docky@local"], cwd=str(stacks_dir), capture_output=True)
+        # .gitignore to exclude .git itself and sensitive files
+        with open(stacks_dir / '.gitignore', 'w') as f:
+            f.write(".git\n")
+        logger.info("Git repository initialized in %s", stacks_dir)
+
+
+def _git_save(stack_name: str, message: str = None) -> None:
+    """Auto-commit the current state of a stack's files."""
+    stacks_dir = Path(get_data_dir()) / 'stacks'
+    _git_init()
+
+    stack_path = stacks_dir / stack_name
+    if not stack_path.exists():
+        return
+
+    # Add all files in the stack directory
+    subprocess.run(["git", "add", str(stack_path)], cwd=str(stacks_dir), capture_output=True)
+
+    # Commit
+    from datetime import datetime
+    msg = message or f"Save {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    subprocess.run(["git", "commit", "-m", msg, "--allow-empty"], cwd=str(stacks_dir), capture_output=True)
+
+
+def _get_git_history(stack_name: str = None, max_count: int = 50) -> list:
+    """Return git log for a stack (or all stacks if None)."""
+    stacks_dir = Path(get_data_dir()) / 'stacks'
+    git_dir = stacks_dir / '.git'
+    if not git_dir.exists():
+        return []
+
+    path_filter = [str(stacks_dir / stack_name)] if stack_name else []
+    cmd = ["git", "log", f"--max-count={max_count}", "--format=%H|%ct|%s", "--date=unix"]
+    if path_filter:
+        cmd += ["--", *path_filter]
+
+    result = subprocess.run(cmd, cwd=str(stacks_dir), capture_output=True, text=True)
+    if result.returncode != 0 or not result.stdout.strip():
+        return []
+
+    history = []
+    for line in result.stdout.strip().split('\n'):
+        parts = line.split('|', 2)
+        if len(parts) == 3:
+            from datetime import datetime
+            history.append({
+                "hash": parts[0],
+                "date": datetime.fromtimestamp(int(parts[1])).isoformat(),
+                "message": parts[2],
+            })
+    return history
+
+
+def _get_git_version(stack_name: str, hash: str) -> dict:
+    """Return the content of a specific version for a stack."""
+    stacks_dir = Path(get_data_dir()) / 'stacks'
+
+    # Get the file content at that commit
+    compose_path = f"{stack_name}/docker-compose.yml"
+    result = subprocess.run(
+        ["git", "show", f"{hash}:{compose_path}"],
+        cwd=str(stacks_dir), capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        return None
+
+    # Also get commit info
+    log_result = subprocess.run(
+        ["git", "log", "-1", "--format=%H|%ct|%s", hash],
+        cwd=str(stacks_dir), capture_output=True, text=True
+    )
+
+    info = {"hash": hash, "content": result.stdout}
+    if log_result.returncode == 0 and log_result.stdout.strip():
+        parts = log_result.stdout.strip().split('|', 2)
+        if len(parts) == 3:
+            from datetime import datetime
+            info["date"] = datetime.fromtimestamp(int(parts[1])).isoformat()
+            info["message"] = parts[2]
+
+    return info
+
+
+def _git_restore(stack_name: str, hash: str) -> dict:
+    """Restore a stack's file to a specific version."""
+    stacks_dir = Path(get_data_dir()) / 'stacks'
+
+    # Restore the file
+    result = subprocess.run(
+        ["git", "checkout", hash, "--", str(stacks_dir / stack_name)],
+        cwd=str(stacks_dir), capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        return {"success": False, "error": result.stderr}
+
+    # Auto-commit the restore
+    _git_save(stack_name, f"Restauré depuis {hash[:8]}")
+
+    return {"success": True, "output": f"Stack {stack_name} restaurée vers {hash[:8]}"}
+
+
+def _git_cleanup(stack_name: str, max_versions: int = 50) -> None:
+    """Keep only the last N versions, squash older ones.
+
+    Uses git reset --soft to squash commits beyond the limit into one.
+    Only affects commits that touch the specific stack path.
+    """
+    stacks_dir = Path(get_data_dir()) / 'stacks'
+    git_dir = stacks_dir / '.git'
+    if not git_dir.exists():
+        return
+
+    # Count commits for this stack
+    count_result = subprocess.run(
+        ["git", "rev-list", "--count", "HEAD", "--", str(stacks_dir / stack_name)],
+        cwd=str(stacks_dir), capture_output=True, text=True
+    )
+    if count_result.returncode != 0:
+        return
+
+    try:
+        count = int(count_result.stdout.strip())
+    except ValueError:
+        return
+
+    if count <= max_versions:
+        return  # Nothing to clean up
+
+    # Simple approach: squash old commits
+    # We use git reset --soft to squash everything after the Nth commit
+    # This keeps the last max_versions commits as-is
+    try:
+        # Get the hash of the (count - max_versions + 1)th commit from the end
+        # This is the first commit we want to KEEP (everything before gets squashed)
+        keep_result = subprocess.run(
+            ["git", "log", "--oneline", "--", str(stacks_dir / stack_name)],
+            cwd=str(stacks_dir), capture_output=True, text=True
+        )
+        if keep_result.returncode != 0:
+            return
+
+        lines = keep_result.stdout.strip().split('\n')
+        if len(lines) <= max_versions:
+            return
+
+        # The hash of the commit to start squashing from
+        # We keep the last max_versions commits
+        squash_after = lines[max_versions - 1].split()[0]  # First commit to KEEP
+
+        # Reset soft to this commit (keeps working tree intact)
+        # Then recommit with a "squashed" message
+        subprocess.run(
+            ["git", "reset", "--soft", squash_after],
+            cwd=str(stacks_dir), capture_output=True
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "Historique antérieur compressé", "--allow-empty"],
+            cwd=str(stacks_dir), capture_output=True
+        )
+        logger.info("Cleaned up history for stack '%s': kept %d versions", stack_name, max_versions)
+    except Exception as e:
+        logger.warning("Failed to cleanup history for '%s': %s", stack_name, e)
+
+
+def get_history_settings() -> dict:
+    """Get history retention settings from settings.yaml."""
+    import yaml
+    settings_path = Path(get_data_dir()) / 'settings.yaml'
+    if settings_path.exists():
+        with open(settings_path) as f:
+            settings = yaml.safe_load(f) or {}
+        return settings.get('history_retention', {'max_versions': 50})
+    return {'max_versions': 50}
+
+
+def set_history_settings(max_versions: int) -> None:
+    """Save history retention settings."""
+    import yaml
+    settings_path = Path(get_data_dir()) / 'settings.yaml'
+    settings = {}
+    if settings_path.exists():
+        with open(settings_path) as f:
+            settings = yaml.safe_load(f) or {}
+    settings['history_retention'] = {'max_versions': max_versions}
+    with open(settings_path, 'w') as f:
+        yaml.dump(settings, f)
 
 
 # ---------------------------------------------------------------------------

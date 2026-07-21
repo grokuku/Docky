@@ -2415,6 +2415,74 @@ body {
 .edit-status-dot.paused { background: #f0ad4e; }
 
 /* ============================================================
+   History modal
+   ============================================================ */
+
+.history-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.history-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    font-size: 0.8125rem;
+    transition: background var(--transition);
+    cursor: pointer;
+}
+.history-item:hover {
+    background: rgba(255,255,255,0.03);
+}
+.history-item.selected {
+    border-color: var(--accent);
+    background: rgba(233,69,96,0.08);
+}
+.history-date {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    min-width: 140px;
+}
+.history-msg {
+    flex: 1;
+    color: var(--text-primary);
+    margin: 0 12px;
+}
+.history-actions {
+    display: flex;
+    gap: 4px;
+}
+.history-preview {
+    margin-top: 12px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+}
+.history-preview-header {
+    padding: 6px 12px;
+    background: var(--bg-tertiary);
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border-color);
+}
+.history-preview-code {
+    padding: 12px;
+    background: #0d1117;
+    font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas',
+                 'Courier New', monospace;
+    font-size: 0.75rem;
+    line-height: 1.5;
+    color: #c9d1d9;
+    white-space: pre;
+    overflow-x: auto;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+/* ============================================================
    Topbar Stats Bar
    ============================================================ */
 

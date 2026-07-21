@@ -20,8 +20,9 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import httpx
 
@@ -45,6 +46,8 @@ class AgentManager:
         self._cache_path = "/data/cache.json"
         self._load_cache()
         self._bg_task = None
+        self._ws_tasks: Dict[str, asyncio.Task] = {}
+        self._event_debounce_timers: Dict[str, asyncio.Task] = {}
         self._load_agents()
 
     # ------------------------------------------------------------------
@@ -487,6 +490,31 @@ class AgentManager:
             return {"success": False, "error": str(e)}
 
     # ------------------------------------------------------------------
+    # Git history
+    # ------------------------------------------------------------------
+
+    async def get_stack_history(self, agent_name: str, stack_name: str) -> list:
+        """Return the git history (commits) for a stack."""
+        try:
+            return await self._request(agent_name, "GET", f"/agent/stacks/{stack_name}/history")
+        except Exception:
+            return []
+
+    async def get_stack_version(self, agent_name: str, stack_name: str, hash: str) -> dict:
+        """Return the content of a specific git version for a stack."""
+        try:
+            return await self._request(agent_name, "GET", f"/agent/stacks/{stack_name}/history/{hash}")
+        except Exception:
+            return None
+
+    async def restore_stack_version(self, agent_name: str, stack_name: str, hash: str) -> dict:
+        """Restore (checkout) a specific git version for a stack."""
+        try:
+            return await self._request(agent_name, "POST", f"/agent/stacks/{stack_name}/history/restore/{hash}")
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    # ------------------------------------------------------------------
     # Ports
     # ------------------------------------------------------------------
 
@@ -578,14 +606,157 @@ class AgentManager:
             self._cache[key]["pending"] = False
 
     async def start_background_refresh(self):
-        """Boucle de rafraîchissement périodique du cache agrégé."""
-        logger.info("Starting background cache refresh every 5s")
+        """Event-driven refresh: full startup + WS events + sanity check."""
+        logger.info("Starting event-driven refresh (no more 5s polling)")
+
+        # 1. Full initial refresh
+        await self.refresh_all_caches()
+
+        # 2. Connect to each agent's event stream
+        for name in self.agents:
+            task = asyncio.create_task(self._connect_agent_events(name))
+            self._ws_tasks[name] = task
+
+        # 3. Sanity check every 10min
+        async def _sanity_loop():
+            while True:
+                await asyncio.sleep(600)
+                for name in list(self.agents.keys()):
+                    if self.agents.get(name, {}).get("status") == "online":
+                        try:
+                            containers = await self.get_containers(name)
+                            if not isinstance(containers, list):
+                                await self._incremental_refresh(name)
+                        except Exception:
+                            pass
+        asyncio.create_task(_sanity_loop())
+
+    # ------------------------------------------------------------------
+    # Event-driven refresh (WebSocket events from agents)
+    # ------------------------------------------------------------------
+
+    async def _connect_agent_events(self, agent_name: str):
+        """Connect WebSocket to agent's /agent/events with auto-reconnect."""
         while True:
             try:
-                await self.refresh_all_caches()
-            except Exception as e:
-                logger.error("Background refresh error: %s", e)
-            await asyncio.sleep(5)
+                agent = self.agents.get(agent_name)
+                if not agent:
+                    await asyncio.sleep(10)
+                    continue
+
+                agent_url = agent.get("url", "").rstrip("/")
+                api_key = agent.get("api_key", "")
+
+                # Convert http → ws, https → wss
+                ws_url = agent_url.replace("http://", "ws://").replace("https://", "wss://")
+                ws_url += f"/agent/events?api_key={api_key}"
+
+                import websockets as ws_lib
+                async with ws_lib.connect(ws_url) as ws:
+                    logger.info("Connected to agent '%s' events", agent_name)
+                    if agent_name in self.agents:
+                        self.agents[agent_name]["status"] = "online"
+
+                    async for event in ws:
+                        await self._handle_agent_event(agent_name, event)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.debug("Agent '%s' events disconnected: %s", agent_name, exc)
+                if agent_name in self.agents:
+                    self.agents[agent_name]["status"] = "offline"
+                await asyncio.sleep(5)
+
+    async def _handle_agent_event(self, agent_name: str, raw):
+        """Process a single Docker event from an agent."""
+        if isinstance(raw, bytes):
+            try:
+                import json
+                raw = json.loads(raw.decode())
+            except Exception:
+                return
+
+        if not isinstance(raw, dict):
+            return
+
+        action = raw.get("Action", "")
+        event_type = raw.get("Type", "")
+
+        relevant_actions = {"start", "stop", "die", "kill", "pause", "unpause",
+                            "restart", "create", "destroy", "rename"}
+
+        if action in relevant_actions and event_type == "container":
+            # Debounce: cancel previous timer for this agent
+            if agent_name in self._event_debounce_timers:
+                self._event_debounce_timers[agent_name].cancel()
+
+            async def _debounced():
+                await asyncio.sleep(2)
+                try:
+                    await self._incremental_refresh(agent_name)
+                finally:
+                    self._event_debounce_timers.pop(agent_name, None)
+
+            self._event_debounce_timers[agent_name] = asyncio.create_task(_debounced())
+
+            # Broadcast aux frontends
+            try:
+                from app.routes import api as api_routes
+                for ws in list(api_routes._events_clients):
+                    try:
+                        await ws.send_json({"type": "docky_event", "agent": agent_name, "action": action})
+                    except Exception:
+                        pass
+            except ImportError:
+                pass
+
+    async def _incremental_refresh(self, agent_name: str):
+        """Refresh a single agent's data and rebuild aggregate caches."""
+        try:
+            await self.refresh_cache(agent_name)
+            await self._rebuild_aggregate_cache()
+        except Exception as e:
+            logger.warning("Incremental refresh failed for '%s': %s", agent_name, e)
+
+    async def _rebuild_aggregate_cache(self):
+        """Rebuild aggregate cache from individual agent caches."""
+        all_containers = []
+        all_stacks = []
+        all_ports = []
+
+        for name in self.agents:
+            try:
+                c = await self.get_containers(name)
+                if isinstance(c, list):
+                    for container in c:
+                        if isinstance(container, dict):
+                            container["agent_name"] = name
+                        all_containers.append(container)
+
+                s = await self.get_stacks(name)
+                if isinstance(s, list):
+                    for stack in s:
+                        if isinstance(stack, dict):
+                            stack["agent_name"] = name
+                        all_stacks.append(stack)
+
+                p = await self.get_ports(name)
+                if isinstance(p, list):
+                    for port in p:
+                        if isinstance(port, dict):
+                            port["agent_name"] = name
+                        all_ports.append(port)
+            except Exception:
+                pass
+
+        self._cache["containers"]["data"] = all_containers
+        self._cache["containers"]["timestamp"] = time.time()
+        self._cache["stacks"]["data"] = all_stacks
+        self._cache["stacks"]["timestamp"] = time.time()
+        self._cache["ports"]["data"] = all_ports
+        self._cache["ports"]["timestamp"] = time.time()
+        self._save_cache()
 
     async def ensure_cache(self, key: str) -> Optional[List[Dict[str, Any]]]:
         """Attend que le cache soit rempli s'il est vide (premier appel)."""

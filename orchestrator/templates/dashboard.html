@@ -317,6 +317,22 @@
         </div>
     </div>
 
+    <!-- History Modal -->
+    <div id="history-modal" class="modal hidden">
+        <div class="modal-content" style="width:90%;max-width:700px;max-height:80vh;">
+            <div class="modal-header">
+                <h3 id="history-title">📋 Historique</h3>
+                <button class="btn btn-ghost btn-sm" onclick="DockyApp.closeHistory()">✕</button>
+            </div>
+            <div class="modal-body modal-body-pad" id="history-body" style="overflow-y:auto;">
+                <!-- History list -->
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" onclick="DockyApp.closeHistory()">Fermer</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Container Edit Modal -->
     <div id="container-edit-modal" class="modal hidden">
         <div class="modal-content" style="width:90%;max-width:750px;max-height:90vh;">

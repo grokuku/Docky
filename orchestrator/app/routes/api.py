@@ -37,6 +37,9 @@ from app.llm.client import (
 
 router = APIRouter(prefix="/api")
 
+# Module-level list of WebSocket clients listening for agent events
+_events_clients: list = []
+
 
 # ---------------------------------------------------------------------------
 # Auth helpers
@@ -508,6 +511,38 @@ async def api_change_password(request: Request):
 
 
 # ---------------------------------------------------------------------------
+# Settings - Git history
+# ---------------------------------------------------------------------------
+
+@router.get("/settings/git-history")
+async def api_get_git_history_settings(request: Request):
+    """Return the git/history retention settings."""
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    from app.config import load_settings
+    settings = load_settings()
+    return settings.get('history_retention', {'max_versions': 50})
+
+
+@router.put("/settings/git-history")
+async def api_update_git_history_settings(request: Request):
+    """Update the git/history retention settings."""
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"detail": "Invalid JSON"})
+    from app.config import load_settings, save_settings
+    settings = load_settings()
+    settings['history_retention'] = {'max_versions': data.get('max_versions', 50)}
+    save_settings(settings)
+    return {"success": True}
+
+
+# ---------------------------------------------------------------------------
 # Containers
 # ---------------------------------------------------------------------------
 
@@ -665,6 +700,34 @@ async def ws_container_logs(websocket: WebSocket, container_id: str):
         "Use the agent's WebSocket endpoint directly."
     )
     await websocket.close(code=1011)
+
+
+@router.websocket("/events")
+async def ws_events(websocket: WebSocket):
+    """Stream events to frontends. Frontend sends heartbeat as text."""
+    username = _check_auth_ws(websocket)
+    if username is None:
+        await websocket.close(code=4401)
+        return
+    await websocket.accept()
+    _events_clients.append(websocket)
+    try:
+        while True:
+            await websocket.receive_text()  # heartbeat
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if websocket in _events_clients:
+            _events_clients.remove(websocket)
+
+
+@router.post("/presence/heartbeat")
+async def api_presence_heartbeat(request: Request):
+    """Frontend heartbeat — keeps presence counter alive."""
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
@@ -1209,6 +1272,46 @@ async def api_deploy_stack(request: Request, name: str, agent: str = Query(...))
     except Exception as e:
         logger.error("deploy_stack failed for stack '%s' on agent '%s': %s", name, agent_name, str(e), exc_info=True)
         return JSONResponse(status_code=502, content={"detail": f"Failed to deploy stack: {str(e)}"})
+
+
+# ---------------------------------------------------------------------------
+# Git history
+# ---------------------------------------------------------------------------
+
+@router.get("/stacks/{name}/history")
+async def api_stack_history(request: Request, name: str, agent: str = Query(...)):
+    """Return the git history for a stack."""
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    agent_name, err = _resolve_agent(agent)
+    if err:
+        return err
+    return await agent_manager.get_stack_history(agent_name, name)
+
+
+@router.get("/stacks/{name}/history/{hash}")
+async def api_stack_version(request: Request, name: str, hash: str, agent: str = Query(...)):
+    """Return a specific git version for a stack."""
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    agent_name, err = _resolve_agent(agent)
+    if err:
+        return err
+    return await agent_manager.get_stack_version(agent_name, name, hash)
+
+
+@router.post("/stacks/{name}/history/restore/{hash}")
+async def api_restore_stack(request: Request, name: str, hash: str, agent: str = Query(...)):
+    """Restore a stack to a specific git version."""
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    agent_name, err = _resolve_agent(agent)
+    if err:
+        return err
+    return await agent_manager.restore_stack_version(agent_name, name, hash)
 
 
 # ---------------------------------------------------------------------------

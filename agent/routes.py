@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import re
+import threading
 
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -613,6 +614,65 @@ async def set_file_permissions(request: Request, name: str, filename: str):
 
 
 # ---------------------------------------------------------------------------
+# Stack git history
+# ---------------------------------------------------------------------------
+
+
+@router.get("/stacks/{name}/history")
+async def get_stack_history(request: Request, name: str):
+    auth_err = require_api_key(request)
+    if auth_err:
+        return auth_err
+    try:
+        history = docker_manager._get_git_history(name)
+        return {"history": history}
+    except Exception as e:
+        return {"history": [], "error": str(e)}
+
+
+@router.get("/stacks/{name}/history/{hash}")
+async def get_stack_version(request: Request, name: str, hash: str):
+    auth_err = require_api_key(request)
+    if auth_err:
+        return auth_err
+    version = docker_manager._get_git_version(name, hash)
+    if version is None:
+        return JSONResponse(status_code=404, content={"error": "Version not found"})
+    return version
+
+
+@router.post("/stacks/{name}/history/restore/{hash}")
+async def restore_stack_version(request: Request, name: str, hash: str):
+    auth_err = require_api_key(request)
+    if auth_err:
+        return auth_err
+    result = docker_manager._git_restore(name, hash)
+    return result
+
+
+@router.get("/settings/git-history")
+async def get_git_history_settings(request: Request):
+    auth_err = require_api_key(request)
+    if auth_err:
+        return auth_err
+    return docker_manager.get_history_settings()
+
+
+@router.put("/settings/git-history")
+async def update_git_history_settings(request: Request):
+    auth_err = require_api_key(request)
+    if auth_err:
+        return auth_err
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON"})
+    max_versions = data.get("max_versions", 50)
+    docker_manager.set_history_settings(max_versions)
+    return {"success": True}
+
+
+# ---------------------------------------------------------------------------
 # Ports
 # ---------------------------------------------------------------------------
 
@@ -638,3 +698,51 @@ async def system_prune(request: Request):
         return result
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Docker Events (WebSocket)
+# ---------------------------------------------------------------------------
+
+
+@router.websocket("/events")
+async def stream_docker_events(websocket: WebSocket):
+    """Stream Docker events to the orchestrator via WebSocket.
+
+    Uses a daemon thread to bridge the synchronous Docker events generator
+    to the async WebSocket loop via an ``asyncio.Queue``.
+    """
+    if not await verify_api_key_ws(websocket):
+        await websocket.close(code=4401)
+        return
+
+    await websocket.accept()
+
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+
+    def _producer():
+        """Run in a daemon thread: push Docker events into the queue."""
+        try:
+            for event in docker_manager.watch_docker_events():
+                if isinstance(event, dict):
+                    fut = asyncio.run_coroutine_threadsafe(
+                        queue.put(event), loop
+                    )
+                    fut.result(timeout=0.1)
+        except Exception:
+            asyncio.run_coroutine_threadsafe(
+                queue.put(None), loop
+            ).result()
+
+    thread = threading.Thread(target=_producer, daemon=True)
+    thread.start()
+
+    try:
+        while True:
+            event = await queue.get()
+            if event is None:
+                break
+            await websocket.send_json(event)
+    except WebSocketDisconnect:
+        pass

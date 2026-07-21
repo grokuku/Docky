@@ -41,6 +41,14 @@ const DockyApp = {
     consoleContainerId: null,
     consoleHistory: [],
 
+    // Events WebSocket
+    _eventsWs: null,
+    _eventsReconnectTimer: null,
+    _refreshThrottle: false,
+
+    // Heartbeat
+    _heartbeatInterval: null,
+
     // Chat LLM (Phase 4)
     chatHistory: [],       // array of {role, content} sent to the API
     chatBusy: false,
@@ -1544,6 +1552,81 @@ const DockyApp = {
     },
 
     // -------------------------------------------------------
+    // Events WebSocket + Heartbeat
+    // -------------------------------------------------------
+
+    connectEvents() {
+        if (this._eventsWs) return;
+        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const url = `${proto}//${window.location.host}/api/events`;
+
+        try {
+            this._eventsWs = new WebSocket(url);
+            this._eventsWs.onopen = () => {
+                console.debug('Events WS connected');
+            };
+            this._eventsWs.onmessage = (event) => {
+                // Debounced refresh (max 1x toutes les 2s)
+                this._debouncedEventRefresh();
+            };
+            this._eventsWs.onclose = () => {
+                this._eventsWs = null;
+                // Auto-reconnect après 5s
+                this._eventsReconnectTimer = setTimeout(() => this.connectEvents(), 5000);
+            };
+            this._eventsWs.onerror = () => {
+                this._eventsWs = null;
+            };
+        } catch(e) {
+            console.warn('Events WS error:', e);
+            this._eventsReconnectTimer = setTimeout(() => this.connectEvents(), 5000);
+        }
+    },
+
+    disconnectEvents() {
+        if (this._eventsWs) {
+            try { this._eventsWs.close(); } catch(e) {}
+            this._eventsWs = null;
+        }
+        if (this._eventsReconnectTimer) {
+            clearTimeout(this._eventsReconnectTimer);
+            this._eventsReconnectTimer = null;
+        }
+    },
+
+    _debouncedEventRefresh() {
+        if (this._refreshThrottle) return;
+        this._refreshThrottle = true;
+        setTimeout(() => {
+            this._refreshThrottle = false;
+            if (!document.hidden) {
+                this.refreshStacks();
+            }
+        }, 2000);
+    },
+
+    startHeartbeat() {
+        this.stopHeartbeat();
+        this._heartbeatInterval = setInterval(async () => {
+            try {
+                await fetch('/api/presence/heartbeat', {
+                    method: 'POST',
+                    credentials: 'same-origin'
+                });
+            } catch(e) {
+                // Silently fail
+            }
+        }, 30000);
+    },
+
+    stopHeartbeat() {
+        if (this._heartbeatInterval) {
+            clearInterval(this._heartbeatInterval);
+            this._heartbeatInterval = null;
+        }
+    },
+
+    // -------------------------------------------------------
     // Compose editor (Phase 3)
     // -------------------------------------------------------
 
@@ -1760,9 +1843,20 @@ const DockyApp = {
         // Toolbar
         const mod = this.isModified(this.currentFile);
         const anyMod = this.anyModified();
+        const _parts = this.selectedStack.split('@');
+        const _stackName = _parts[0];
+        const _stackAgent = this.selectedStackAgent || '';
+        const _escapedName = this.escapeHtml(_stackName);
+        const _escapedAgent = this.escapeHtml(_stackAgent);
         let toolbarHtml = '<div class="compose-toolbar">';
         toolbarHtml += '<button class="btn btn-success btn-sm" onclick="DockyApp.saveCurrentFile()"' + (mod ? '' : ' disabled') + '>💾 Sauvegarder</button>';
         toolbarHtml += '<button class="btn btn-info btn-sm" onclick="DockyApp.saveAndDeploy()"' + (anyMod ? '' : ' disabled') + '>🚀 Sauvegarder & Déployer</button>';
+        toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.openHistory()" title="Historique git">📋</button>';
+        toolbarHtml += '<div class="spacer"></div>';
+        toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.stackAction(\'' + _escapedName + '\', \'start\', \'' + _escapedAgent + '\')" title="Démarrer">▶</button>';
+        toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.stackAction(\'' + _escapedName + '\', \'stop\', \'' + _escapedAgent + '\')" title="Arrêter">⏹</button>';
+        toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.stackAction(\'' + _escapedName + '\', \'restart\', \'' + _escapedAgent + '\')" title="Redémarrer">🔄</button>';
+        toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.stackAction(\'' + _escapedName + '\', \'update\', \'' + _escapedAgent + '\')" title="Force redeploy">⬆</button>';
         toolbarHtml += '<div class="spacer"></div>';
         toolbarHtml += '<button class="btn btn-sm" onclick="DockyApp.openPermsModal()" title="Permissions du fichier">🔒</button>';
         toolbarHtml += '<button class="btn btn-danger btn-sm" onclick="DockyApp.openDeleteStackModal(\''+ this.escapeHtml(this.selectedStack) +'\')" title="Supprimer la stack">🗑</button>';
@@ -2854,6 +2948,120 @@ const DockyApp = {
     },
 
     // -------------------------------------------------------
+    // Git History
+    // -------------------------------------------------------
+
+    async openHistory() {
+        const name = this.selectedStack;
+        const agent = this.selectedStackAgent;
+        if (!name || !agent) {
+            this.showToast("Sélectionne d'abord une stack", "warning");
+            return;
+        }
+
+        const modal = document.getElementById("history-modal");
+        if (!modal) return;
+        modal.classList.remove("hidden");
+
+        document.getElementById("history-title").textContent = `📋 Historique — ${name}`;
+        document.getElementById("history-body").innerHTML = '<p class="placeholder-hint">Chargement…</p>';
+
+        try {
+            const resp = await fetch(`/api/stacks/${encodeURIComponent(name)}/history?agent=${encodeURIComponent(agent)}`);
+            const data = await resp.json();
+            const history = data.history || [];
+
+            if (history.length === 0) {
+                document.getElementById("history-body").innerHTML = '<p class="placeholder-hint">Aucun historique disponible</p>';
+                return;
+            }
+
+            let html = '<div class="history-list" id="history-list">';
+            for (const h of history) {
+                const date = new Date(h.date).toLocaleString('fr-FR');
+                html += `<div class="history-item" data-hash="${h.hash}" onclick="DockyApp._selectHistory('${h.hash}')">
+                    <span class="history-date">${this.escapeHtml(date)}</span>
+                    <span class="history-msg">${this.escapeHtml(h.message)}</span>
+                    <span class="history-actions">
+                        <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();DockyApp._previewHistory('${h.hash}')">📄</button>
+                        <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();DockyApp._restoreHistory('${h.hash}')">↩</button>
+                    </span>
+                </div>`;
+            }
+            html += '</div>';
+            html += '<div id="history-preview" class="history-preview" style="display:none;"></div>';
+
+            document.getElementById("history-body").innerHTML = html;
+
+            // Auto-select first
+            const first = document.querySelector('.history-item');
+            if (first) this._selectHistory(first.dataset.hash);
+        } catch(e) {
+            document.getElementById("history-body").innerHTML = `<p class="placeholder-hint">Erreur: ${this.escapeHtml(e.message)}</p>`;
+        }
+    },
+
+    closeHistory() {
+        const modal = document.getElementById("history-modal");
+        if (modal) modal.classList.add("hidden");
+    },
+
+    async _selectHistory(hash) {
+        document.querySelectorAll('.history-item').forEach(el => {
+            el.classList.toggle('selected', el.dataset.hash === hash);
+        });
+        await this._previewHistory(hash);
+    },
+
+    async _previewHistory(hash) {
+        const name = this.selectedStack;
+        const agent = this.selectedStackAgent;
+        if (!name || !agent || !hash) return;
+
+        const previewDiv = document.getElementById('history-preview');
+        if (!previewDiv) return;
+
+        previewDiv.innerHTML = '<div class="history-preview-header">⏳ Chargement…</div>';
+        previewDiv.style.display = 'block';
+
+        try {
+            const resp = await fetch(`/api/stacks/${encodeURIComponent(name)}/history/${hash}?agent=${encodeURIComponent(agent)}`);
+            const data = await resp.json();
+            const content = data.content || '(fichier non disponible)';
+
+            previewDiv.innerHTML = `
+                <div class="history-preview-header">📄 ${this.escapeHtml(data.message || '')} — ${this.escapeHtml(data.date || '')}</div>
+                <div class="history-preview-code">${this.escapeHtml(content)}</div>
+            `;
+        } catch(e) {
+            previewDiv.innerHTML = `<div class="history-preview-header">Erreur</div><div class="history-preview-code">${this.escapeHtml(e.message)}</div>`;
+        }
+    },
+
+    async _restoreHistory(hash) {
+        const name = this.selectedStack;
+        const agent = this.selectedStackAgent;
+        if (!name || !agent || !hash) return;
+
+        if (!confirm(`Restaurer la stack ${name} vers la version ${hash.slice(0, 8)} ? Le compose actuel sera écrasé.`)) return;
+
+        this.showToast("Restauration en cours…", "info");
+        try {
+            const resp = await fetch(`/api/stacks/${encodeURIComponent(name)}/history/restore/${hash}?agent=${encodeURIComponent(agent)}`, { method: 'POST' });
+            const result = await resp.json();
+            if (result.success) {
+                this.showToast("✅ Stack restaurée", "success");
+                this.closeHistory();
+                this.loadEditor(name, agent);
+            } else {
+                this.showToast("Erreur: " + (result.error || "Échec"), "error");
+            }
+        } catch(e) {
+            this.showToast("Erreur: " + e.message, "error");
+        }
+    },
+
+    // -------------------------------------------------------
     // Init
     // -------------------------------------------------------
 
@@ -2897,7 +3105,21 @@ const DockyApp = {
         this.startAgentsRefresh();
         this.refreshStacks();
         this.updateStatsBar();
-        this.startAutoRefresh();
+
+        // Event-driven: WebSocket events + heartbeat
+        this.connectEvents();
+        this.startHeartbeat();
+        this._debouncedEventRefresh();
+
+        // Pause quand l'onglet est caché
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                this.stopHeartbeat();
+            } else {
+                this.startHeartbeat();
+                this.refreshStacks();  // Refresh au retour
+            }
+        });
 
         // Auto-refresh checkbox
         const cb = document.getElementById("auto-refresh");
@@ -2957,6 +3179,14 @@ const DockyApp = {
             });
         }
 
+        // History modal backdrop click
+        const historyModal = document.getElementById("history-modal");
+        if (historyModal) {
+            historyModal.addEventListener("click", (e) => {
+                if (e.target === historyModal) this.closeHistory();
+            });
+        }
+
         // Container edit modal backdrop click
         const editModal = document.getElementById("container-edit-modal");
         if (editModal) {
@@ -2990,6 +3220,7 @@ const DockyApp = {
             if (e.key === "Escape") {
                 this.closeLogs();
                 this.closeConsole();
+                this.closeHistory();
                 this.closeNewStackModal();
                 this.closeDeleteStackModal();
                 this.closePermsModal();
