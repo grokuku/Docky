@@ -8,9 +8,9 @@ ARG GIT_COMMIT
 ARG VERSION
 LABEL git_commit=${GIT_COMMIT}
 LABEL version=${VERSION}
-RUN echo "${VERSION}-${GIT_COMMIT}" > /app/version.txt
-
 WORKDIR /app
+
+RUN echo "${VERSION}-${GIT_COMMIT}" > /app/version.txt
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

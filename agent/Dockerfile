@@ -8,8 +8,6 @@ ARG GIT_COMMIT
 ARG VERSION
 LABEL git_commit=${GIT_COMMIT}
 LABEL version=${VERSION}
-RUN echo "${VERSION}-${GIT_COMMIT}" > /app/version.txt
-
 # Installer Docker CLI et docker compose plugin
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -29,6 +27,8 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+RUN echo "${VERSION}-${GIT_COMMIT}" > /app/version.txt
 
 COPY requirements.txt ./agent/
 RUN pip install --no-cache-dir -r agent/requirements.txt
