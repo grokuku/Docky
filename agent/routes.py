@@ -8,7 +8,9 @@ import asyncio
 import json
 import logging
 import re
+import socket
 import threading
+from pathlib import Path
 
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -27,8 +29,17 @@ router = APIRouter(prefix="/agent")
 
 @router.get("/health")
 async def health():
-    """Lightweight health-check endpoint for the orchestrator to ping."""
-    return {"status": "ok"}
+    """Lightweight health-check endpoint for the orchestrator to ping.
+
+    Returns status, version (from version.txt), and hostname.
+    """
+    version_path = Path(__file__).parent.parent / 'version.txt'
+    version = "unknown"
+    try:
+        version = version_path.read_text().strip()
+    except Exception:
+        pass
+    return {"status": "ok", "version": version, "name": socket.gethostname()}
 
 
 # ---------------------------------------------------------------------------

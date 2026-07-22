@@ -354,6 +354,15 @@ async def build_system_prompt() -> str:
         else:
             parts.append(f"## Ports utilisés ({name})\nAucun port en écoute détecté.")
 
+    # Stacks metadata (family, sort, grouping)
+    stacks_meta = load_settings().get('stacks_meta', {})
+    if stacks_meta:
+        meta_lines = []
+        for key, meta in stacks_meta.items():
+            family = meta.get('family', '-')
+            meta_lines.append(f"  - {key}: famille={family}")
+        parts.append("## Métadonnées des stacks\n" + "\n".join(meta_lines))
+
     # 6. Soul.md
     soul = read_soul().strip()
     if soul:
@@ -944,6 +953,26 @@ TOOLS: List[Dict[str, Any]] = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "categorize_stack",
+            "description": "Catégoriser une stack par famille (ai, database, media, automation, proxy, monitoring, web, development, security, system, other). Analyser les images Docker pour déterminer la famille.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "stack_name": {"type": "string", "description": "Nom de la stack"},
+                    "agent_name": {"type": "string", "description": "Nom de l'agent"},
+                    "family": {
+                        "type": "string",
+                        "enum": ["ai", "database", "media", "automation", "proxy", "monitoring", "web", "development", "security", "system", "other"],
+                        "description": "Famille détectée"
+                    }
+                },
+                "required": ["stack_name", "agent_name", "family"]
+            }
+        }
+    },
 ]
 
 
@@ -1396,6 +1425,18 @@ async def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
                 })
             except Exception as e:
                 return json.dumps({"error": str(e)})
+
+        elif tool_name == "categorize_stack":
+            from app.config import load_settings, save_settings
+            settings = load_settings()
+            stacks_meta = settings.get('stacks_meta', {})
+            key = f"{arguments['stack_name']}@{arguments.get('agent_name', '')}"
+            if key not in stacks_meta:
+                stacks_meta[key] = {}
+            stacks_meta[key]['family'] = arguments['family']
+            settings['stacks_meta'] = stacks_meta
+            save_settings(settings)
+            return json.dumps({"success": True, "family": arguments['family']})
 
         else:
             return f"[error] Outil inconnu: {tool_name}"

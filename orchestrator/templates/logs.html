@@ -148,7 +148,7 @@
             const tsMatch = line.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.\d+Z\s+(.*)/);
             if (tsMatch) {
                 const time = tsMatch[1].replace("T", " ");
-                msg = tsMatch[2];
+                const msg = tsMatch[2];
                 return `<span class="log-time">${escapeHtml(time)}</span>${escapeHtml(msg)}`;
             }
             return `<span class="log-time">       </span>${escapeHtml(line)}`;

@@ -44,12 +44,19 @@ jobs:
           echo "ORCH_IMG=$(echo ${{ env.REGISTRY }}/${{ env.ORCHESTRATOR_IMAGE }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
           echo "AGENT_IMG=$(echo ${{ env.REGISTRY }}/${{ env.AGENT_IMAGE }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
 
+      - name: Set build args
+        id: vars
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
       - name: Build and push orchestrator
         uses: docker/build-push-action@v5
         with:
           context: ./orchestrator
           platforms: linux/amd64,linux/arm64
           push: true
+          build-args: |
+            GIT_COMMIT=${{ steps.vars.outputs.sha_short }}
+            VERSION=${{ env.VERSION }}
           tags: |
             ${{ env.ORCH_IMG }}:${{ steps.version.outputs.version }}
             ${{ env.ORCH_IMG }}:latest
@@ -60,6 +67,9 @@ jobs:
           context: ./agent
           platforms: linux/amd64,linux/arm64
           push: true
+          build-args: |
+            GIT_COMMIT=${{ steps.vars.outputs.sha_short }}
+            VERSION=${{ env.VERSION }}
           tags: |
             ${{ env.AGENT_IMG }}:${{ steps.version.outputs.version }}
             ${{ env.AGENT_IMG }}:latest

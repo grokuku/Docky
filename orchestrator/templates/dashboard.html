@@ -11,15 +11,29 @@
     <!-- Top bar -->
     <header class="topbar">
         <div class="topbar-left">
-            <span class="topbar-logo">Docky 🐳</span>
+            <span class="topbar-logo">Docky 🐳 <span class="version-badge" id="version-badge"></span></span>
         </div>
         <div class="topbar-center">
             <div id="agent-selector" class="agent-selector">
                 <span class="agent-selector-loading">Chargement…</span>
             </div>
         </div>
+        <div class="topbar-dropdowns">
+            <select id="sort-select" class="topbar-select" onchange="DockyApp.onSortChange()">
+                <option value="name-asc">Tri: A→Z</option>
+                <option value="name-desc">Tri: Z→A</option>
+                <option value="cpu-desc">Tri: CPU ↓</option>
+                <option value="ram-desc">Tri: RAM ↓</option>
+                <option value="status">Tri: Status</option>
+            </select>
+            <select id="group-select" class="topbar-select" onchange="DockyApp.onGroupChange()">
+                <option value="none">Groupe: Aucun</option>
+                <option value="agent">Groupe: Agent</option>
+                <option value="family">Groupe: Famille</option>
+            </select>
+        </div>
         <div class="topbar-stats" id="stats-bar">
-            <span class="stats-item">📊 <span id="stats-agents">0</span> agents</span>
+            <span class="stats-item"><i data-lucide="bar-chart-3" class="icon-sm"></i> <span id="stats-agents">0</span> agents</span>
             <span class="stats-sep">·</span>
             <span class="stats-item"><span id="stats-stacks">0</span> stacks</span>
             <span class="stats-sep">·</span>
@@ -28,8 +42,9 @@
             <span class="stats-item stats-running"><span id="stats-running">0</span> running</span>
         </div>
         <div class="topbar-right">
+            <span id="version-mismatch-badge" class="version-mismatch-badge hidden"></span>
             <button class="btn btn-ghost btn-sm" id="ports-btn" onclick="DockyApp.togglePorts()">🔌 Ports</button>
-            <button id="chat-toggle" class="topbar-btn active" title="Afficher/Masquer le chat" onclick="DockyApp.toggleChat()">💬</button>
+            <button id="chat-toggle" class="topbar-btn active" title="Afficher/Masquer le chat" onclick="DockyApp.toggleChat()"><i data-lucide="message-circle"></i></button>
             <span class="topbar-user">👤 {{ username }}</span>
             <a class="btn btn-ghost btn-sm" href="/settings">Settings</a>
             <button class="btn btn-ghost btn-sm" onclick="window.location.href='/logout'">Déconnexion</button>
@@ -53,7 +68,7 @@
         <div class="left-column">
             <section class="panel dashboard-panel">
                 <div class="panel-header">
-                    <h2>📊 Dashboard</h2>
+                    <h2><i data-lucide="bar-chart-3"></i> Dashboard</h2>
                     <button id="view-toggle" class="topbar-btn" title="Changer le mode d'affichage" onclick="DockyApp.toggleViewMode()">📋</button>
 
                     <div class="dashboard-controls">
@@ -75,9 +90,9 @@
 
             <section class="panel chat-panel">
                 <div class="panel-header">
-                    <h2>Assistant Docky 🤖</h2>
+                    <h2>Assistant Docky <i data-lucide="bot"></i></h2>
                     <div class="chat-header-controls">
-                        <button class="btn btn-ghost btn-sm" onclick="DockyApp.clearChat()" title="Vider la conversation">🗑</button>
+                        <button class="btn btn-ghost btn-sm" onclick="DockyApp.clearChat()" title="Vider la conversation"><i data-lucide="trash-2"></i></button>
                         <button class="btn btn-ghost btn-sm" onclick="DockyApp.openSoulEditor()" title="Éditer SOUL.md">SOUL.md</button>
                     </div>
                 </div>

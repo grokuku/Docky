@@ -127,6 +127,7 @@ def ensure_config_files():
                 "jwt_expire_minutes": 1440,
             },
             "agents": [],
+            "stacks_meta": {},
         }
         with open(settings_path, "w", encoding="utf-8") as f:
             yaml.dump(default_settings, f, default_flow_style=False, sort_keys=False)

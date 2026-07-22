@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import urllib.parse
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -511,6 +512,70 @@ async def api_change_password(request: Request):
 
 
 # ---------------------------------------------------------------------------
+# Version
+# ---------------------------------------------------------------------------
+
+@router.get("/version")
+async def api_version(request: Request):
+    """Return the current Docky version from version.txt."""
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    # Look for version.txt relative to the app file
+    version_path = Path(__file__).parent.parent.parent.parent.parent / "version.txt"
+    try:
+        content = version_path.read_text().strip()
+        return {"version": content}
+    except Exception:
+        return {"version": "0.0.1"}
+
+
+@router.get("/version-check")
+async def api_version_check(request: Request):
+    """Compare orchestrator version with each agent's version.
+
+    Returns the orchestrator version, each agent's version, and a list of
+    mismatches (agents whose version differs from the orchestrator).
+    """
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+
+    # Read orchestrator version
+    orch_version = "unknown"
+    try:
+        orch_version = (Path(__file__).parent.parent.parent.parent.parent / 'version.txt').read_text().strip()
+    except Exception:
+        pass
+
+    # Fetch versions from all agents
+    agent_versions = {}
+    for name in agent_manager.agents:
+        try:
+            health = await agent_manager._request(name, "GET", "/agent/health")
+            if isinstance(health, dict):
+                agent_versions[name] = health.get("version", "unknown")
+        except Exception:
+            agent_versions[name] = "unreachable"
+
+    # Detect mismatches
+    mismatches = []
+    for agent, ver in agent_versions.items():
+        if ver != "unreachable" and ver != orch_version:
+            mismatches.append({
+                "agent": agent,
+                "agent_version": ver,
+                "orchestrator_version": orch_version,
+            })
+
+    return {
+        "orchestrator_version": orch_version,
+        "agents": agent_versions,
+        "mismatches": mismatches,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Settings - Git history
 # ---------------------------------------------------------------------------
 
@@ -538,6 +603,38 @@ async def api_update_git_history_settings(request: Request):
     from app.config import load_settings, save_settings
     settings = load_settings()
     settings['history_retention'] = {'max_versions': data.get('max_versions', 50)}
+    save_settings(settings)
+    return {"success": True}
+
+
+# ---------------------------------------------------------------------------
+# Settings - Stacks metadata
+# ---------------------------------------------------------------------------
+
+@router.get("/settings/stacks-meta")
+async def api_get_stacks_meta(request: Request):
+    """Return the stacks metadata (family, sort, grouping)."""
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    from app.config import load_settings
+    settings = load_settings()
+    return settings.get('stacks_meta', {})
+
+
+@router.put("/settings/stacks-meta")
+async def api_update_stacks_meta(request: Request):
+    """Update the stacks metadata (family, sort, grouping)."""
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"detail": "Invalid JSON"})
+    from app.config import load_settings, save_settings
+    settings = load_settings()
+    settings['stacks_meta'] = data
     save_settings(settings)
     return {"success": True}
 
@@ -685,21 +782,100 @@ async def api_container_logs(
 async def ws_container_logs(websocket: WebSocket, container_id: str):
     """WebSocket for streaming container logs in real-time.
 
-    TODO: proxy this WebSocket toward the agent's own
-    ``/agent/containers/{id}/logs/stream`` endpoint. Implementing a full
-    bidirectional WebSocket proxy is deferred to a later iteration.
+    Proxies the client WebSocket to the target agent's
+    ``/agent/containers/{id}/logs/stream`` endpoint, relaying all messages
+    bidirectionally so the frontend gets a live log stream.
     """
+    # Auth
     username = _check_auth_ws(websocket)
     if username is None:
         await websocket.close(code=4401)
         return
 
+    # Get agent param
+    agent = websocket.query_params.get("agent", "")
+    if not agent:
+        await websocket.close(code=4400)
+        return
+
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        await websocket.close(code=4403)
+        return
+
+    # Get agent URL and API key
+    agent_info = agent_manager.agents.get(agent_name)
+    if not agent_info:
+        await websocket.close(code=4404)
+        return
+
+    agent_url = agent_info.get("url", "").rstrip("/")
+    agent_api_key = agent_info.get("api_key", "")
+
+    # Build target WS URL
+    ws_proto = "wss" if agent_url.startswith("https") else "ws"
+    agent_path = agent_url.split("://", 1)[1] if "://" in agent_url else agent_url
+    target_url = f"{ws_proto}://{agent_path}/agent/containers/{urllib.parse.quote(container_id, safe='')}/logs/stream"
+    if agent_api_key:
+        target_url += f"?api_key={urllib.parse.quote(agent_api_key, safe='')}"
+
+    # Accept the client WebSocket
     await websocket.accept()
-    await websocket.send_text(
-        "WebSocket proxy to agent not yet implemented. "
-        "Use the agent's WebSocket endpoint directly."
-    )
-    await websocket.close(code=1011)
+
+    try:
+        import websockets as ws_lib
+        async with ws_lib.connect(target_url) as agent_ws:
+            async def client_to_agent():
+                try:
+                    while True:
+                        msg = await websocket.receive()
+                        if msg["type"] == "websocket.disconnect":
+                            break
+                        if msg.get("bytes") is not None:
+                            await agent_ws.send(msg["bytes"])
+                        elif msg.get("text") is not None:
+                            await agent_ws.send(msg["text"])
+                except WebSocketDisconnect:
+                    pass
+                except Exception as e:
+                    logger.debug("client_to_agent relay ended: %s", e)
+
+            async def agent_to_client():
+                try:
+                    async for msg in agent_ws:
+                        if isinstance(msg, bytes):
+                            await websocket.send_bytes(msg)
+                        else:
+                            await websocket.send_text(msg)
+                except Exception as e:
+                    logger.debug("agent_to_client relay ended: %s", e)
+
+            # Use FIRST_COMPLETED so that when either side closes,
+            # we cancel the other and exit cleanly.
+            tasks = [
+                asyncio.create_task(client_to_agent()),
+                asyncio.create_task(agent_to_client()),
+            ]
+            done, pending = await asyncio.wait(
+                tasks, return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+    except Exception as e:
+        logger.warning("WS logs proxy error: %s", e)
+        try:
+            await websocket.send_text(json.dumps({"error": str(e)}))
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 @router.websocket("/events")

@@ -55,6 +55,12 @@ const DockyApp = {
     chatLLMConfigured: true,
     chatVisible: true,      // whether the chat panel is shown (persisted in localStorage)
 
+    // Sort & Group
+    _sortMode: 'name-asc',   // persisted in localStorage
+    _groupMode: 'none',      // persisted in localStorage
+    _stacksMeta: {},         // loaded from /api/settings/stacks-meta
+    _statsCache: {},         // containerId -> { cpu_percent, mem_percent, mem_usage, mem_limit }
+
     // -------------------------------------------------------
     // Utilities
     // -------------------------------------------------------
@@ -128,6 +134,42 @@ const DockyApp = {
     agentQuery(agentName) {
         if (!agentName || agentName === "all") return "";
         return "?agent=" + encodeURIComponent(agentName);
+    },
+
+    async loadVersion() {
+        try {
+            const resp = await fetch("/api/version", { credentials: "same-origin" });
+            if (resp.status === 401) {
+                window.location.href = "/login";
+                return;
+            }
+            const data = await resp.json();
+            if (data && data.version) {
+                const badge = document.getElementById("version-badge");
+                if (badge) badge.textContent = "v" + data.version;
+            }
+        } catch (e) {
+            console.error("Failed to load version:", e);
+        }
+    },
+
+    async checkVersions() {
+        const data = await this.apiFetch("/api/version-check");
+        if (data === null) return;
+        const mismatches = data.mismatches || [];
+        const badge = document.getElementById("version-mismatch-badge");
+        if (mismatches.length > 0) {
+            const msg = mismatches.map(
+                m => `${m.agent}: ${m.agent_version} (orchestrateur: ${m.orchestrator_version})`
+            ).join("; ");
+            this.showToast("⚠️ Version mismatch: " + msg, "warning");
+            if (badge) {
+                badge.textContent = "⚠️ " + mismatches.length + " mismatch(s)";
+                badge.classList.remove("hidden");
+            }
+        } else {
+            if (badge) badge.classList.add("hidden");
+        }
     },
 
     async loadAgents() {
@@ -469,7 +511,7 @@ const DockyApp = {
                     </div>
                     <div class="container-extra">
                         ${ports ? `<span class="meta-badge meta-ports">${this.icon('cable')} ${this.escapeHtml(ports)}</span>` : ""}
-                        <span class="update-badge hidden" id="update-${this.escapeHtml(c.id)}">${this.icon('arrow-up')} Update dispo</span>
+                        <button class="update-badge hidden" id="update-${this.escapeHtml(c.id)}" onclick="DockyApp.containerAction('${this.escapeHtml(c.id)}', 'update', '${agt}')" title="Mettre à jour">${this.icon('arrow-up')} Update dispo</button>
                     </div>
                     <div class="container-actions">
                         <button class="icon-btn btn-start" title="Start" onclick="DockyApp.containerAction('${this.escapeHtml(c.id)}', 'start', '${agt}')">${this.icon('play')}</button>
@@ -477,6 +519,7 @@ const DockyApp = {
                         <button class="icon-btn btn-restart" title="Restart" onclick="DockyApp.containerAction('${this.escapeHtml(c.id)}', 'restart', '${agt}')">${this.icon('refresh-cw')}</button>
                         <button class="icon-btn btn-logs" title="Logs" onclick="DockyApp.openLogs('${this.escapeHtml(c.id)}', '${name}', '${agt}')">${this.icon('clipboard-list')}</button>
                         <button class="icon-btn btn-console" title="Console" onclick="DockyApp.openConsole('${this.escapeHtml(c.id)}', '${name}', '${agt}')">${this.icon('terminal')}</button>
+                        <button class="icon-btn btn-update" title="Update" onclick="DockyApp.containerAction('${this.escapeHtml(c.id)}', 'update', '${agt}')">${this.icon('arrow-up')}</button>
                     </div>
                 </div>`;
         }
@@ -516,32 +559,38 @@ const DockyApp = {
         const minCell = 140;
         const maxCell = 220;
         
-        // Trier les stacks par nom (ordre stable)
-        const sortedStacks = [...this.stacks].sort((a, b) => a.name.localeCompare(b.name));
+        // Appliquer le tri et le groupement
+        const sortedStacks = this._sortStacks(this.stacks);
         const allContainers = this._allContainersCache || [];
+        const groups = this._groupStacks(sortedStacks);
         
         // Grouper les containers par stack et calculer maxCols
         const stackGroups = [];
         let maxStackCols = 1;
-        for (const stack of sortedStacks) {
-            const containers = allContainers.filter(c => {
-                if (stack.name === 'Standalone') return !c.stack;
-                return c.stack === stack.name && (c.agent_name||'') === (stack.agent_name||'');
-            });
-            if (containers.length === 0) continue;
+        for (const group of groups) {
+            for (const stack of group.stacks) {
+                let containers = allContainers.filter(c => {
+                    if (stack.name === 'Standalone') return !c.stack;
+                    return c.stack === stack.name && (c.agent_name||'') === (stack.agent_name||'');
+                });
+                if (containers.length === 0) continue;
 
-            // Si des filtres d'agents sont actifs, ignorer les stacks dont l'agent est caché
-            if (this._hiddenAgents.size > 0) {
-                const stackAgent = stack.agent_name || '';
-                if (this._hiddenAgents.has(stackAgent)) {
-                    continue; // Stack ignorée si son agent est caché
+                // Si des filtres d'agents sont actifs, ignorer les stacks dont l'agent est caché
+                if (this._hiddenAgents.size > 0) {
+                    const stackAgent = stack.agent_name || '';
+                    if (this._hiddenAgents.has(stackAgent)) {
+                        continue; // Stack ignorée si son agent est caché
+                    }
                 }
+
+                // Trier les containers selon le mode de tri
+                containers = this._sortContainers(containers);
+                
+                const n = containers.length;
+                const cols = Math.max(1, Math.ceil(n / 2));
+                maxStackCols = Math.max(maxStackCols, cols);
+                stackGroups.push({ stack, containers, cols, n, color: this.stackColor(stack.name), groupLabel: group.label });
             }
-            
-            const n = containers.length;
-            const cols = Math.max(1, Math.ceil(n / 2));
-            maxStackCols = Math.max(maxStackCols, cols);
-            stackGroups.push({ stack, containers, cols, n, color: this.stackColor(stack.name) });
         }
         
         if (stackGroups.length === 0) {
@@ -585,7 +634,26 @@ const DockyApp = {
         const allCells = [];
         let col = 0, row = 0;
         
+        let currentGroupLabel = null;
+        
         for (const group of stackGroups) {
+            // Ajouter un en-tête de groupe s'il y en a un
+            if (group.groupLabel) {
+                // Avancer à la ligne suivante si on n'est pas au début
+                if (col > 0 || row > 0) {
+                    col = 0;
+                    row++;
+                }
+                // Réserver une ligne pour l'en-tête (on ne crée pas de cellule, juste un espace)
+                // On stocke le label pour le rendre dans le HTML final
+                allCells.push({
+                    type: 'group-header',
+                    label: group.groupLabel,
+                    row: row
+                });
+                row++;
+            }
+
             const borderColor = group.color.stroke;
             const bgColor = group.color.fill;
             const stackName = group.stack.name;
@@ -595,6 +663,7 @@ const DockyApp = {
                 // Position dans la grille
                 const actualCol = (row % 2 === 0) ? col : (gridCols - 1 - col);
                 allCells.push({
+                    type: 'container',
                     col: actualCol,
                     row: row,
                     container: group.containers[i],
@@ -622,6 +691,10 @@ const DockyApp = {
         const runningContainers = [];
         
         for (const cell of allCells) {
+            if (cell.type === 'group-header') {
+                cardsHtml += '<div class="grid-group-header" style="position:relative;width:100%;padding:8px 0 4px 0;font-size:0.8rem;font-weight:600;color:var(--text-secondary);grid-column:1/-1;">📁 ' + this.escapeHtml(cell.label) + '</div>';
+                continue;
+            }
             const cardX = cell.col * (cellW + gap);
             const cardY = cell.row * (cellH + gap);
             const agent = cell.agent;
@@ -698,51 +771,62 @@ const DockyApp = {
             return;
         }
 
-        const sortedStacks = [...this.stacks].sort((a, b) => a.name.localeCompare(b.name));
+        const sortedStacks = this._sortStacks(this.stacks);
         const allContainers = this._allContainersCache || [];
+        const groups = this._groupStacks(sortedStacks);
 
         let html = '<div class="table-dashboard">';
 
-        for (const stack of sortedStacks) {
-            const containers = allContainers.filter(c => {
-                if (stack.name === 'Standalone') return !c.stack;
-                return c.stack === stack.name && (c.agent_name||'') === (stack.agent_name||'');
-            });
-            if (containers.length === 0) continue;
-
-            // Skip if agent is hidden
-            if (this._hiddenAgents.size > 0) {
-                const stackAgent = stack.agent_name || '';
-                if (this._hiddenAgents.has(stackAgent)) continue;
+        for (const group of groups) {
+            // Ajouter un en-tête de groupe si nécessaire
+            if (group.label) {
+                html += '<div class="table-group-header">📁 ' + this.escapeHtml(group.label) + '</div>';
             }
 
-            const color = this.stackColor(stack.name);
-            const borderColor = color.stroke;
-            const bgColor = color.fill;
-            const isManaged = stack.managed !== false;
-            const isStandalone = stack.standalone === true;
+            for (const stack of group.stacks) {
+                let containers = allContainers.filter(c => {
+                    if (stack.name === 'Standalone') return !c.stack;
+                    return c.stack === stack.name && (c.agent_name||'') === (stack.agent_name||'');
+                });
+                if (containers.length === 0) continue;
 
-            // Stack header
-            let typeBadge = '';
-            if (isStandalone) typeBadge = '<span class="stack-type-badge stack-badge-standalone">standalone</span>';
-            else if (!isManaged) typeBadge = '<span class="stack-type-badge stack-badge-external">externe</span>';
-            else typeBadge = '<span class="stack-type-badge stack-badge-docky">' + this.escapeHtml(stack.agent_name || stack.agent || 'agent') + '</span>';
+                // Skip if agent is hidden
+                if (this._hiddenAgents.size > 0) {
+                    const stackAgent = stack.agent_name || '';
+                    if (this._hiddenAgents.has(stackAgent)) continue;
+                }
 
-            const escapedName = this.escapeHtml(stack.name);
+                // Trier les containers selon le mode de tri
+                containers = this._sortContainers(containers);
 
-            html += '<div class="table-stack-group" data-stack="' + escapedName + '" data-agent="' + this.escapeHtml(stack.agent_name || '') + '" style="border-color:' + borderColor + ';background:' + bgColor + '">';
-            html += '<div class="table-stack-header">';
-            html += '<span class="table-stack-name">' + escapedName + '</span>' + typeBadge;
-            html += '<span class="meta-badge">🐳 ' + containers.length + '</span>';
-            html += '</div>';
+                const color = this.stackColor(stack.name);
+                const borderColor = color.stroke;
+                const bgColor = color.fill;
+                const isManaged = stack.managed !== false;
+                const isStandalone = stack.standalone === true;
 
-            // Container rows
-            for (const c of containers) {
-                const agent = stack.agent_name || '';
-                html += this.renderTableRow(c, agent, borderColor, stack.name);
+                // Stack header
+                let typeBadge = '';
+                if (isStandalone) typeBadge = '<span class="stack-type-badge stack-badge-standalone">standalone</span>';
+                else if (!isManaged) typeBadge = '<span class="stack-type-badge stack-badge-external">externe</span>';
+                else typeBadge = '<span class="stack-type-badge stack-badge-docky">' + this.escapeHtml(stack.agent_name || stack.agent || 'agent') + '</span>';
+
+                const escapedName = this.escapeHtml(stack.name);
+
+                html += '<div class="table-stack-group" data-stack="' + escapedName + '" data-agent="' + this.escapeHtml(stack.agent_name || '') + '" style="border-color:' + borderColor + ';background:' + bgColor + '">';
+                html += '<div class="table-stack-header">';
+                html += '<span class="table-stack-name">' + escapedName + '</span>' + typeBadge;
+                html += '<span class="meta-badge">🐳 ' + containers.length + '</span>';
+                html += '</div>';
+
+                // Container rows (triés)
+                for (const c of containers) {
+                    const agent = stack.agent_name || '';
+                    html += this.renderTableRow(c, agent, borderColor, stack.name);
+                }
+
+                html += '</div>';
             }
-
-            html += '</div>';
         }
 
         if (html === '<div class="table-dashboard">') {
@@ -813,6 +897,7 @@ const DockyApp = {
             + '<button class="grid-icon-btn btn-restart" title="Restart" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'restart\', \'' + agt + '\')">' + this.icon('refresh-cw') + '</button>'
             + '<button class="grid-icon-btn btn-logs" title="Logs" onclick="DockyApp.openLogs(\'' + escapedId + '\', \'' + name + '\', \'' + agt + '\')">' + this.icon('clipboard-list') + '</button>'
             + '<button class="grid-icon-btn btn-console" title="Console" onclick="DockyApp.openConsole(\'' + escapedId + '\', \'' + name + '\', \'' + agt + '\')">' + this.icon('terminal') + '</button>'
+            + '<button class="grid-icon-btn btn-update" title="Update" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'update\', \'' + agt + '\')">' + this.icon('arrow-up') + '</button>'
             + '</div></div>';
     },
 
@@ -855,13 +940,14 @@ const DockyApp = {
             + '<div class="grid-card-top"><span class="grid-card-name" title="' + name + '">' + name + '</span>' + statusDot + '</div>'
             + '<div class="grid-card-image" title="' + image + '">' + this.icon('package') + ' ' + image + '</div>'
             + '<div class="grid-card-resources" id="resources-' + escapedId + '"><div class="resource-line"><span class="resource-label">CPU</span><div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div><span class="resource-value">—</span></div><div class="resource-line"><span class="resource-label">RAM</span><div class="progress-bar"><div class="progress-fill ram" style="width:0%"></div></div><span class="resource-value">—</span></div></div>'
-            + '<div class="grid-card-extra">' + portsBadge + '<span class="update-badge hidden" id="update-' + escapedId + '">' + this.icon('arrow-up') + '</span></div>'
+            + '<div class="grid-card-extra">' + portsBadge + '<button class="update-badge hidden" id="update-' + escapedId + '" onclick="event.stopPropagation();DockyApp.containerAction(\'' + escapedId + '\', \'update\', \'' + agt + '\')" title="Mettre à jour">' + this.icon('arrow-up') + '</button></div>'
             + '<div class="grid-card-actions" onclick="event.stopPropagation()">'
             + '<button class="grid-icon-btn btn-start" title="Start" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'start\', \'' + agt + '\')">' + this.icon('play') + '</button>'
             + '<button class="grid-icon-btn btn-stop" title="Stop" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'stop\', \'' + agt + '\')">' + this.icon('square') + '</button>'
             + '<button class="grid-icon-btn btn-restart" title="Restart" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'restart\', \'' + agt + '\')">' + this.icon('refresh-cw') + '</button>'
             + '<button class="grid-icon-btn btn-logs" title="Logs" onclick="DockyApp.openLogs(\'' + escapedId + '\', \'' + name + '\', \'' + agt + '\')">' + this.icon('clipboard-list') + '</button>'
             + '<button class="grid-icon-btn btn-console" title="Console" onclick="DockyApp.openConsole(\'' + escapedId + '\', \'' + name + '\', \'' + agt + '\')">' + this.icon('terminal') + '</button>'
+            + '<button class="grid-icon-btn btn-update" title="Update" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'update\', \'' + agt + '\')">' + this.icon('arrow-up') + '</button>'
             + '</div></div>';
     },
 
@@ -918,18 +1004,18 @@ const DockyApp = {
         // Boutons de commande du stack
         if (!isStandalone) {
             html += '<div class="stack-context-actions">';
-            html += '<button class="btn btn-sm btn-success" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'start\', \'' + escapedAgent + '\')">▶ Démarrer</button>';
-            html += '<button class="btn btn-sm btn-danger" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'stop\', \'' + escapedAgent + '\')">⏹ Arrêter</button>';
-            html += '<button class="btn btn-sm btn-warning" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'restart\', \'' + escapedAgent + '\')">🔄 Redémarrer</button>';
-            html += '<button class="btn btn-sm btn-info" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'update\', \'' + escapedAgent + '\')">⬆ Update</button>';
-            if (isManaged) html += '<button class="btn btn-sm" onclick="DockyApp.selectStackFromDashboard(\'' + escapedName + '\', \'' + escapedAgent + '\')">📝 Éditer</button>';
+            html += '<button class="btn btn-sm btn-success" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'start\', \'' + escapedAgent + '\')">' + this.icon('play') + ' Démarrer</button>';
+            html += '<button class="btn btn-sm btn-danger" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'stop\', \'' + escapedAgent + '\')">' + this.icon('square') + ' Arrêter</button>';
+            html += '<button class="btn btn-sm btn-warning" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'restart\', \'' + escapedAgent + '\')">' + this.icon('refresh-cw') + ' Redémarrer</button>';
+            html += '<button class="btn btn-sm btn-info" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'update\', \'' + escapedAgent + '\')">' + this.icon('arrow-up') + ' Update</button>';
+            if (isManaged) html += '<button class="btn btn-sm" onclick="DockyApp.selectStackFromDashboard(\'' + escapedName + '\', \'' + escapedAgent + '\')">' + this.icon('pen-square') + ' Éditer</button>';
             if (!isManaged && !isStandalone) {
                 if (stack.source_path) {
                     // Chemin détecté automatiquement → import direct avec preview
-                    html += '<button class="btn btn-sm btn-info" onclick="DockyApp.importExternal(\'' + this.escapeHtml(stack.source_path) + '\', \'' + escapedName + '\', \'' + escapedAgent + '\')">📥 Importer</button>';
+                    html += '<button class="btn btn-sm btn-info" onclick="DockyApp.importExternal(\'' + this.escapeHtml(stack.source_path) + '\', \'' + escapedName + '\', \'' + escapedAgent + '\')">' + this.icon('download') + ' Importer</button>';
                 } else {
                     // Chemin non détecté → ouvrir le modal manuel avec le nom pré-rempli
-                    html += '<button class="btn btn-sm btn-info" onclick="DockyApp.openImportModalForStack(\'' + escapedName + '\')">📥 Importer</button>';
+                    html += '<button class="btn btn-sm btn-info" onclick="DockyApp.openImportModalForStack(\'' + escapedName + '\')">' + this.icon('download') + ' Importer</button>';
                 }
             }
             html += '</div>';
@@ -938,15 +1024,15 @@ const DockyApp = {
         // Éditeur compose (si managed) — show a loading indicator immediately
         if (isManaged) {
             html += '<div class="stack-context-compose">';
-            html += '<div class="stack-context-loading" id="compose-loading">⏳ Chargement du compose…</div>';
+            html += '<div class="stack-context-loading" id="compose-loading">' + this.icon('loader') + ' Chargement du compose…</div>';
             html += '<div class="compose-tabs" id="compose-tabs" style="display:none"></div>';
             html += '<div class="code-editor-wrap" style="display:none">';
             html += '<div class="line-numbers" id="line-numbers"></div>';
             html += '<textarea class="code-textarea" id="code-editor" placeholder="Sélectionne un fichier..."></textarea>';
             html += '</div>';
             html += '<div class="editor-actions" style="display:none">';
-            html += '<button class="btn btn-sm btn-success" onclick="DockyApp.saveCurrentFile()">💾 Sauvegarder</button>';
-            html += '<button class="btn btn-sm btn-info" onclick="DockyApp.saveAndDeploy()">💾+🚀 Sauvegarder & Déployer</button>';
+            html += '<button class="btn btn-sm btn-success" onclick="DockyApp.saveCurrentFile()">' + this.icon('hard-drive') + ' Sauvegarder</button>';
+            html += '<button class="btn btn-sm btn-info" onclick="DockyApp.saveAndDeploy()">' + this.icon('hard-drive') + '+' + this.icon('rocket') + ' Sauvegarder & Déployer</button>';
             html += '</div>';
             html += '</div>';
         } else {
@@ -1089,6 +1175,8 @@ const DockyApp = {
     },
 
     renderStats(containerId, stats) {
+        // Cache les stats pour le tri CPU/RAM
+        this._statsCache[containerId] = stats;
         const cpuPct = Math.min(stats.cpu_percent, 100);
         const memPct = Math.min(stats.mem_percent, 100);
 
@@ -1195,8 +1283,16 @@ const DockyApp = {
             return;
         }
         let html = "";
-        for (const line of lines) {
-            html += `<div class="terminal-line">${this.escapeHtml(line)}</div>`;
+        for (const item of lines) {
+            let msg;
+            if (typeof item === "object" && item !== null) {
+                // Nouveau format: {"message": "...", "stream": "stdout"}
+                msg = item.message || "";
+            } else {
+                // Ancien format: string simple
+                msg = String(item);
+            }
+            html += `<div class="terminal-line">${this.escapeHtml(msg)}</div>`;
         }
         output.innerHTML = html;
         output.scrollTop = output.scrollHeight;
@@ -1305,7 +1401,7 @@ const DockyApp = {
             const modal = document.getElementById("container-edit-modal");
             if (!modal) return;
 
-            document.getElementById("container-edit-title").textContent = `✏️ ${this.escapeHtml(spec.name || containerId)}`;
+            document.getElementById("container-edit-title").textContent = `✏ ${this.escapeHtml(spec.name || containerId)}`;
             modal.classList.remove("hidden");
             this._renderContainerEditForm(spec);
             this._attachEditScrollSpy();
@@ -1337,11 +1433,11 @@ const DockyApp = {
         // Tabs (ancres de scroll)
         let html = '<div class="edit-section-tabs">';
         const tabs = [
-            {id:'info', label:'ℹ️ Infos'},
-            {id:'ports', label:'🔌 Ports'},
-            {id:'volumes', label:'💾 Volumes'},
-            {id:'env', label:'🌿 Env'},
-            {id:'network', label:'🌐 Réseau'},
+            {id:'info', label: this.icon('info') + ' Infos'},
+            {id:'ports', label: this.icon('cable') + ' Ports'},
+            {id:'volumes', label: this.icon('hard-drive') + ' Volumes'},
+            {id:'env', label: this.icon('code') + ' Env'},
+            {id:'network', label: this.icon('globe') + ' Réseau'},
         ];
         tabs.forEach((t) => {
             html += `<button class="edit-section-tab ${t.id==='info'?'active':''}" data-section="${t.id}" onclick="document.getElementById('edit-section-${t.id}').scrollIntoView({behavior:'smooth'})">${t.label}</button>`;
@@ -1378,10 +1474,10 @@ const DockyApp = {
                 <td><input type="text" class="edit-port-host" value="${this.escapeHtml(hp)}" placeholder="8080"></td>
                 <td><input type="text" class="edit-port-ctn" value="${this.escapeHtml(portNum)}" placeholder="80"></td>
                 <td><select class="edit-select edit-port-proto"><option value="tcp" ${proto==='tcp'?'selected':''}>TCP</option><option value="udp" ${proto==='udp'?'selected':''}>UDP</option></select></td>
-                <td><button class="btn-icon-row" onclick="this.closest('tr').remove()">✕</button></td>
+                <td><button class="btn-icon-row" onclick="this.closest('tr').remove()">${this.icon('x', 'icon-sm')}</button></td>
             </tr>`;
         });
-        html += '</tbody></table><button class="edit-add-row" onclick="DockyApp._addEditRow(\'ports\')">➕ Ajouter un port</button>';
+        html += '</tbody></table><button class="edit-add-row" onclick="DockyApp._addEditRow(\'ports\')">' + this.icon('plus', 'icon-sm') + ' Ajouter un port</button>';
         html += '</div>'; // end ports
         
         // Volumes section
@@ -1392,10 +1488,10 @@ const DockyApp = {
                 <td><input type="text" class="edit-vol-host" value="${this.escapeHtml(v.host_path||'')}" placeholder="/host/path"></td>
                 <td><input type="text" class="edit-vol-ctn" value="${this.escapeHtml(v.container_path||'')}" placeholder="/container/path"></td>
                 <td><select class="edit-select edit-vol-mode"><option value="rw" ${(v.mode||'rw')==='rw'?'selected':''}>RW</option><option value="ro" ${(v.mode||'')==='ro'?'selected':''}>RO</option></select></td>
-                <td><button class="btn-icon-row" onclick="this.closest('tr').remove()">✕</button></td>
+                <td><button class="btn-icon-row" onclick="this.closest('tr').remove()">${this.icon('x', 'icon-sm')}</button></td>
             </tr>`;
         });
-        html += '</tbody></table><button class="edit-add-row" onclick="DockyApp._addEditRow(\'volumes\')">➕ Ajouter un volume</button>';
+        html += '</tbody></table><button class="edit-add-row" onclick="DockyApp._addEditRow(\'volumes\')">' + this.icon('plus', 'icon-sm') + ' Ajouter un volume</button>';
         html += '</div>'; // end volumes
         
         // Env section
@@ -1405,10 +1501,10 @@ const DockyApp = {
             html += `<tr>
                 <td><input type="text" class="edit-env-key" value="${this.escapeHtml(e.key||'')}" placeholder="KEY"></td>
                 <td><input type="text" class="edit-env-val" value="${this.escapeHtml(e.value||'')}" placeholder="value"></td>
-                <td><button class="btn-icon-row" onclick="this.closest('tr').remove()">✕</button></td>
+                <td><button class="btn-icon-row" onclick="this.closest('tr').remove()">${this.icon('x', 'icon-sm')}</button></td>
             </tr>`;
         });
-        html += '</tbody></table><button class="edit-add-row" onclick="DockyApp._addEditRow(\'env\')">➕ Ajouter une variable</button>';
+        html += '</tbody></table><button class="edit-add-row" onclick="DockyApp._addEditRow(\'env\')">' + this.icon('plus', 'icon-sm') + ' Ajouter une variable</button>';
         html += '</div>'; // end env
         
         // Network section (read-only)
@@ -1422,7 +1518,7 @@ const DockyApp = {
                 html += `<tr><td class="edit-value-readonly">${this.escapeHtml(n.name||'')}</td><td class="edit-value-readonly">${this.escapeHtml(n.ip||'')}</td></tr>`;
             });
             html += '</tbody></table>';
-            html += '<p style="color:var(--text-muted);font-size:0.75rem;margin-top:8px;">ℹ️ La configuration réseau n\'est pas modifiable dans cette version.</p>';
+            html += '<p style="color:var(--text-muted);font-size:0.75rem;margin-top:8px;">' + this.icon('info') + ' La configuration réseau n\'est pas modifiable dans cette version.</p>';
         }
         html += '</div>'; // end network
         
@@ -1437,10 +1533,9 @@ const DockyApp = {
         const tbody = document.getElementById(`edit-${section}-body`);
         if (!tbody) return;
         const rows = {
-            ports: '<tr><td><input type="text" class="edit-port-host" placeholder="8080"></td><td><input type="text" class="edit-port-ctn" placeholder="80"></td><td><select class="edit-select edit-port-proto"><option value="tcp">TCP</option><option value="udp">UDP</option></select></td><td><button class="btn-icon-row" onclick="this.closest(\'tr\').remove()">✕</button></td></tr>',
-            volumes: '<tr><td><input type="text" class="edit-vol-host" placeholder="/host/path"></td><td><input type="text" class="edit-vol-ctn" placeholder="/container/path"></td><td><select class="edit-select edit-vol-mode"><option value="rw">RW</option><option value="ro">RO</option></select></td><td><button class="btn-icon-row" onclick="this.closest(\'tr\').remove()">✕</button></td></tr>',
-            env: '<tr><td><input type="text" class="edit-env-key" placeholder="KEY"></td><td><input type="text" class="edit-env-val" placeholder="value"></td><td><button class="btn-icon-row" onclick="this.closest(\'tr\').remove()">✕</button></td></tr>',
-
+            ports: '<tr><td><input type="text" class="edit-port-host" placeholder="8080"></td><td><input type="text" class="edit-port-ctn" placeholder="80"></td><td><select class="edit-select edit-port-proto"><option value="tcp">TCP</option><option value="udp">UDP</option></select></td><td><button class="btn-icon-row" onclick="this.closest(\'tr\').remove()">' + this.icon('x', 'icon-sm') + '</button></td></tr>',
+            volumes: '<tr><td><input type="text" class="edit-vol-host" placeholder="/host/path"></td><td><input type="text" class="edit-vol-ctn" placeholder="/container/path"></td><td><select class="edit-select edit-vol-mode"><option value="rw">RW</option><option value="ro">RO</option></select></td><td><button class="btn-icon-row" onclick="this.closest(\'tr\').remove()">' + this.icon('x', 'icon-sm') + '</button></td></tr>',
+            env: '<tr><td><input type="text" class="edit-env-key" placeholder="KEY"></td><td><input type="text" class="edit-env-val" placeholder="value"></td><td><button class="btn-icon-row" onclick="this.closest(\'tr\').remove()">' + this.icon('x', 'icon-sm') + '</button></td></tr>',
         };
         if (rows[section]) tbody.insertAdjacentHTML('beforeend', rows[section]);
     },
@@ -1501,7 +1596,7 @@ const DockyApp = {
                 return;
             }
             
-            this.showToast("✅ Container mis à jour", "success");
+            this.showToast("✓ Container mis à jour", "success");
             this.closeContainerEdit();
             await this.refreshStacks();
         } catch(e) {
@@ -1840,7 +1935,7 @@ const DockyApp = {
     renderEditorLoading() {
         const body = document.getElementById("compose-body");
         if (!body) return;
-        body.innerHTML = '<div class="placeholder"><p>⏳ Chargement des fichiers…</p></div>';
+        body.innerHTML = '<div class="placeholder"><p>' + this.icon('loader') + ' Chargement des fichiers…</p></div>';
     },
 
     isModified(filename) {
@@ -1878,17 +1973,17 @@ const DockyApp = {
         const _escapedName = this.escapeHtml(_stackName);
         const _escapedAgent = this.escapeHtml(_stackAgent);
         let toolbarHtml = '<div class="compose-toolbar">';
-        toolbarHtml += '<button class="btn btn-success btn-sm" onclick="DockyApp.saveCurrentFile()"' + (mod ? '' : ' disabled') + '>💾 Sauvegarder</button>';
-        toolbarHtml += '<button class="btn btn-info btn-sm" onclick="DockyApp.saveAndDeploy()"' + (anyMod ? '' : ' disabled') + '>🚀 Sauvegarder & Déployer</button>';
-        toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.openHistory()" title="Historique git">📋</button>';
+        toolbarHtml += '<button class="btn btn-success btn-sm" onclick="DockyApp.saveCurrentFile()"' + (mod ? '' : ' disabled') + '>' + this.icon('hard-drive') + ' Sauvegarder</button>';
+        toolbarHtml += '<button class="btn btn-info btn-sm" onclick="DockyApp.saveAndDeploy()"' + (anyMod ? '' : ' disabled') + '>' + this.icon('rocket') + ' Sauvegarder & Déployer</button>';
+        toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.openHistory()" title="Historique git">' + this.icon('clipboard-list') + '</button>';
         toolbarHtml += '<div class="spacer"></div>';
-        toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.stackAction(\'' + _escapedName + '\', \'start\', \'' + _escapedAgent + '\')" title="Démarrer">▶</button>';
-        toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.stackAction(\'' + _escapedName + '\', \'stop\', \'' + _escapedAgent + '\')" title="Arrêter">⏹</button>';
-        toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.stackAction(\'' + _escapedName + '\', \'restart\', \'' + _escapedAgent + '\')" title="Redémarrer">🔄</button>';
-        toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.stackAction(\'' + _escapedName + '\', \'update\', \'' + _escapedAgent + '\')" title="Force redeploy">⬆</button>';
+        toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.stackAction(\'' + _escapedName + '\', \'start\', \'' + _escapedAgent + '\')" title="Démarrer">' + this.icon('play') + '</button>';
+        toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.stackAction(\'' + _escapedName + '\', \'stop\', \'' + _escapedAgent + '\')" title="Arrêter">' + this.icon('square') + '</button>';
+        toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.stackAction(\'' + _escapedName + '\', \'restart\', \'' + _escapedAgent + '\')" title="Redémarrer">' + this.icon('refresh-cw') + '</button>';
+        toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.stackAction(\'' + _escapedName + '\', \'update\', \'' + _escapedAgent + '\')" title="Tout mettre à jour">' + this.icon('arrow-up') + ' Tout update</button>';
         toolbarHtml += '<div class="spacer"></div>';
-        toolbarHtml += '<button class="btn btn-sm" onclick="DockyApp.openPermsModal()" title="Permissions du fichier">🔒</button>';
-        toolbarHtml += '<button class="btn btn-danger btn-sm" onclick="DockyApp.openDeleteStackModal(\''+ this.escapeHtml(this.selectedStack) +'\')" title="Supprimer la stack">🗑</button>';
+        toolbarHtml += '<button class="btn btn-sm" onclick="DockyApp.openPermsModal()" title="Permissions du fichier">' + this.icon('lock') + '</button>';
+        toolbarHtml += '<button class="btn btn-danger btn-sm" onclick="DockyApp.openDeleteStackModal(\''+ this.escapeHtml(this.selectedStack) +'\')" title="Supprimer la stack">' + this.icon('trash-2') + '</button>';
         toolbarHtml += '</div>';
 
         // Editor area
@@ -2040,7 +2135,7 @@ const DockyApp = {
         // Deploy
         const result = await this.apiPost("/api/stacks/" + encodeURIComponent(stackName) + "/deploy" + agentParam);
         if (result && result.success) {
-            this.showToast("Déploiement réussi ✅", "success");
+            this.showToast("Déploiement réussi ✓", "success");
         } else {
             const err = result && result.error ? result.error : "";
             this.showToast("Déploiement échoué : " + err, "error");
@@ -2674,7 +2769,7 @@ const DockyApp = {
             }
             const data = await resp.json();
             if (resp.ok && data.success) {
-                this.renderChatMessage("system", "✅ Commande exécutée.\nSortie:\n" + (data.output || "(vide)"));
+                this.renderChatMessage("system", this.icon('check') + " Commande exécutée.\nSortie:\n" + (data.output || "(vide)"));
             } else {
                 this.renderChatMessage("error", "Échec de l'exécution: " + (data.detail || data.output || "erreur inconnue"));
             }
@@ -2716,7 +2811,7 @@ const DockyApp = {
             }
             const data = await resp.json();
             if (resp.ok && data.success) {
-                this.renderChatMessage("system", "✅ Nettoyage effectué.\nSortie:\n" + (data.output || "(vide)"));
+                this.renderChatMessage("system", this.icon('check') + " Nettoyage effectué.\nSortie:\n" + (data.output || "(vide)"));
             } else {
                 this.renderChatMessage("error", "Échec du nettoyage: " + (data.detail || data.output || "erreur inconnue"));
             }
@@ -3090,7 +3185,7 @@ const DockyApp = {
             const resp = await fetch(`/api/stacks/${encodeURIComponent(name)}/history/restore/${hash}?agent=${encodeURIComponent(agent)}`, { method: 'POST' });
             const result = await resp.json();
             if (result.success) {
-                this.showToast("✅ Stack restaurée", "success");
+                this.showToast("✓ Stack restaurée", "success");
                 this.closeHistory();
                 this.loadEditor(name, agent);
             } else {
@@ -3104,6 +3199,108 @@ const DockyApp = {
     // -------------------------------------------------------
     // Init
     // -------------------------------------------------------
+
+    loadStacksMeta() {
+        this.apiFetch('/api/settings/stacks-meta').then(data => {
+            if (data && typeof data === 'object') {
+                this._stacksMeta = data;
+            }
+        }).catch(() => {
+            this._stacksMeta = {};
+        });
+    },
+
+    // -------------------------------------------------------
+    // Sort & Group
+    // -------------------------------------------------------
+
+    onSortChange() {
+        const select = document.getElementById('sort-select');
+        if (!select) return;
+        this._sortMode = select.value;
+        try {
+            localStorage.setItem('docky_sort_mode', this._sortMode);
+        } catch (e) { /* ignore */ }
+        if (this._allContainersCache && this._allContainersCache.length > 0) {
+            this.renderCurrentView();
+        }
+    },
+
+    onGroupChange() {
+        const select = document.getElementById('group-select');
+        if (!select) return;
+        this._groupMode = select.value;
+        try {
+            localStorage.setItem('docky_group_mode', this._groupMode);
+        } catch (e) { /* ignore */ }
+        if (this._allContainersCache && this._allContainersCache.length > 0) {
+            this.renderCurrentView();
+        }
+    },
+
+    _sortStacks(stacks) {
+        const mode = this._sortMode;
+        return [...stacks].sort((a, b) => {
+            switch (mode) {
+                case 'name-asc':
+                    return a.name.localeCompare(b.name);
+                case 'name-desc':
+                    return b.name.localeCompare(a.name);
+                case 'cpu-desc':
+                case 'ram-desc':
+                    // Tri par stats CPU/RAM géré au niveau des containers, pas des stacks
+                    return a.name.localeCompare(b.name);
+                case 'status': {
+                    const order = { running: 0, partial: 1, stopped: 2, empty: 3 };
+                    return (order[a.status] ?? 99) - (order[b.status] ?? 99);
+                }
+                default:
+                    return 0;
+            }
+        });
+    },
+
+    _sortContainers(containers) {
+        const mode = this._sortMode;
+        if (mode !== 'cpu-desc' && mode !== 'ram-desc') {
+            // Keep original order (already grouped by stack)
+            return containers;
+        }
+        const key = mode === 'cpu-desc' ? 'cpu_percent' : 'mem_percent';
+        return [...containers].sort((a, b) => {
+            const statsA = this._statsCache[a.id] || {};
+            const statsB = this._statsCache[b.id] || {};
+            const valA = statsA[key] ?? 0;
+            const valB = statsB[key] ?? 0;
+            return valB - valA; // descending (highest first)
+        });
+    },
+
+    _groupStacks(stacks) {
+        const mode = this._groupMode;
+        if (mode === 'none') {
+            return [{ label: null, stacks }];
+        }
+
+        const groups = {};
+
+        if (mode === 'agent') {
+            for (const stack of stacks) {
+                const agent = stack.agent_name || 'default';
+                if (!groups[agent]) groups[agent] = [];
+                groups[agent].push(stack);
+            }
+        } else if (mode === 'family') {
+            for (const stack of stacks) {
+                const meta = this._stacksMeta[stack.name] || {};
+                const family = meta.family || 'Autres';
+                if (!groups[family]) groups[family] = [];
+                groups[family].push(stack);
+            }
+        }
+
+        return Object.entries(groups).map(([label, s]) => ({ label, stacks: s }));
+    },
 
     init() {
         // Load chat panel visibility preference (persisted in localStorage)
@@ -3139,10 +3336,31 @@ const DockyApp = {
         const toggleBtn = document.getElementById('view-toggle');
         if (toggleBtn) toggleBtn.innerHTML = this._viewMode === 'grid' ? this.icon('list') : this.icon('layout-grid');
 
+        // Restaurer le tri et le groupement depuis localStorage
+        try {
+            const sortSaved = localStorage.getItem('docky_sort_mode');
+            if (sortSaved) this._sortMode = sortSaved;
+        } catch (e) { /* ignore */ }
+        try {
+            const groupSaved = localStorage.getItem('docky_group_mode');
+            if (groupSaved) this._groupMode = groupSaved;
+        } catch (e) { /* ignore */ }
+
+        // Appliquer les valeurs aux selects
+        const sortSelect = document.getElementById('sort-select');
+        if (sortSelect) sortSelect.value = this._sortMode;
+        const groupSelect = document.getElementById('group-select');
+        if (groupSelect) groupSelect.value = this._groupMode;
+
         this.initResizers();
 
+        // Load version number
+        this.loadVersion();
+
         this.loadAgents();
+        this.checkVersions();
         this.startAgentsRefresh();
+        this.loadStacksMeta();
         this.refreshStacks();
         this.updateStatsBar();
 

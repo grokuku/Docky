@@ -250,7 +250,7 @@ const SettingsApp = {
 
         if (agent) {
             this.editingAgentName = agent.name;
-            title.textContent = "✏ Éditer l'agent";
+            title.innerHTML = '<i data-lucide="pen-square"></i> Éditer l\'agent';
             nameInput.value = agent.name || "";
             urlInput.value = agent.url || "";
             keyInput.value = "";
@@ -259,7 +259,7 @@ const SettingsApp = {
             this.renderPathMappings(agent.path_mappings || []);
         } else {
             this.editingAgentName = null;
-            title.textContent = "➕ Ajouter un agent";
+            title.innerHTML = '<i data-lucide="plus"></i> Ajouter un agent';
             nameInput.value = "";
             urlInput.value = "";
             keyInput.value = "";
@@ -268,6 +268,7 @@ const SettingsApp = {
             this.renderPathMappings([]);
         }
         modal.classList.remove("hidden");
+        if (typeof lucide !== 'undefined') lucide.createIcons();
     },
 
     closeAgentForm() {
@@ -290,7 +291,7 @@ const SettingsApp = {
                 '<input type="text" class="form-input path-mapping-host" placeholder="/chemin/hote" value="' + this.escapeHtml(m.host || '') + '">' +
                 '<span>→</span>' +
                 '<input type="text" class="form-input path-mapping-local" placeholder="/chemin/local" value="' + this.escapeHtml(m.local || '') + '">' +
-                '<button type="button" onclick="SettingsApp.removePathMapping(this)">✕</button>' +
+                '<button type="button" onclick="SettingsApp.removePathMapping(this)"><i data-lucide="x"></i></button>' +
                 '</div>';
         });
         list.innerHTML = html;
@@ -304,7 +305,7 @@ const SettingsApp = {
         div.innerHTML = '<input type="text" class="form-input path-mapping-host" placeholder="/chemin/hote">' +
             '<span>→</span>' +
             '<input type="text" class="form-input path-mapping-local" placeholder="/chemin/local">' +
-            '<button type="button" onclick="SettingsApp.removePathMapping(this)">✕</button>';
+            '<button type="button" onclick="SettingsApp.removePathMapping(this)"><i data-lucide="x"></i></button>';
         list.appendChild(div);
     },
 
@@ -430,13 +431,51 @@ const SettingsApp = {
     },
 
     // -------------------------------------------------------
+    // Git history retention
+    // -------------------------------------------------------
+
+    async loadGitHistorySettings() {
+        const data = await this.apiFetch("/api/settings/git-history");
+        if (!data) return;
+        const input = document.getElementById("git-history-retention");
+        if (input) {
+            input.value = data.max_versions || 50;
+        }
+    },
+
+    async saveGitHistorySettings() {
+        const input = document.getElementById("git-history-retention");
+        if (!input) return;
+        const maxVersions = parseInt(input.value, 10);
+        if (isNaN(maxVersions) || maxVersions < 5 || maxVersions > 500) {
+            this.showToast("Veuillez entrer un nombre entre 5 et 500.", "error");
+            return;
+        }
+        const data = await this.apiPut("/api/settings/git-history", {
+            max_versions: maxVersions
+        });
+        if (!data) return;
+        if (data.success) {
+            this.showToast("Configuration de l'historique git sauvegardée.", "success");
+        } else {
+            this.showToast(data.detail || "Erreur lors de la sauvegarde.", "error");
+        }
+    },
+
+    // -------------------------------------------------------
     // Init
     // -------------------------------------------------------
 
     init() {
         this.loadLLMConfig();
         this.loadAgents();
+        this.loadGitHistorySettings();
     },
 };
 
-document.addEventListener("DOMContentLoaded", () => SettingsApp.init());
+document.addEventListener("DOMContentLoaded", () => {
+    SettingsApp.init();
+    if (typeof lucide !== 'undefined') {
+        lucide.createIcons();
+    }
+});

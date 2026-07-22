@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Docky 🐳 - Settings</title>
     <link rel="stylesheet" href="/static/css/style.css">
+    <script src="https://unpkg.com/lucide@latest"></script>
 </head>
 <body class="app-body">
     <!-- Top bar -->
@@ -27,7 +28,7 @@
         <!-- LLM configuration -->
         <section class="panel settings-panel">
             <div class="panel-header">
-                <h2>🤖 Configuration LLM</h2>
+                <h2><i data-lucide="bot"></i> Configuration LLM</h2>
                 <span id="llm-status" class="status-indicator status-unknown">Non testé</span>
             </div>
             <div class="panel-body settings-body">
@@ -79,8 +80,8 @@
         <!-- Agents management -->
         <section class="panel settings-panel">
             <div class="panel-header">
-                <h2>🖥 Agents</h2>
-                <button class="btn btn-sm btn-primary" onclick="SettingsApp.showAgentForm(null)">➕ Ajouter un agent</button>
+                <h2><i data-lucide="terminal"></i> Agents</h2>
+                <button class="btn btn-sm btn-primary" onclick="SettingsApp.showAgentForm(null)"><i data-lucide="plus"></i> Ajouter un agent</button>
             </div>
             <div class="panel-body settings-body">
                 <div id="agents-list" class="agents-list">
@@ -89,10 +90,27 @@
             </div>
         </section>
 
+        <!-- Git history retention -->
+        <section class="panel settings-panel">
+            <div class="panel-header">
+                <h2>📋 Historique git</h2>
+            </div>
+            <div class="panel-body settings-body">
+                <div class="form-group">
+                    <label for="git-history-retention">Nombre de versions conservées</label>
+                    <input type="number" id="git-history-retention" value="50" min="5" max="500" class="form-input" autocomplete="off">
+                    <p class="form-hint">Nombre maximum de versions (commits) conservées par stack. Les plus anciennes seront automatiquement compressées.</p>
+                </div>
+                <div class="settings-actions">
+                    <button class="btn btn-primary" onclick="SettingsApp.saveGitHistorySettings()">Sauvegarder</button>
+                </div>
+            </div>
+        </section>
+
         <!-- Security / Password change -->
         <section class="panel settings-panel">
             <div class="panel-header">
-                <h2>🔐 Sécurité</h2>
+                <h2><i data-lucide="lock"></i> Sécurité</h2>
             </div>
             <div class="panel-body settings-body">
                 <div class="form-group">
@@ -118,8 +136,8 @@
     <div id="agent-modal" class="modal hidden">
         <div class="modal-content modal-small">
             <div class="modal-header">
-                <h3 id="agent-modal-title">➕ Ajouter un agent</h3>
-                <button class="btn btn-ghost btn-sm" onclick="SettingsApp.closeAgentForm()">✕</button>
+                <h3 id="agent-modal-title"><i data-lucide="plus"></i> Ajouter un agent</h3>
+                <button class="btn btn-ghost btn-sm" onclick="SettingsApp.closeAgentForm()"><i data-lucide="x"></i></button>
             </div>
             <div class="modal-body modal-body-pad">
                 <div class="form-group">
@@ -156,7 +174,7 @@
         <div class="modal-content modal-small">
             <div class="modal-header">
                 <h3>🗑 Supprimer l'agent</h3>
-                <button class="btn btn-ghost btn-sm" onclick="SettingsApp.closeDeleteAgent()">✕</button>
+                <button class="btn btn-ghost btn-sm" onclick="SettingsApp.closeDeleteAgent()"><i data-lucide="x"></i></button>
             </div>
             <div class="modal-body modal-body-pad">
                 <p>Supprimer l'agent <strong id="delete-agent-name"></strong> ?</p>
