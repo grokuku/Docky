@@ -21,6 +21,8 @@ const DockyApp = {
 
     _viewMode: 'grid',  // 'grid' ou 'table'
 
+    _composeEditMode: false,
+
     // Multi-agent
     _hiddenAgents: new Set(),  // Set vide = tous visibles. Les agents dedans sont cachés.
     agentsList: [],              // [{name, status, ...}]
@@ -1824,6 +1826,13 @@ const DockyApp = {
     },
 
     async loadEditor(name, agent) {
+        // Protéger le refresh : si en mode édition, ne pas recharger le contenu
+        if (this._composeEditMode) {
+            // Just re-render sans recharger
+            this.renderEditor();
+            return;
+        }
+
         this.selectedStack = name + '@' + (agent || '');
         this.selectedStackAgent = agent || null;
 
@@ -1920,6 +1929,11 @@ const DockyApp = {
         this.selectFile(first);
     },
 
+    toggleComposeEdit() {
+        this._composeEditMode = !this._composeEditMode;
+        this.renderEditor();
+    },
+
     selectFile(filename) {
         this.currentFile = filename;
         this.renderEditor();
@@ -1982,6 +1996,12 @@ const DockyApp = {
         toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.stackAction(\'' + _escapedName + '\', \'restart\', \'' + _escapedAgent + '\')" title="Redémarrer">' + this.icon('refresh-cw') + '</button>';
         toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.stackAction(\'' + _escapedName + '\', \'update\', \'' + _escapedAgent + '\')" title="Tout mettre à jour">' + this.icon('arrow-up') + ' Tout update</button>';
         toolbarHtml += '<div class="spacer"></div>';
+        // Bouton bascule lecture seule / édition
+        if (this._composeEditMode) {
+            toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.toggleComposeEdit()" title="Aperçu lecture seule">' + this.icon('eye') + ' Aperçu</button>';
+        } else {
+            toolbarHtml += '<button class="btn btn-primary btn-sm" onclick="DockyApp.toggleComposeEdit()" title="Passer en mode édition">' + this.icon('pen-square') + ' Modifier</button>';
+        }
         toolbarHtml += '<button class="btn btn-sm" onclick="DockyApp.openPermsModal()" title="Permissions du fichier">' + this.icon('lock') + '</button>';
         toolbarHtml += '<button class="btn btn-danger btn-sm" onclick="DockyApp.openDeleteStackModal(\''+ this.escapeHtml(this.selectedStack) +'\')" title="Supprimer la stack">' + this.icon('trash-2') + '</button>';
         toolbarHtml += '</div>';
@@ -1989,12 +2009,18 @@ const DockyApp = {
         // Editor area
         const content = this.fileContents[this.currentFile] || "";
         let editorHtml = '<div class="code-editor-wrap">';
-        editorHtml += '<div class="line-numbers" id="line-numbers"></div>';
-        editorHtml += '<textarea class="code-textarea" id="code-editor" spellcheck="false"'
-            + ' oninput="DockyApp.onEditorInput()"'
-            + ' onscroll="DockyApp.syncLineScroll()"'
-            + ' onkeydown="DockyApp.onEditorKeydown(event)"'
-            + '>' + this.escapeHtml(content) + '</textarea>';
+        if (this._composeEditMode) {
+            // Mode édition : textarea modifiable
+            editorHtml += '<div class="line-numbers" id="line-numbers"></div>';
+            editorHtml += '<textarea class="code-textarea" id="code-editor" spellcheck="false"'
+                + ' oninput="DockyApp.onEditorInput()"'
+                + ' onscroll="DockyApp.syncLineScroll()"'
+                + ' onkeydown="DockyApp.onEditorKeydown(event)"'
+                + '>' + this.escapeHtml(content) + '</textarea>';
+        } else {
+            // Mode lecture seule : bloc pre
+            editorHtml += '<pre class="compose-readonly" id="code-editor-readonly">' + this.escapeHtml(content) + '</pre>';
+        }
         editorHtml += '</div>';
 
         // Status bar
@@ -2005,7 +2031,11 @@ const DockyApp = {
         statusHtml += '</div>';
 
         body.innerHTML = tabsHtml + toolbarHtml + editorHtml + statusHtml;
-        this.updateLineNumbers();
+        if (this._composeEditMode) {
+            this.updateLineNumbers();
+        } else {
+            this.updateReadonlyLineNumbers();
+        }
 
         if (typeof lucide !== 'undefined') {
             lucide.createIcons();
@@ -2017,6 +2047,18 @@ const DockyApp = {
         const ln = document.getElementById("line-numbers");
         if (!editor || !ln) return;
         const lines = editor.value.split("\n").length;
+        let html = "";
+        for (let i = 1; i <= lines; i++) {
+            html += i + "\n";
+        }
+        ln.textContent = html;
+    },
+
+    updateReadonlyLineNumbers() {
+        const pre = document.getElementById("code-editor-readonly");
+        const ln = document.getElementById("line-numbers");
+        if (!pre || !ln) return;
+        const lines = pre.textContent.split("\n").length;
         let html = "";
         for (let i = 1; i <= lines; i++) {
             html += i + "\n";

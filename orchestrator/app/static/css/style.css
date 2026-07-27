@@ -751,6 +751,22 @@ body {
     color: var(--text-muted);
 }
 
+.compose-readonly {
+    flex: 1;
+    padding: 12px 14px;
+    background: #0d1117;
+    color: #c9d1d9;
+    font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', 'Consolas', 'Courier New', monospace;
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    white-space: pre;
+    overflow: auto;
+    border: none;
+    outline: none;
+    tab-size: 2;
+    margin: 0;
+}
+
 .compose-status {
     padding: 6px 14px;
     border-top: 1px solid var(--border-color);
