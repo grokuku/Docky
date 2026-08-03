@@ -1337,6 +1337,15 @@ async def delete_stack(name: str) -> Dict[str, Any]:
 
     # 2. Remove the stack directory
     shutil.rmtree(base)
+
+    # 3. Commit the deletion in git history
+    try:
+        stacks_dir = Path(get_data_dir()) / 'stacks'
+        subprocess.run(["git", "add", "-A", str(stacks_dir)], cwd=str(stacks_dir), capture_output=True)
+        subprocess.run(["git", "commit", "-m", f"Suppression de {name}", "--allow-empty"], cwd=str(stacks_dir), capture_output=True)
+    except Exception:
+        pass
+
     return {"name": name, "deleted": True}
 
 
@@ -1572,6 +1581,10 @@ def import_stack(source_path: str, stack_name: str = None, dry_run: bool = False
             if item.suffix in ['.yml', '.yaml', '.conf', '.json', '.txt', '.sh', '.env', '.ini', '.cfg']:
                 shutil.copy2(str(item), str(target / item.name))
 
+    # Commit the import into git history
+    _git_init()
+    _git_save(stack_name, f"Import de {stack_name}")
+
     return {
         "success": True,
         "name": stack_name,
@@ -1665,7 +1678,15 @@ def _git_save(stack_name: str, message: str = None) -> None:
     # Commit
     from datetime import datetime
     msg = message or f"Save {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    subprocess.run(["git", "commit", "-m", msg, "--allow-empty"], cwd=str(stacks_dir), capture_output=True)
+    subprocess.run(["git", "commit", "-m", msg], cwd=str(stacks_dir), capture_output=True)
+
+    # Appliquer la rétention (max_versions)
+    try:
+        settings = get_history_settings()
+        max_versions = settings.get('max_versions', 50)
+        _git_cleanup(stack_name, max_versions)
+    except Exception:
+        pass
 
 
 def _get_git_history(stack_name: str = None, max_count: int = 50) -> list:
