@@ -366,6 +366,24 @@
         </div>
     </div>
 
+    <!-- Activity modal -->
+    <div id="activity-modal" class="modal hidden">
+        <div class="modal-content" style="width:90%;max-width:650px;max-height:70vh;">
+            <div class="modal-header">
+                <h3 id="activity-title">⚙️ Exécution…</h3>
+                <span id="activity-status" class="status-indicator status-running">En cours</span>
+            </div>
+            <div class="modal-body modal-body-pad" style="overflow-y:auto;">
+                <div id="activity-output" class="terminal-output" style="min-height:150px;max-height:45vh;">
+                    <div class="terminal-empty">Exécution de la commande…</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" onclick="DockyApp.closeActivity()">Fermer</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast -->
     <div id="toast" class="toast hidden"></div>
 

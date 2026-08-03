@@ -277,14 +277,31 @@ def get_container_logs(container_id: str, tail: int = 100) -> List[Dict]:
     try:
         client = get_docker_client()
         c = client.containers.get(container_id)
-        # Use low-level API to get raw multiplexed bytes (8-byte headers)
-        raw = client.api.logs(
-            container_id,
-            stdout=True,
-            stderr=True,
-            tail=tail,
-            timestamps=True,
-        )
+        is_tty = bool((c.attrs.get("Config", {}) or {}).get("Tty"))
+
+        # Fetch the RAW bytes straight from the Docker daemon.
+        #
+        # IMPORTANT: we deliberately bypass ``client.api.logs()`` here.
+        # Since docker-py 7, ``APIClient.logs()`` already demultiplexes the
+        # stdout/stderr stream for non-TTY containers (it strips the 8-byte
+        # frames inside ``_get_result_tty`` before returning the bytes), and
+        # for TTY containers it returns the raw stream without any framing
+        # either. Feeding that already-demultiplexed output to the frame
+        # parser below would treat the log text itself as a frame header,
+        # compute a bogus (huge) frame length and return no lines at all —
+        # i.e. the persistent "no logs" / "Aucun log" bug.
+        #
+        # We therefore issue the raw HTTP GET ourselves so the multiplexed
+        # 8-byte frames (when the container is not a TTY) are preserved and
+        # we can recover the stream type (stdout/stderr).
+        params = {
+            "stdout": 1,
+            "stderr": 1,
+            "tail": tail,
+            "timestamps": 1,
+        }
+        url = client.api._url("/containers/{0}/logs", container_id)
+        raw = client.api._get(url, params=params, stream=False).content
     except (NotFound, DockerException, APIError):
         return []
 
@@ -292,6 +309,17 @@ def get_container_logs(container_id: str, tail: int = 100) -> List[Dict]:
         return []
 
     result: List[Dict] = []
+
+    if is_tty:
+        # TTY containers: the daemon returns a single raw stream with no
+        # 8-byte multiplexed frames (stdout/stderr are merged by the TTY).
+        for line in raw.decode("utf-8", errors="replace").splitlines():
+            line = line.rstrip("\r")
+            if line:
+                result.append({"message": line, "stream": "stdout"})
+        return result
+
+    # Non-TTY containers: multiplexed frames with 8-byte headers.
     offset = 0
     while offset + 8 <= len(raw):
         stream_type = raw[offset]  # 1 = stdout, 2 = stderr

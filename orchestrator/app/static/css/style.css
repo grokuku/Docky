@@ -1482,6 +1482,17 @@ body {
     font-style: italic;
 }
 
+.terminal-output-content {
+    font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+    font-size: 0.75rem;
+    line-height: 1.5;
+    color: #c9d1d9;
+    white-space: pre-wrap;
+    word-break: break-all;
+    margin: 0;
+    padding: 8px;
+}
+
 .terminal-info {
     color: var(--info);
     font-style: italic;
@@ -2082,6 +2093,22 @@ body {
 }
 .status-unknown::before {
     background: var(--text-muted);
+}
+
+.status-indicator.status-running {
+    color: var(--success);
+    background: rgba(74, 222, 128, 0.12);
+}
+.status-indicator.status-running::before {
+    background: var(--success);
+}
+
+.status-indicator.status-stopped {
+    color: var(--danger);
+    background: rgba(239, 68, 68, 0.12);
+}
+.status-indicator.status-stopped::before {
+    background: var(--danger);
 }
 
 /* Agents list */

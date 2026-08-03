@@ -1209,16 +1209,75 @@ const DockyApp = {
     },
 
     // -------------------------------------------------------
+    // Activity modal (progression des commandes)
+    // -------------------------------------------------------
+
+    _openActivity(title) {
+        const modal = document.getElementById("activity-modal");
+        if (!modal) return;
+        const titleEl = document.getElementById("activity-title");
+        if (titleEl) titleEl.textContent = title || "Exécution…";
+        const status = document.getElementById("activity-status");
+        if (status) {
+            status.textContent = "En cours";
+            status.className = "status-indicator status-running";
+        }
+        const output = document.getElementById("activity-output");
+        if (output) output.innerHTML = '<div class="terminal-empty">Exécution…</div>';
+        modal.classList.remove("hidden");
+    },
+
+    _appendActivity(text, type) {
+        const output = document.getElementById("activity-output");
+        if (!output) return;
+        const line = document.createElement("div");
+        line.className = "terminal-line" + (type ? " " + type : "");
+        line.textContent = text;
+        output.appendChild(line);
+        output.scrollTop = output.scrollHeight;
+    },
+
+    _finishActivity(success, output) {
+        const status = document.getElementById("activity-status");
+        if (status) {
+            status.textContent = success ? "Terminé" : "Échec";
+            status.className = "status-indicator " + (success ? "status-running" : "status-stopped");
+        }
+        // Afficher la sortie
+        if (output) {
+            const outDiv = document.getElementById("activity-output");
+            if (outDiv) {
+                outDiv.innerHTML = '';
+                const pre = document.createElement("pre");
+                pre.className = "terminal-output-content";
+                pre.textContent = output;
+                outDiv.appendChild(pre);
+            }
+        }
+    },
+
+    closeActivity() {
+        const modal = document.getElementById("activity-modal");
+        if (modal) modal.classList.add("hidden");
+    },
+
+    // -------------------------------------------------------
     // Actions
     // -------------------------------------------------------
 
     async containerAction(id, action, agent) {
-        this.showToast(`${action} container…`, "info");
-        const result = await this.apiPost(`/api/containers/${id}/${action}` + this.agentQuery(agent));
-        if (result && result.success) {
-            this.showToast(`Container ${action} OK`, "success");
-        } else {
-            this.showToast(`Échec ${action} container`, "error");
+        const labels = {start: 'Démarrer', stop: 'Arrêter', restart: 'Redémarrer', update: 'Mettre à jour'};
+        this._openActivity(`${labels[action] || action} — container`);
+        try {
+            const result = await this.apiPost(`/api/containers/${id}/${action}` + this.agentQuery(agent));
+            const success = result && result.success;
+            const output = result ? (result.output || result.error || JSON.stringify(result)) : "Pas de réponse";
+            this._finishActivity(success, output);
+            if (success) this.showToast(`Container ${action} OK`, "success");
+            else this.showToast(`Échec ${action} container`, "error");
+        } catch(e) {
+            this._finishActivity(false, e.message);
+            this.showToast("Erreur: " + e.message, "error");
         }
         // Refresh immédiat
         this.refreshStacks();
@@ -1226,13 +1285,18 @@ const DockyApp = {
 
     async stackAction(name, action, agent) {
         const agt = agent || null;
-        this.showToast(`${action} stack "${name}"…`, "info");
-        const result = await this.apiPost(`/api/stacks/${encodeURIComponent(name)}/${action}` + this.agentQuery(agt));
-        if (result && result.success) {
-            this.showToast(`Stack ${action} OK`, "success");
-        } else {
-            const err = result && result.error ? result.error : "";
-            this.showToast(`Échec ${action} stack: ${err}`, "error");
+        const labels = {start: 'Démarrer', stop: 'Arrêter', restart: 'Redémarrer', update: 'Mettre à jour', deploy: 'Déployer'};
+        this._openActivity(`${labels[action] || action} — ${name}`);
+        try {
+            const result = await this.apiPost(`/api/stacks/${encodeURIComponent(name)}/${action}` + this.agentQuery(agt));
+            const success = result && result.success;
+            const output = result ? (result.output || result.error || JSON.stringify(result)) : "Pas de réponse";
+            this._finishActivity(success, output);
+            if (success) this.showToast(`Stack ${action} OK`, "success");
+            else this.showToast(`Échec ${action}: ${result?.error || ''}`, "error");
+        } catch(e) {
+            this._finishActivity(false, e.message);
+            this.showToast("Erreur: " + e.message, "error");
         }
         this.refreshStacks();
     },
@@ -3496,6 +3560,14 @@ const DockyApp = {
             });
         }
 
+        // Activity modal backdrop click
+        const activityModal = document.getElementById("activity-modal");
+        if (activityModal) {
+            activityModal.addEventListener("click", (e) => {
+                if (e.target === activityModal) this.closeActivity();
+            });
+        }
+
         // Enter key shortcuts in modal inputs
         const newNameInput = document.getElementById("new-stack-name");
         if (newNameInput) {
@@ -3527,6 +3599,7 @@ const DockyApp = {
                 this.closePermsModal();
                 this.closeSoulEditor();
                 this.closeContainerEdit();
+                this.closeActivity();
                 this._onUnsavedCancel();
             }
         });
