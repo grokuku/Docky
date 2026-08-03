@@ -338,6 +338,19 @@ async def update_container_route(request: Request, container_id: str):
     return result
 
 
+@router.post("/containers/{container_id}/update-image")
+async def update_container_image_route(request: Request, container_id: str):
+    """Pull the latest image for a container and recreate it.
+
+    This is the dedicated "update available" action (the ⬆ button), distinct
+    from ``POST /update`` which applies an edited spec (JSON body required).
+    """
+    auth_err = require_api_key(request)
+    if auth_err:
+        return auth_err
+    return await docker_manager.update_container_image(container_id)
+
+
 # ---------------------------------------------------------------------------
 # Stacks
 # ---------------------------------------------------------------------------

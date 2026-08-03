@@ -35,6 +35,13 @@ const DockyApp = {
 
     _pendingFetches: {},  // containerId -> true/false; 'update-'+id for update checks
 
+    // Update indicators
+    _updateAvailableCount: 0,     // nombre de containers avec une mise à jour dispo
+    _versionMismatches: [],       // liste des agents avec version désynchronisée
+    _prevMismatchCount: 0,        // dernier nombre de mismatches (pour éviter le spam de toasts)
+    _lastVersionCheck: null,      // timestamp du dernier check de versions (ms)
+    _versionCheckInterval: null,  // intervalle de check des versions (1h)
+
     // WebSockets
     logsWs: null,
     logsStreamMode: false,
@@ -159,20 +166,53 @@ const DockyApp = {
         const data = await this.apiFetch("/api/version-check");
         if (data === null) return;
         const mismatches = data.mismatches || [];
+        this._versionMismatches = mismatches;
+        this._lastVersionCheck = Date.now();
         const badge = document.getElementById("version-mismatch-badge");
+        const prev = this._prevMismatchCount || 0;
         if (mismatches.length > 0) {
-            const msg = mismatches.map(
-                m => `${m.agent}: ${m.agent_version} (orchestrateur: ${m.orchestrator_version})`
-            ).join("; ");
-            this.showToast("⚠️ Version mismatch: " + msg, "warning");
+            // Toast uniquement si de nouveaux mismatches sont détectés (évite le spam)
+            if (mismatches.length > prev) {
+                const msg = mismatches.map(
+                    m => `${m.agent}: ${m.agent_version} (orchestrateur: ${m.orchestrator_version})`
+                ).join("; ");
+                this.showToast("⚠️ Version mismatch: " + msg, "warning");
+            }
+            this._prevMismatchCount = mismatches.length;
             if (badge) {
                 badge.textContent = "⚠️ " + mismatches.length + " mismatch(s)";
                 badge.classList.remove("hidden");
             }
         } else {
+            this._prevMismatchCount = 0;
             if (badge) badge.classList.add("hidden");
         }
     },
+
+    _openVersionMismatchModal() {
+        const modal = document.getElementById("version-mismatch-modal");
+        if (!modal) return;
+        const body = document.getElementById("version-mismatch-body");
+        // Build list of mismatched agents with versions
+        let html = '';
+        for (const m of this._versionMismatches || []) {
+            html += '<div class="version-mismatch-item">';
+            html += '<span class="version-agent">' + this.escapeHtml(m.agent) + '</span>';
+            html += '<span class="version-detail">' + this.escapeHtml(m.agent_version) + ' vs ' + this.escapeHtml(m.orchestrator_version) + '</span>';
+            html += '</div>';
+        }
+        if (!html) {
+            html = '<p class="placeholder-hint">Aucune désynchronisation détectée.</p>';
+        }
+        body.innerHTML = html;
+        modal.classList.remove("hidden");
+    },
+
+    closeVersionMismatch() {
+        const modal = document.getElementById("version-mismatch-modal");
+        if (modal) modal.classList.add("hidden");
+    },
+
 
     async loadAgents() {
         const data = await this.apiFetch("/api/agents");
@@ -234,6 +274,7 @@ const DockyApp = {
         if (el('stats-stacks')) el('stats-stacks').textContent = stacks.length;
         if (el('stats-containers')) el('stats-containers').textContent = containers.length;
         if (el('stats-running')) el('stats-running').textContent = containers.filter(c => c.status === 'running').length;
+        if (el('stats-updates')) el('stats-updates').textContent = this._updateAvailableCount || 0;
     },
 
     toggleAgentFilter(name) {
@@ -334,6 +375,7 @@ const DockyApp = {
     renderStacks() {
         const container = document.getElementById("dashboard-content");
         if (!container) return;
+        this._updateAvailableCount = 0;
 
         if (this.stacks.length === 0) {
             container.innerHTML = `
@@ -513,7 +555,7 @@ const DockyApp = {
                     </div>
                     <div class="container-extra">
                         ${ports ? `<span class="meta-badge meta-ports">${this.icon('cable')} ${this.escapeHtml(ports)}</span>` : ""}
-                        <button class="update-badge hidden" id="update-${this.escapeHtml(c.id)}" onclick="DockyApp.containerAction('${this.escapeHtml(c.id)}', 'update', '${agt}')" title="Mettre à jour">${this.icon('arrow-up')} Update dispo</button>
+                        <button class="update-badge hidden" id="update-${this.escapeHtml(c.id)}" onclick="DockyApp.containerAction('${this.escapeHtml(c.id)}', 'update-image', '${agt}')" title="Mettre à jour">${this.icon('arrow-up')} Update dispo</button>
                     </div>
                     <div class="container-actions">
                         <button class="icon-btn btn-start" title="Start" onclick="DockyApp.containerAction('${this.escapeHtml(c.id)}', 'start', '${agt}')">${this.icon('play')}</button>
@@ -521,7 +563,7 @@ const DockyApp = {
                         <button class="icon-btn btn-restart" title="Restart" onclick="DockyApp.containerAction('${this.escapeHtml(c.id)}', 'restart', '${agt}')">${this.icon('refresh-cw')}</button>
                         <button class="icon-btn btn-logs" title="Logs" onclick="DockyApp.openLogs('${this.escapeHtml(c.id)}', '${name}', '${agt}')">${this.icon('clipboard-list')}</button>
                         <button class="icon-btn btn-console" title="Console" onclick="DockyApp.openConsole('${this.escapeHtml(c.id)}', '${name}', '${agt}')">${this.icon('terminal')}</button>
-                        <button class="icon-btn btn-update" title="Update" onclick="DockyApp.containerAction('${this.escapeHtml(c.id)}', 'update', '${agt}')">${this.icon('arrow-up')}</button>
+                        <button class="icon-btn btn-update" title="Update" onclick="DockyApp.containerAction('${this.escapeHtml(c.id)}', 'update-image', '${agt}')">${this.icon('arrow-up')}</button>
                     </div>
                 </div>`;
         }
@@ -548,6 +590,7 @@ const DockyApp = {
     renderGridDashboard() {
         const container = document.getElementById("dashboard-content");
         if (!container) return;
+        this._updateAvailableCount = 0;
         
         if (this.stacks.length === 0) {
             container.innerHTML = '<div class="placeholder"><p>📭 Aucune stack trouvée</p></div>';
@@ -767,6 +810,7 @@ const DockyApp = {
     renderTableDashboard() {
         const container = document.getElementById("dashboard-content");
         if (!container) return;
+        this._updateAvailableCount = 0;
 
         if (this.stacks.length === 0) {
             container.innerHTML = '<div class="placeholder"><p>📭 Aucune stack trouvée</p></div>';
@@ -886,7 +930,9 @@ const DockyApp = {
 
         return '<div class="table-container-row" data-id="' + escapedId + '" data-stack="' + escapedName + '" data-agent="' + this.escapeHtml(agent || '') + '" style="border-left-color:' + borderColor + '" onclick="event.stopPropagation(); DockyApp.selectContainerInGrid(\'' + escapedId + '\', \'' + escapedName + '\', \'' + this.escapeHtml(agent || '') + '\')" ondblclick="event.stopPropagation(); DockyApp.openContainerEdit(\'' + escapedId + '\', \'' + escapedName + '\', \'' + this.escapeHtml(agent || '') + '\')">'
             + '<div class="table-row-status">' + statusDot + '</div>'
-            + '<div class="table-row-name" title="' + name + '">' + name + '</div>'
+            + '<div class="table-row-name" title="' + name + '">' + name
+            + '<span id="update-' + escapedId + '" class="update-badge hidden" title="Mise à jour disponible" onclick="event.stopPropagation();DockyApp.containerAction(\'' + escapedId + '\', \'update-image\', \'' + agt + '\')">' + this.icon('arrow-up') + ' Update</span>'
+            + '</div>'
             + '<div class="table-row-image" title="' + image + '">' + this.icon('package') + ' ' + image + '</div>'
             + '<div class="table-row-resources">'
             + '<div class="table-resource"><span class="resource-label">CPU</span><div class="progress-bar"><div class="progress-fill" id="stats-cpu-' + escapedId + '" style="width:0%"></div></div><span class="resource-value" id="stats-cpu-val-' + escapedId + '">—</span></div>'
@@ -899,7 +945,7 @@ const DockyApp = {
             + '<button class="grid-icon-btn btn-restart" title="Restart" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'restart\', \'' + agt + '\')">' + this.icon('refresh-cw') + '</button>'
             + '<button class="grid-icon-btn btn-logs" title="Logs" onclick="DockyApp.openLogs(\'' + escapedId + '\', \'' + name + '\', \'' + agt + '\')">' + this.icon('clipboard-list') + '</button>'
             + '<button class="grid-icon-btn btn-console" title="Console" onclick="DockyApp.openConsole(\'' + escapedId + '\', \'' + name + '\', \'' + agt + '\')">' + this.icon('terminal') + '</button>'
-            + '<button class="grid-icon-btn btn-update" title="Update" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'update\', \'' + agt + '\')">' + this.icon('arrow-up') + '</button>'
+            + '<button class="grid-icon-btn btn-update" title="Update" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'update-image\', \'' + agt + '\')">' + this.icon('arrow-up') + '</button>'
             + '</div></div>';
     },
 
@@ -942,14 +988,14 @@ const DockyApp = {
             + '<div class="grid-card-top"><span class="grid-card-name" title="' + name + '">' + name + '</span>' + statusDot + '</div>'
             + '<div class="grid-card-image" title="' + image + '">' + this.icon('package') + ' ' + image + '</div>'
             + '<div class="grid-card-resources" id="resources-' + escapedId + '"><div class="resource-line"><span class="resource-label">CPU</span><div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div><span class="resource-value">—</span></div><div class="resource-line"><span class="resource-label">RAM</span><div class="progress-bar"><div class="progress-fill ram" style="width:0%"></div></div><span class="resource-value">—</span></div></div>'
-            + '<div class="grid-card-extra">' + portsBadge + '<button class="update-badge hidden" id="update-' + escapedId + '" onclick="event.stopPropagation();DockyApp.containerAction(\'' + escapedId + '\', \'update\', \'' + agt + '\')" title="Mettre à jour">' + this.icon('arrow-up') + '</button></div>'
+            + '<div class="grid-card-extra">' + portsBadge + '<button class="update-badge hidden" id="update-' + escapedId + '" onclick="event.stopPropagation();DockyApp.containerAction(\'' + escapedId + '\', \'update-image\', \'' + agt + '\')" title="Mettre à jour">' + this.icon('arrow-up') + '</button></div>'
             + '<div class="grid-card-actions" onclick="event.stopPropagation()">'
             + '<button class="grid-icon-btn btn-start" title="Start" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'start\', \'' + agt + '\')">' + this.icon('play') + '</button>'
             + '<button class="grid-icon-btn btn-stop" title="Stop" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'stop\', \'' + agt + '\')">' + this.icon('square') + '</button>'
             + '<button class="grid-icon-btn btn-restart" title="Restart" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'restart\', \'' + agt + '\')">' + this.icon('refresh-cw') + '</button>'
             + '<button class="grid-icon-btn btn-logs" title="Logs" onclick="DockyApp.openLogs(\'' + escapedId + '\', \'' + name + '\', \'' + agt + '\')">' + this.icon('clipboard-list') + '</button>'
             + '<button class="grid-icon-btn btn-console" title="Console" onclick="DockyApp.openConsole(\'' + escapedId + '\', \'' + name + '\', \'' + agt + '\')">' + this.icon('terminal') + '</button>'
-            + '<button class="grid-icon-btn btn-update" title="Update" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'update\', \'' + agt + '\')">' + this.icon('arrow-up') + '</button>'
+            + '<button class="grid-icon-btn btn-update" title="Update" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'update-image\', \'' + agt + '\')">' + this.icon('arrow-up') + '</button>'
             + '</div></div>';
     },
 
@@ -1266,7 +1312,7 @@ const DockyApp = {
     // -------------------------------------------------------
 
     async containerAction(id, action, agent) {
-        const labels = {start: 'Démarrer', stop: 'Arrêter', restart: 'Redémarrer', update: 'Mettre à jour'};
+        const labels = {start: 'Démarrer', stop: 'Arrêter', restart: 'Redémarrer', update: 'Mettre à jour', 'update-image': 'Mettre à jour'};
         this._openActivity(`${labels[action] || action} — container`);
         try {
             const result = await this.apiPost(`/api/containers/${id}/${action}` + this.agentQuery(agent));
@@ -1318,7 +1364,15 @@ const DockyApp = {
             const data = await resp.json();
             if (data && data.update_available) {
                 const badge = document.getElementById('update-' + containerId);
-                if (badge) badge.classList.remove('hidden');
+                if (badge) {
+                    badge.classList.remove('hidden');
+                    // Tooltip avec versions si disponibles
+                    if (data.local_tag && data.remote_tag) {
+                        badge.title = data.local_tag + ' → ' + data.remote_tag;
+                    }
+                    this._updateAvailableCount = (this._updateAvailableCount || 0) + 1;
+                    this.updateStatsBar();
+                }
             }
         } catch (e) {
             // Ignorer les erreurs (réseau, annulation…)
@@ -3465,6 +3519,8 @@ const DockyApp = {
 
         this.loadAgents();
         this.checkVersions();
+        // Check périodique des versions toutes les heures (3600s)
+        this._versionCheckInterval = setInterval(() => this.checkVersions(), 3600000);
         this.startAgentsRefresh();
         this.loadStacksMeta();
         this.refreshStacks();
@@ -3483,6 +3539,10 @@ const DockyApp = {
             } else {
                 this.startHeartbeat();
                 this.refreshStacks();  // Refresh au retour
+                // Re-check des versions si > 5 min depuis le dernier check
+                if (!this._lastVersionCheck || (Date.now() - this._lastVersionCheck) > 5 * 60 * 1000) {
+                    this.checkVersions();
+                }
             }
         });
 
@@ -3568,6 +3628,14 @@ const DockyApp = {
             });
         }
 
+        // Version mismatch modal backdrop click
+        const versionMismatchModal = document.getElementById("version-mismatch-modal");
+        if (versionMismatchModal) {
+            versionMismatchModal.addEventListener("click", (e) => {
+                if (e.target === versionMismatchModal) this.closeVersionMismatch();
+            });
+        }
+
         // Enter key shortcuts in modal inputs
         const newNameInput = document.getElementById("new-stack-name");
         if (newNameInput) {
@@ -3600,6 +3668,7 @@ const DockyApp = {
                 this.closeSoulEditor();
                 this.closeContainerEdit();
                 this.closeActivity();
+                this.closeVersionMismatch();
                 this._onUnsavedCancel();
             }
         });

@@ -759,6 +759,22 @@ async def api_update_container(
     return err if err is not None else result
 
 
+@router.post("/containers/{container_id}/update-image")
+async def api_update_container_image(
+    request: Request, container_id: str, agent: str = Query(...)
+):
+    """Pull the latest image for a container and recreate it (⬆ button)."""
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    result = await agent_manager.update_container_image(agent_name, container_id)
+    err = _check_agent_error(result)
+    return err if err is not None else result
+
+
 # ---------------------------------------------------------------------------
 # Logs
 # ---------------------------------------------------------------------------

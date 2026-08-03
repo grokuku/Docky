@@ -311,6 +311,16 @@ class AgentManager:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    async def update_container_image(self, agent_name: str, container_id: str) -> Dict[str, Any]:
+        """Pull the latest image and recreate a container on an agent."""
+        try:
+            return await self._request(
+                agent_name, "POST", f"/agent/containers/{container_id}/update-image",
+                timeout=300,
+            )
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     # ------------------------------------------------------------------
     # Stacks
     # ------------------------------------------------------------------

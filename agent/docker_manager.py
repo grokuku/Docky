@@ -788,7 +788,14 @@ async def _run_compose(stack_name: str, command: str, timeout: int = 300) -> Dic
         stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
         stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
         if proc.returncode == 0:
-            return {"success": True, "output": stdout, "command": full_cmd}
+            # `docker compose` writes its progress / status messages to stderr
+            # (not stdout). Merge stderr into the output on success so that
+            # update / deploy / up commands return visible output instead of
+            # an empty string.
+            combined = stdout
+            if stderr:
+                combined = (combined + "\n" + stderr) if combined else stderr
+            return {"success": True, "output": combined, "command": full_cmd}
         else:
             return {"success": False, "error": stderr or stdout, "command": full_cmd}
     except asyncio.TimeoutError:
@@ -1063,6 +1070,14 @@ async def _recreate_container(c, container_id: str, spec: Dict, client, attrs: D
         # Labels
         labels_dict = {l["key"]: l["value"] for l in spec.get("labels", []) if l.get("key")}
 
+        # Networks (preserve existing attachments on recreate)
+        network_kwargs = {}
+        networks = [n.get("name") for n in spec.get("networks", []) if n.get("name")]
+        if len(networks) == 1:
+            network_kwargs["network"] = networks[0]
+        elif len(networks) > 1:
+            network_kwargs["networks"] = networks
+
         # Stop + backup name
         await asyncio.to_thread(c.stop, timeout=10)
         await asyncio.to_thread(c.rename, f"{old_name}_backup")
@@ -1080,6 +1095,7 @@ async def _recreate_container(c, container_id: str, spec: Dict, client, attrs: D
             environment=env_list or None,
             labels=labels_dict or None,
             remove=False,
+            **network_kwargs,
         )
 
         # Remove old container
@@ -1097,6 +1113,43 @@ async def _recreate_container(c, container_id: str, spec: Dict, client, attrs: D
         except Exception:
             pass
         return {"success": False, "error": str(e)}
+
+
+async def update_container_image(container_id: str) -> Dict[str, Any]:
+    """Pull the latest image for a container and recreate it.
+
+    - **Stack container** (Compose project): runs ``docker compose up -d`` on
+      the project, which pulls the new image and recreates the service.
+    - **Standalone container**: pulls the image, then recreates the container
+      with its current configuration (ports, volumes, env, networks, labels).
+    """
+    try:
+        client = get_docker_client()
+        c = client.containers.get(container_id)
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+    attrs = c.attrs
+    project = (attrs.get("Config", {}).get("Labels") or {}).get("com.docker.compose.project", "")
+    if project:
+        # Compose stack → ``up -d`` pulls the new image and recreates.
+        return await compose_up(project)
+
+    image_name = (attrs.get("Config", {}).get("Image", "") or "").strip()
+    if not image_name:
+        return {"success": False, "error": "No image configured for this container"}
+
+    # 1. Pull the new image
+    try:
+        await asyncio.to_thread(client.images.pull, image_name)
+    except Exception as e:
+        return {"success": False, "error": f"Image pull failed: {e}"}
+
+    # 2. Recreate the container with its current configuration
+    spec = _get_container_full_spec(container_id)
+    if spec is None:
+        return {"success": False, "error": "Container not found after pull"}
+    return await _recreate_container(c, container_id, spec, client, attrs)
 
 
 async def update_stack(name: str) -> Dict[str, Any]:

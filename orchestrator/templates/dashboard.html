@@ -40,9 +40,11 @@
             <span class="stats-item"><span id="stats-containers">0</span> containers</span>
             <span class="stats-sep">·</span>
             <span class="stats-item stats-running"><span id="stats-running">0</span> running</span>
+            <span class="stats-sep">·</span>
+            <span class="stats-item stats-updates"><span id="stats-updates">0</span> updates</span>
         </div>
         <div class="topbar-right">
-            <span id="version-mismatch-badge" class="version-mismatch-badge hidden"></span>
+            <span id="version-mismatch-badge" class="version-mismatch-badge hidden" onclick="DockyApp._openVersionMismatchModal()" style="cursor:pointer;" title="Versions désynchronisées — cliquer pour le détail">⚠ Mismatch</span>
             <button class="btn btn-ghost btn-sm" id="ports-btn" onclick="DockyApp.togglePorts()">🔌 Ports</button>
             <button id="chat-toggle" class="topbar-btn active" title="Afficher/Masquer le chat" onclick="DockyApp.toggleChat()"><i data-lucide="message-circle"></i></button>
             <span class="topbar-user">👤 {{ username }}</span>
@@ -380,6 +382,20 @@
             </div>
             <div class="modal-footer">
                 <button class="btn btn-ghost" onclick="DockyApp.closeActivity()">Fermer</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Version Mismatch Modal -->
+    <div id="version-mismatch-modal" class="modal hidden">
+        <div class="modal-content modal-small">
+            <div class="modal-header">
+                <h3>⚠️ Versions désynchronisées</h3>
+                <button class="btn btn-ghost btn-sm" onclick="DockyApp.closeVersionMismatch()">✕</button>
+            </div>
+            <div class="modal-body modal-body-pad" id="version-mismatch-body"></div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" onclick="DockyApp.closeVersionMismatch()">Fermer</button>
             </div>
         </div>
     </div>
