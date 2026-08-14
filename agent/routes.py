@@ -427,7 +427,7 @@ async def create_stack(request: Request):
     if not name:
         return JSONResponse(status_code=400, content={"error": "name is required"})
     try:
-        result = docker_manager.create_stack(name, compose, env)
+        result = await asyncio.to_thread(docker_manager.create_stack, name, compose, env)
         return result
     except FileExistsError:
         return JSONResponse(status_code=409, content={"error": "Stack already exists"})
@@ -604,7 +604,7 @@ async def save_stack_file(request: Request, name: str, filename: str):
     body = await request.body()
     content = body.decode("utf-8")
     try:
-        docker_manager.save_stack_file(name, filename, content)
+        await asyncio.to_thread(docker_manager.save_stack_file, name, filename, content)
         return {"success": True, "name": filename}
     except FileNotFoundError:
         return JSONResponse(status_code=404, content={"error": "Stack not found"})
@@ -745,19 +745,33 @@ async def stream_docker_events(websocket: WebSocket):
     loop = asyncio.get_running_loop()
     queue: asyncio.Queue = asyncio.Queue(maxsize=100)
 
+    def _enqueue(item):
+        try:
+            queue.put_nowait(item)
+        except asyncio.QueueFull:
+            pass  # drop the event if the consumer cannot keep up
+
+    def _send_sentinel():
+        while True:
+            try:
+                queue.put_nowait(None)
+                return
+            except asyncio.QueueFull:
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    continue
+
     def _producer():
-        """Run in a daemon thread: push Docker events into the queue."""
+        """Run in a daemon thread: schedule Docker events onto the loop queue."""
         try:
             for event in docker_manager.watch_docker_events():
                 if isinstance(event, dict):
-                    fut = asyncio.run_coroutine_threadsafe(
-                        queue.put(event), loop
-                    )
-                    fut.result(timeout=0.1)
+                    loop.call_soon_threadsafe(_enqueue, event)
         except Exception:
-            asyncio.run_coroutine_threadsafe(
-                queue.put(None), loop
-            ).result()
+            logger.exception("Docker events producer failed")
+        finally:
+            loop.call_soon_threadsafe(_send_sentinel)
 
     thread = threading.Thread(target=_producer, daemon=True)
     thread.start()

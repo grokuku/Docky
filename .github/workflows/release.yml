@@ -56,7 +56,7 @@ jobs:
           push: true
           build-args: |
             GIT_COMMIT=${{ steps.vars.outputs.sha_short }}
-            VERSION=${{ env.VERSION }}
+            VERSION=${{ steps.version.outputs.version }}
           tags: |
             ${{ env.ORCH_IMG }}:${{ steps.version.outputs.version }}
             ${{ env.ORCH_IMG }}:latest
@@ -69,7 +69,7 @@ jobs:
           push: true
           build-args: |
             GIT_COMMIT=${{ steps.vars.outputs.sha_short }}
-            VERSION=${{ env.VERSION }}
+            VERSION=${{ steps.version.outputs.version }}
           tags: |
             ${{ env.AGENT_IMG }}:${{ steps.version.outputs.version }}
             ${{ env.AGENT_IMG }}:latest

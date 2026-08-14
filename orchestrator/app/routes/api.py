@@ -24,7 +24,7 @@ from app.auth.router import COOKIE_NAME
 from app.auth.jwt_utils import verify_token
 from app.agent_manager.client import agent_manager
 import bcrypt
-from app.config import load_settings, save_settings, load_users, save_users
+from app.config import get_base_dir, load_settings, save_settings, load_users, save_users
 from app.llm.client import (
     LLMClient,
     run_chat,
@@ -40,6 +40,24 @@ router = APIRouter(prefix="/api")
 
 # Module-level list of WebSocket clients listening for agent events
 _events_clients: list = []
+
+def _find_version_path() -> Path:
+    """Return the path to version.txt for the orchestrator service.
+
+    In the Docker image ``get_base_dir()`` points at the service root
+    (``/app``). In a source checkout, ``version.txt`` sits one level above
+    the orchestrator package (the repository root). Prefer whichever file
+    actually exists.
+    """
+    base = get_base_dir()
+    candidates = (base / "version.txt", base.parent / "version.txt")
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+_VERSION_PATH = _find_version_path()
 
 
 # ---------------------------------------------------------------------------
@@ -522,7 +540,7 @@ async def api_version(request: Request):
     if username is None:
         return _unauthorized()
     # Look for version.txt relative to the app file
-    version_path = Path(__file__).parent.parent.parent.parent.parent / "version.txt"
+    version_path = _VERSION_PATH
     try:
         content = version_path.read_text().strip()
         return {"version": content}
@@ -544,7 +562,7 @@ async def api_version_check(request: Request):
     # Read orchestrator version
     orch_version = "unknown"
     try:
-        orch_version = (Path(__file__).parent.parent.parent.parent.parent / 'version.txt').read_text().strip()
+        orch_version = _VERSION_PATH.read_text().strip()
     except Exception:
         pass
 
@@ -600,10 +618,26 @@ async def api_update_git_history_settings(request: Request):
         data = await request.json()
     except Exception:
         return JSONResponse(status_code=400, content={"detail": "Invalid JSON"})
-    from app.config import load_settings, save_settings
+
     settings = load_settings()
-    settings['history_retention'] = {'max_versions': data.get('max_versions', 50)}
+    try:
+        max_versions = int(data.get('max_versions', 50))
+        if max_versions <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "max_versions must be a positive integer"},
+        )
+
+    settings['history_retention'] = {'max_versions': max_versions}
     save_settings(settings)
+    # Propagate the new retention value to every configured agent so the
+    # agent-side git cleanup uses the same setting.
+    await asyncio.gather(*[
+        agent_manager.update_git_history_settings(name, {'max_versions': max_versions})
+        for name in agent_manager.agents
+    ], return_exceptions=True)
     return {"success": True}
 
 
@@ -632,7 +666,6 @@ async def api_update_stacks_meta(request: Request):
         data = await request.json()
     except Exception:
         return JSONResponse(status_code=400, content={"detail": "Invalid JSON"})
-    from app.config import load_settings, save_settings
     settings = load_settings()
     settings['stacks_meta'] = data
     save_settings(settings)

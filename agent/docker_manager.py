@@ -911,8 +911,20 @@ async def _update_compose_container(project: str, container_id: str, spec: Dict,
         return {"success": False, "error": "docker-compose.yml not found"}
 
     import yaml
-    with open(compose_path) as f:
-        compose = yaml.safe_load(f)
+    raw_compose = compose_path.read_text(encoding="utf-8")
+
+    # Preserve the leading Docky metadata/comment block (e.g. # @name,
+    # # @category). A plain ``yaml.safe_load`` + ``yaml.dump`` round-trip
+    # would otherwise strip every comment from the file.
+    header_lines: list[str] = []
+    for line in raw_compose.splitlines():
+        if line.strip().startswith("#") or line.strip() == "":
+            header_lines.append(line)
+        else:
+            break
+    header = "\n".join(header_lines)
+
+    compose = yaml.safe_load(raw_compose)
 
     # Find service name from container labels
     c = client.containers.get(container_id)
@@ -989,8 +1001,11 @@ async def _update_compose_container(project: str, container_id: str, spec: Dict,
     elif "restart" in service:
         del service["restart"]
 
-    # Write back
-    with open(compose_path, "w") as f:
+    # Write back, re-injecting the leading comment/metadata block so the
+    # Docky metadata comments survive the round-trip.
+    with open(compose_path, "w", encoding="utf-8") as f:
+        if header:
+            f.write(header + "\n")
         yaml.dump(compose, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
     # Redeploy
@@ -1335,14 +1350,18 @@ async def delete_stack(name: str) -> Dict[str, Any]:
     except Exception as e:
         logger.warning("compose_down failed during stack deletion of '%s': %s", name, e)
 
-    # 2. Remove the stack directory
-    shutil.rmtree(base)
+    # 2. Remove the stack directory (offload blocking I/O to a thread)
+    await asyncio.to_thread(shutil.rmtree, base)
 
-    # 3. Commit the deletion in git history
+    # 3. Commit the deletion in git history (offload subprocess calls too)
     try:
         stacks_dir = Path(get_data_dir()) / 'stacks'
-        subprocess.run(["git", "add", "-A", str(stacks_dir)], cwd=str(stacks_dir), capture_output=True)
-        subprocess.run(["git", "commit", "-m", f"Suppression de {name}", "--allow-empty"], cwd=str(stacks_dir), capture_output=True)
+        await asyncio.to_thread(
+            subprocess.run, ["git", "add", "-A", str(stacks_dir)], cwd=str(stacks_dir), capture_output=True
+        )
+        await asyncio.to_thread(
+            subprocess.run, ["git", "commit", "-m", f"Suppression de {name}", "--allow-empty"], cwd=str(stacks_dir), capture_output=True
+        )
     except Exception:
         pass
 

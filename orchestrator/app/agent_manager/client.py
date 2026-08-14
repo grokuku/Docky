@@ -20,15 +20,18 @@ import asyncio
 import json
 import logging
 import os
-import threading
 import time
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
 import httpx
 
-from app.config import load_settings
+from app.config import get_data_dir, load_settings
 
 logger = logging.getLogger(__name__)
+
+# Per-agent cache entries older than this many seconds are refreshed from the
+# network when rebuilding the aggregate cache.
+_AGENT_CACHE_TTL = 60.0
 
 
 class AgentManager:
@@ -43,7 +46,7 @@ class AgentManager:
             "stacks": {"data": None, "timestamp": 0, "pending": False},
             "ports": {"data": None, "timestamp": 0, "pending": False},
         }
-        self._cache_path = "/data/cache.json"
+        self._cache_path = str(get_data_dir() / "cache.json")
         self._load_cache()
         self._bg_task = None
         self._ws_tasks: Dict[str, asyncio.Task] = {}
@@ -524,6 +527,15 @@ class AgentManager:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    async def update_git_history_settings(self, agent_name: str, settings: Dict[str, Any]) -> Dict[str, Any]:
+        """Propagate git/history retention settings to an agent."""
+        try:
+            return await self._request(
+                agent_name, "PUT", "/agent/settings/git-history", json=settings
+            )
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     # ------------------------------------------------------------------
     # Ports
     # ------------------------------------------------------------------
@@ -710,14 +722,20 @@ class AgentManager:
             if agent_name in self._event_debounce_timers:
                 self._event_debounce_timers[agent_name].cancel()
 
+            current_task: asyncio.Task | None = None
+
             async def _debounced():
-                await asyncio.sleep(2)
                 try:
+                    await asyncio.sleep(2)
                     await self._incremental_refresh(agent_name)
                 finally:
-                    self._event_debounce_timers.pop(agent_name, None)
+                    # Only remove the entry if it still belongs to this task.
+                    # A new event may have already replaced it with a fresh task.
+                    if self._event_debounce_timers.get(agent_name) is current_task:
+                        self._event_debounce_timers.pop(agent_name, None)
 
-            self._event_debounce_timers[agent_name] = asyncio.create_task(_debounced())
+            current_task = asyncio.create_task(_debounced())
+            self._event_debounce_timers[agent_name] = current_task
 
             # Broadcast aux frontends
             try:
@@ -739,35 +757,46 @@ class AgentManager:
             logger.warning("Incremental refresh failed for '%s': %s", agent_name, e)
 
     async def _rebuild_aggregate_cache(self):
-        """Rebuild aggregate cache from individual agent caches."""
+        """Rebuild aggregate cache from per-agent caches when possible.
+
+        Falling back to the network only for agents whose cache is missing or
+        stale avoids an extra N+1 request burst after every incremental refresh.
+        """
         all_containers = []
         all_stacks = []
         all_ports = []
 
         for name in self.agents:
-            try:
-                c = await self.get_containers(name)
-                if isinstance(c, list):
-                    for container in c:
-                        if isinstance(container, dict):
-                            container["agent_name"] = name
-                        all_containers.append(container)
+            cached = self.cache.get(name)
+            if cached and (time.time() - cached.get("timestamp", 0)) < _AGENT_CACHE_TTL:
+                c = cached.get("containers", [])
+                s = cached.get("stacks", [])
+                p = cached.get("ports", [])
+            else:
+                c, s, p = await asyncio.gather(
+                    self.get_containers(name),
+                    self.get_stacks(name),
+                    self.get_ports(name),
+                    return_exceptions=True,
+                )
+                c = c if isinstance(c, list) else []
+                s = s if isinstance(s, list) else []
+                p = p if isinstance(p, list) else []
 
-                s = await self.get_stacks(name)
-                if isinstance(s, list):
-                    for stack in s:
-                        if isinstance(stack, dict):
-                            stack["agent_name"] = name
-                        all_stacks.append(stack)
+            for container in c:
+                if isinstance(container, dict):
+                    container["agent_name"] = name
+                    all_containers.append(container)
 
-                p = await self.get_ports(name)
-                if isinstance(p, list):
-                    for port in p:
-                        if isinstance(port, dict):
-                            port["agent_name"] = name
-                        all_ports.append(port)
-            except Exception:
-                pass
+            for stack in s:
+                if isinstance(stack, dict):
+                    stack["agent_name"] = name
+                    all_stacks.append(stack)
+
+            for port in p:
+                if isinstance(port, dict):
+                    port["agent_name"] = name
+                    all_ports.append(port)
 
         self._cache["containers"]["data"] = all_containers
         self._cache["containers"]["timestamp"] = time.time()
