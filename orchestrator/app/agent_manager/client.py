@@ -634,12 +634,21 @@ class AgentManager:
                 for name in list(self.agents.keys()):
                     if self.agents.get(name, {}).get("status") == "online":
                         try:
-                            containers = await self.get_containers(name)
-                            if not isinstance(containers, list):
-                                await self._incremental_refresh(name)
+                            await self._incremental_refresh(name)
                         except Exception:
                             pass
         asyncio.create_task(_sanity_loop())
+
+        # 4. Filet de sécurité: refresh périodique toutes les 60s
+        async def _periodic_refresh():
+            while True:
+                await asyncio.sleep(60)
+                try:
+                    await self.refresh_all_caches()
+                except Exception as e:
+                    logger.warning("Periodic refresh failed: %s", e)
+
+        asyncio.create_task(_periodic_refresh())
 
     # ------------------------------------------------------------------
     # Event-driven refresh (WebSocket events from agents)
@@ -680,10 +689,10 @@ class AgentManager:
 
     async def _handle_agent_event(self, agent_name: str, raw):
         """Process a single Docker event from an agent."""
-        if isinstance(raw, bytes):
+        if isinstance(raw, (bytes, str)):
             try:
                 import json
-                raw = json.loads(raw.decode())
+                raw = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
             except Exception:
                 return
 
