@@ -65,6 +65,8 @@ const DockyApp = {
     // Sort & Group
     _sortMode: 'name-asc',   // persisted in localStorage
     _groupMode: 'none',      // persisted in localStorage
+    _searchQuery: '',        // recherche partielle par nom de container
+    _searchDebounceTimer: null,
     _statsCache: {},         // containerId -> { cpu_percent, mem_percent, mem_usage, mem_limit }
 
     // -------------------------------------------------------
@@ -265,6 +267,8 @@ const DockyApp = {
             stacks = stacks.filter(s => !this._hiddenAgents.has(s.agent_name || ''));
             containers = containers.filter(c => !this._hiddenAgents.has(c.agent_name || ''));
         }
+        // Le compteur de containers reflète aussi la recherche par nom
+        containers = this._filterContainers(containers);
 
         const el = id => document.getElementById(id);
         if (el('stats-agents')) el('stats-agents').textContent = agentsOnline;
@@ -528,8 +532,17 @@ const DockyApp = {
     },
 
     renderContainers(target, containers, stackName, agent) {
-        if (!containers || !Array.isArray(containers) || containers.length === 0) {
+        if (!containers || !Array.isArray(containers)) {
             target.innerHTML = '<div style="color: var(--text-secondary); padding: 12px;">Aucun container ou erreur de chargement</div>';
+            return;
+        }
+
+        // Filtre de recherche par nom (appliqué à la vue liste aussi)
+        containers = this._filterContainers(containers);
+        if (containers.length === 0) {
+            target.innerHTML = '<div style="color: var(--text-secondary); padding: 12px;">'
+                + (this._searchQuery ? 'Aucun container ne correspond à la recherche' : 'Aucun container ou erreur de chargement')
+                + '</div>';
             return;
         }
 
@@ -643,6 +656,10 @@ const DockyApp = {
                     }
                 }
 
+                // Filtre de recherche par nom (avant le tri)
+                containers = this._filterContainers(containers);
+                if (containers.length === 0) continue;
+
                 // Trier les containers selon le mode de tri
                 containers = this._sortContainers(containers);
                 
@@ -654,7 +671,7 @@ const DockyApp = {
         }
         
         if (stackGroups.length === 0) {
-            container.innerHTML = '<div class="placeholder"><p>🔇 Aucun agent affiché</p><p class="placeholder-hint">Active des agents via les boutons de filtre</p></div>';
+            container.innerHTML = this._emptyViewMessage();
             return;
         }
         
@@ -686,7 +703,13 @@ const DockyApp = {
             if (gridCols < maxStackCols) gridCols = maxStackCols;
         }
         
-        const cellW = cellSize, cellH = cellSize;
+        const cellW = cellSize;
+        // La hauteur de rangée doit laisser assez de place au contenu de la carte
+        // (nom, image, 2 lignes de ressources, badge ports + update, 6 boutons
+        // d'action qui peuvent passer sur 2 lignes sur les petites cartes). On
+        // garde un minimum raisonnable : les cartes utilisent min-height (hauteur
+        // auto) et ne se chevauchent plus sur les lignes suivantes.
+        const cellH = Math.max(cellSize, 172);
         
         // Flow layout boustrophedon
         // Placer tous les containers à la suite, row by row
@@ -863,6 +886,10 @@ const DockyApp = {
                     if (this._hiddenAgents.has(stackAgent)) continue;
                 }
 
+                // Filtre de recherche par nom (avant le tri)
+                containers = this._filterContainers(containers);
+                if (containers.length === 0) continue;
+
                 // Trier les containers selon le mode de tri
                 containers = this._sortContainers(containers);
 
@@ -911,7 +938,7 @@ const DockyApp = {
         }
 
         if (html === '<div class="table-dashboard">') {
-            html += '<div class="placeholder"><p>🔇 Aucun agent affiché</p></div>';
+            html += this._emptyViewMessage();
         }
 
         html += '</div>';
@@ -1000,9 +1027,20 @@ const DockyApp = {
     // Colonnes redimensionnables (mode tableau)
     // -------------------------------------------------------
 
-    _tableColWidthsKey: 'docky_table_col_widths',
-    _tableColDefaults: { name: 180, image: 160, ports: 120 },
-    _tableColMin: 70,
+    _tableColWidthsKey: 'docky_table_col_widths_pct',   // largeurs en % du conteneur
+    _legacyTableColWidthsKey: 'docky_table_col_widths', // anciennes valeurs en px (migration)
+    _tableColDefaults: { name: 25, image: 20, ports: 16 },  // en % du conteneur
+    _tableColMinPx: 70,
+
+    // Calcule la largeur de la zone de contenu de l'en-tête (référence des %).
+    // Les largeurs en % des colonnes sont relatives à cette valeur.
+    _tableContainerWidth(headerEl) {
+        if (!headerEl) return 0;
+        const style = getComputedStyle(headerEl);
+        return headerEl.clientWidth
+            - (parseFloat(style.paddingLeft) || 0)
+            - (parseFloat(style.paddingRight) || 0);
+    },
 
     _getTableColWidths() {
         try {
@@ -1011,20 +1049,57 @@ const DockyApp = {
         } catch (e) { return {}; }
     },
 
+    // Migre proprement les anciennes largeurs en px (clé historique) vers des
+    // % (nouvelle clé) en utilisant la largeur réelle du conteneur au premier
+    // rendu. La clé historique est ensuite supprimée.
+    _migrateTableColWidths(containerWidth) {
+        if (!containerWidth || containerWidth <= 0) return;
+        try {
+            const legacyRaw = localStorage.getItem(this._legacyTableColWidthsKey);
+            if (!legacyRaw) return;
+            const legacy = JSON.parse(legacyRaw);
+            const migrated = {};
+            let changed = false;
+            for (const col of Object.keys(legacy)) {
+                if (this._tableColDefaults[col] === undefined) continue;
+                const px = parseFloat(legacy[col]);
+                if (isNaN(px) || px <= 0) continue;
+                migrated[col] = Math.round((px / containerWidth) * 1000) / 10;
+                changed = true;
+            }
+            if (changed) {
+                localStorage.setItem(this._tableColWidthsKey, JSON.stringify(migrated));
+                localStorage.removeItem(this._legacyTableColWidthsKey);
+            }
+        } catch (e) { /* ignore */ }
+    },
+
     // Applique les largeurs sauvegardées via des variables CSS sur la racine du
-    // tableau (héritées par l'en-tête ET les lignes de tous les groupes).
+    // tableau (héritées par l'en-tête ET les lignes de tous les groupes). Les
+    // valeurs sont en % : elles suivent naturellement le redimensionnement de la
+    // fenêtre/du panneau. La colonne « ressources » (flex:1) absorbe le reste.
     _applyTableColWidths(root) {
+        const containerWidth = this._tableContainerWidth(root.querySelector('.table-col-header'));
+        this._migrateTableColWidths(containerWidth);
+
         const widths = this._getTableColWidths();
+        const minPct = containerWidth > 0 ? (this._tableColMinPx / containerWidth) * 100 : 0;
         for (const col of Object.keys(widths)) {
             if (this._tableColDefaults[col] === undefined) continue;
-            const w = Math.max(this._tableColMin, widths[col]);
-            root.style.setProperty('--col-' + col, w + 'px');
+            let pct = parseFloat(widths[col]);
+            if (isNaN(pct) || pct <= 0) continue;
+            // Les valeurs sauvegardées sont toujours des % du conteneur : on
+            // clamps à 100 % à l'application. La migration des anciennes valeurs
+            // px (clé legacy) est gérée par _migrateTableColWidths — toute valeur
+            // > 100 reste un % légitime et ne doit jamais être réinterprétée.
+            if (minPct > 0) pct = Math.max(minPct, pct);
+            root.style.setProperty('--col-' + col, Math.min(100, pct) + '%');
         }
     },
 
-    _saveTableColWidth(col, w) {
+    _saveTableColWidth(col, wPct) {
         const widths = this._getTableColWidths();
-        widths[col] = Math.max(this._tableColMin, w);
+        widths[col] = wPct;
         try { localStorage.setItem(this._tableColWidthsKey, JSON.stringify(widths)); } catch (e) { /* ignore */ }
     },
 
@@ -1046,18 +1121,28 @@ const DockyApp = {
 
                 const col = resizer.dataset.col;
                 if (!col) return;
+
+                // Largeur de référence (contenu de l'en-tête) au moment du
+                // mousedown : les largeurs en % sont relatives à cette valeur.
+                const containerWidth = self._tableContainerWidth(resizer.closest('.table-col-header'));
+                if (containerWidth <= 0) return;
+                const minPct = (self._tableColMinPx / containerWidth) * 100;
+
                 const startX = e.clientX;
-                const current = parseInt(getComputedStyle(root).getPropertyValue('--col-' + col), 10)
-                    || self._tableColDefaults[col] || 120;
-                let finalW = current;
+                const currentPct = parseFloat(getComputedStyle(root).getPropertyValue('--col-' + col))
+                    || self._tableColDefaults[col] || 0;
+                let finalPct = currentPct;
 
                 document.body.style.cursor = 'col-resize';
                 document.body.style.userSelect = 'none';
                 resizer.classList.add('active');
 
                 const onMove = (ev) => {
-                    finalW = Math.max(self._tableColMin, current + (ev.clientX - startX));
-                    root.style.setProperty('--col-' + col, finalW + 'px');
+                    // Convertit le déplacement (px) en % du conteneur.
+                    const currentPx = (currentPct / 100) * containerWidth;
+                    const newPx = Math.max(self._tableColMinPx, currentPx + (ev.clientX - startX));
+                    finalPct = (newPx / containerWidth) * 100;
+                    root.style.setProperty('--col-' + col, finalPct + '%');
                 };
                 const onUp = () => {
                     document.removeEventListener('mousemove', onMove);
@@ -1065,7 +1150,11 @@ const DockyApp = {
                     document.body.style.cursor = '';
                     document.body.style.userSelect = '';
                     resizer.classList.remove('active');
-                    self._saveTableColWidth(col, finalW);
+                    // Clamp à 100 % avant persistance : évite de sauvegarder une
+                    // valeur > 100 après un drag large ou un relâchement hors
+                    // fenêtre (qui serait réinterprétée comme des px au rendu).
+                    finalPct = Math.min(100, finalPct);
+                    self._saveTableColWidth(col, finalPct);
                 };
 
                 document.addEventListener('mousemove', onMove);
@@ -1105,9 +1194,9 @@ const DockyApp = {
         const statusDot = this.containerStatusDot(c.status);
         const agt = (agent || "").replace(/'/g, "\\'");
         const ports = (c.ports || []).filter(p => p.host_port).map(p => p.host_port + '→' + p.container).join(", ");
-        const portsBadge = ports ? '<span class="meta-badge meta-ports grid-card-ports">' + this.icon('cable') + ' ' + this.escapeHtml(ports) + '</span>' : '';
-        
-        return '<div class="grid-container-card" data-id="' + escapedId + '" data-stack="' + this.escapeHtml(stackName) + '" data-agent="' + this.escapeHtml(agent || '') + '" style="left:' + left + 'px;top:' + top + 'px;width:' + width + 'px;height:' + height + 'px;z-index:3;background-color:' + bgColor + ';border-color:' + borderColor + '"' 
+        const portsBadge = ports ? '<span class="meta-badge meta-ports grid-card-ports" title="' + this.escapeHtml(ports) + '">' + this.icon('cable') + ' ' + this.escapeHtml(ports) + '</span>' : '';
+
+        return '<div class="grid-container-card" data-id="' + escapedId + '" data-stack="' + this.escapeHtml(stackName) + '" data-agent="' + this.escapeHtml(agent || '') + '" style="left:' + left + 'px;top:' + top + 'px;width:' + width + 'px;min-height:' + height + 'px;z-index:3;background-color:' + bgColor + ';border-color:' + borderColor + '"'
             + ' onclick="event.stopPropagation(); DockyApp.selectContainerInGrid(\'' + escapedId + '\', \'' + this.escapeHtml(stackName) + '\', \'' + this.escapeHtml(agent || '') + '\')"'
             + ' ondblclick="event.stopPropagation(); DockyApp.openContainerEdit(\'' + escapedId + '\', \'' + this.escapeHtml(stackName) + '\', \'' + this.escapeHtml(agent || '') + '\')">'
             + '<div class="grid-card-top"><span class="grid-card-name" title="' + name + '">' + name + '</span>' + statusDot + '</div>'
@@ -2461,7 +2550,7 @@ const DockyApp = {
         let toolbarHtml = '<div class="compose-toolbar">';
         toolbarHtml += '<button class="btn btn-success btn-sm" onclick="DockyApp.saveCurrentFile()"' + (mod ? '' : ' disabled') + '>' + this.icon('hard-drive') + ' Sauvegarder</button>';
         toolbarHtml += '<button class="btn btn-info btn-sm" onclick="DockyApp.saveAndDeploy()"' + (anyMod ? '' : ' disabled') + '>' + this.icon('rocket') + ' Sauvegarder & Déployer</button>';
-        toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.openHistory()" title="Historique git">' + this.icon('clipboard-list') + '</button>';
+        toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.openHistory()" title="Historique">' + this.icon('clipboard-list') + '</button>';
         toolbarHtml += '<div class="spacer"></div>';
         toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.stackAction(\'' + _escapedName + '\', \'start\', \'' + _escapedAgent + '\')" title="Démarrer">' + this.icon('play') + '</button>';
         toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.stackAction(\'' + _escapedName + '\', \'stop\', \'' + _escapedAgent + '\')" title="Arrêter">' + this.icon('square') + '</button>';
@@ -3607,7 +3696,11 @@ const DockyApp = {
     // -------------------------------------------------------
 
     async openHistory() {
-        const name = this.selectedStack;
+        // selectedStack est la clé composite « name@agent » : il faut en extraire
+        // le nom de stack seul, sinon l'endpoint d'historique reçoit un nom
+        // inexistant et renvoie toujours une liste vide.
+        const atIdx = this.selectedStack ? this.selectedStack.lastIndexOf('@') : -1;
+        const name = atIdx > 0 ? this.selectedStack.substring(0, atIdx) : this.selectedStack;
         const agent = this.selectedStackAgent;
         if (!name || !agent) {
             this.showToast("Sélectionne d'abord une stack", "warning");
@@ -3673,7 +3766,9 @@ const DockyApp = {
     },
 
     async _previewHistory(hash) {
-        const name = this.selectedStack;
+        // selectedStack est la clé composite « name@agent » → extraire le nom seul.
+        const atIdx = this.selectedStack ? this.selectedStack.lastIndexOf('@') : -1;
+        const name = atIdx > 0 ? this.selectedStack.substring(0, atIdx) : this.selectedStack;
         const agent = this.selectedStackAgent;
         if (!name || !agent || !hash) return;
 
@@ -3701,7 +3796,9 @@ const DockyApp = {
     },
 
     async _restoreHistory(hash) {
-        const name = this.selectedStack;
+        // selectedStack est la clé composite « name@agent » → extraire le nom seul.
+        const atIdx = this.selectedStack ? this.selectedStack.lastIndexOf('@') : -1;
+        const name = atIdx > 0 ? this.selectedStack.substring(0, atIdx) : this.selectedStack;
         const agent = this.selectedStackAgent;
         if (!name || !agent || !hash) return;
 
@@ -3749,6 +3846,36 @@ const DockyApp = {
         if (this._allContainersCache && this._allContainersCache.length > 0) {
             this.renderCurrentView();
         }
+    },
+
+    // Recherche partielle (substring) insensible à la casse sur le nom.
+    // Réagit à l'input (pas seulement au submit) mais débounce le rendu pour
+    // éviter de re-fetcher les stats/updates à chaque frappe.
+    onSearchInput(value) {
+        this._searchQuery = (value || '').trim();
+        try {
+            localStorage.setItem('docky_container_search', this._searchQuery);
+        } catch (e) { /* ignore */ }
+        if (this._searchDebounceTimer) clearTimeout(this._searchDebounceTimer);
+        this._searchDebounceTimer = setTimeout(() => {
+            if (this._allContainersCache && this._allContainersCache.length > 0) {
+                this.renderCurrentView();
+            }
+            this.updateStatsBar();
+        }, 150);
+    },
+
+    _filterContainers(containers) {
+        const q = (this._searchQuery || '').toLowerCase();
+        if (!q) return containers;
+        return containers.filter(c => (c.name || '').toLowerCase().includes(q));
+    },
+
+    // Message vide selon que la recherche est active ou non.
+    _emptyViewMessage() {
+        return this._searchQuery
+            ? '<div class="placeholder"><p>🔍 Aucun container ne correspond à la recherche</p></div>'
+            : '<div class="placeholder"><p>🔇 Aucun agent affiché</p><p class="placeholder-hint">Active des agents via les boutons de filtre</p></div>';
     },
 
     _sortStacks(stacks) {
@@ -3855,11 +3982,19 @@ const DockyApp = {
             }
         } catch (e) { /* ignore */ }
 
-        // Appliquer les valeurs aux selects
+        // Restaurer la recherche par nom de container
+        try {
+            const searchSaved = localStorage.getItem('docky_container_search');
+            if (searchSaved) this._searchQuery = searchSaved;
+        } catch (e) { /* ignore */ }
+
+        // Appliquer les valeurs aux selects / input
         const sortSelect = document.getElementById('sort-select');
         if (sortSelect) sortSelect.value = this._sortMode;
         const groupSelect = document.getElementById('group-select');
         if (groupSelect) groupSelect.value = this._groupMode;
+        const searchInput = document.getElementById('container-search');
+        if (searchInput) searchInput.value = this._searchQuery;
 
         this.initResizers();
 

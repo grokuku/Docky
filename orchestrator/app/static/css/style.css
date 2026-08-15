@@ -2212,11 +2212,15 @@ body {
     position: absolute;
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 5px;
     padding: 8px 10px;
     background: var(--bg-secondary);
     border: 2px solid var(--border-color);
     border-radius: var(--radius-sm);
+    /* Hauteur auto (min-height fixé en JS via la taille de rangée) : la carte
+       grandit avec son contenu au lieu de se faire écraser/chevauche par un
+       overflow non géré. */
+    height: auto;
     overflow: hidden;
     cursor: pointer;
     user-select: none;
@@ -2254,9 +2258,12 @@ body {
 .grid-card-resources .progress-fill { height: 100%; background: var(--info); border-radius: 3px; transition: width 0.4s ease; min-width: 0; }
 .grid-card-resources .progress-fill.ram { background: var(--warning); }
 .grid-card-resources .resource-value { color: #c8c8e0; white-space: nowrap; font-size: 0.6rem; width: 50px; text-align: right; overflow: hidden; text-overflow: ellipsis; }
-.grid-card-extra { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; min-height: 16px; }
-.grid-card-ports { font-size: 0.6rem !important; padding: 1px 5px !important; }
-.grid-card-actions { display: flex; gap: 3px; justify-content: center; margin-top: auto; }
+.grid-card-extra { display: flex; align-items: center; gap: 4px; flex-wrap: nowrap; min-height: 16px; min-width: 0; }
+.grid-card-ports { font-size: 0.6rem !important; padding: 1px 5px !important; flex: 0 1 auto; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grid-card-extra .update-badge { flex-shrink: 0; }
+/* Les 6 boutons d'action passent sur 2 lignes si la carte est étroite : ils
+   restent cliquables et visibles sans déborder sur le bord de la carte. */
+.grid-card-actions { display: flex; gap: 3px; justify-content: center; flex-wrap: wrap; margin-top: auto; }
 
 /* ============================================================
    Table Dashboard — mode tableau
@@ -2303,9 +2310,11 @@ body {
     -ms-user-select: none;
     transition: background var(--transition), opacity 0.3s ease, filter 0.3s ease;
     font-size: 0.8rem;
-    /* Permet au contenu d'être scrollable horizontalement quand les colonnes
-       redimensionnées dépassent la largeur du panneau. */
-    min-width: max-content;
+    /* Largeurs de colonnes en % : la ligne épouse la largeur du panneau (100%) ;
+       si les colonnes dépassent 100% (drag large), le dépassement est scrollable
+       horizontalement via .table-stack-scroll. Les cellules sont tronquées à
+       l'ellipsis et protégées par min-width:70px (pas d'écrasement à l'étroit). */
+    width: 100%;
 }
 
 .table-container-row:hover {
@@ -2330,7 +2339,7 @@ body {
     color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    min-width: max-content;
+    width: 100%;
 }
 
 .table-col-head {
@@ -2342,25 +2351,44 @@ body {
 }
 
 .table-col-status { width: 20px; }
-.table-col-name { width: var(--col-name, 180px); }
-.table-col-image { width: var(--col-image, 160px); }
+.table-col-name { width: var(--col-name, 25%); min-width: 70px; }
+.table-col-image { width: var(--col-image, 20%); min-width: 70px; }
 .table-col-resources { flex: 1 1 auto; min-width: 0; }
-.table-col-ports { width: var(--col-ports, 120px); }
+.table-col-ports { width: var(--col-ports, 16%); min-width: 70px; }
 .table-col-actions { flex: 0 0 154px; }
 
-/* Poignée de redimensionnement au bord droit de la cellule d'en-tête */
+/* Poignée de redimensionnement au bord droit de la cellule d'en-tête.
+   DISCOVERABLE : une fine ligne verticale subtile au niveau de la séparation
+   des colonnes, surlignée avec la couleur d'accent au survol. La zone cliquable
+   (le .col-resizer lui-même, 8px de large) est élargie pour une prise en main
+   facile, sans gêner le clic/tri des en-têtes (les en-têtes de colonnes ne
+   déclenchent aucun tri au clic). */
 .col-resizer {
     position: absolute;
-    right: -6px;
-    top: 0;
-    bottom: 0;
-    width: 6px;
+    right: -5px;
+    top: 2px;
+    bottom: 2px;
+    width: 8px;
     cursor: col-resize;
     z-index: 5;
+    display: flex;
+    align-items: stretch;
+    justify-content: center;
+}
+.col-resizer::before {
+    content: '';
+    width: 2px;
+    border-radius: 1px;
+    background: rgba(255, 255, 255, 0.16);
+    transition: background 0.15s ease;
+}
+.col-resizer:hover::before,
+.col-resizer.active::before {
+    background: var(--accent);
 }
 .col-resizer:hover,
 .col-resizer.active {
-    background: rgba(255,255,255,0.15);
+    background: rgba(255, 255, 255, 0.06);
 }
 
 .table-row-status {
@@ -2372,7 +2400,8 @@ body {
 }
 
 .table-row-name {
-    width: var(--col-name, 180px);
+    width: var(--col-name, 25%);
+    min-width: 70px;
     flex-shrink: 0;
     font-weight: 600;
     color: var(--text-primary);
@@ -2382,7 +2411,8 @@ body {
 }
 
 .table-row-image {
-    width: var(--col-image, 160px);
+    width: var(--col-image, 20%);
+    min-width: 70px;
     flex-shrink: 0;
     color: #9090b0;
     font-size: 0.75rem;
@@ -2442,7 +2472,8 @@ body {
 }
 
 .table-row-ports {
-    width: var(--col-ports, 120px);
+    width: var(--col-ports, 16%);
+    min-width: 70px;
     flex-shrink: 0;
     font-size: 0.65rem;
     color: #a0a0b8;
@@ -2458,10 +2489,10 @@ body {
 }
 
 @media (max-width: 1000px) {
+    /* Colonnes masquées à l'étroit : les % restants (name) continuent de suivre
+       la largeur du panneau, cohérent avec le mode % et le drag. */
     .table-row-image, .table-col-image { display: none; }
     .table-row-ports, .table-col-ports { display: none; }
-    /* Ne pas forcer width:120px ici : cela écraserait var(--col-name, ...)
-       et rendrait le drag des colonnes inopérant à l'écran étroit. */
 }
 
 /* Stack context panel (right column) */

@@ -456,7 +456,7 @@ const SettingsApp = {
         });
         if (!data) return;
         if (data.success) {
-            this.showToast("Configuration de l'historique git sauvegardée.", "success");
+            this.showToast("Configuration de l'historique sauvegardée.", "success");
         } else {
             this.showToast(data.detail || "Erreur lors de la sauvegarde.", "error");
         }

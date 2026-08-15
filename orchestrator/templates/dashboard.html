@@ -19,6 +19,7 @@
             </div>
         </div>
         <div class="topbar-dropdowns">
+            <input type="text" id="container-search" class="search-input" placeholder="Rechercher un container…" autocomplete="off" oninput="DockyApp.onSearchInput(this.value)">
             <select id="sort-select" class="topbar-select" onchange="DockyApp.onSortChange()">
                 <option value="name-asc">Tri: A→Z</option>
                 <option value="name-desc">Tri: Z→A</option>

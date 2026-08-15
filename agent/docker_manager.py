@@ -2464,6 +2464,13 @@ async def delete_stack(name: str) -> Dict[str, Any]:
     # 3. Commit the deletion in git history (offload subprocess calls too)
     try:
         stacks_dir = Path(get_data_dir()) / 'stacks'
+        # Make sure the git repo exists before writing a commit: a fresh
+        # deployment only creates ``data/stacks/.git`` lazily on the first
+        # stack creation/save, so without this a deletion is never tracked.
+        if not (stacks_dir / '.git').exists():
+            subprocess.run(["git", "init"], cwd=str(stacks_dir), capture_output=True)
+            subprocess.run(["git", "config", "user.name", "Docky"], cwd=str(stacks_dir), capture_output=True)
+            subprocess.run(["git", "config", "user.email", "docky@local"], cwd=str(stacks_dir), capture_output=True)
         await asyncio.to_thread(
             subprocess.run, ["git", "add", "-A", str(stacks_dir)], cwd=str(stacks_dir), capture_output=True
         )
@@ -2806,20 +2813,27 @@ def _git_save(stack_name: str, message: str = None) -> None:
         return
 
     # Add all files in the stack directory
-    subprocess.run(["git", "add", str(stack_path)], cwd=str(stacks_dir), capture_output=True)
+    add = subprocess.run(["git", "add", str(stack_path)], cwd=str(stacks_dir), capture_output=True, text=True)
+    if add.returncode != 0:
+        logger.warning("git add failed for stack '%s': %s", stack_name, add.stderr.strip())
 
     # Commit
     from datetime import datetime
     msg = message or f"Save {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    subprocess.run(["git", "commit", "-m", msg], cwd=str(stacks_dir), capture_output=True)
+    commit = subprocess.run(["git", "commit", "-m", msg], cwd=str(stacks_dir), capture_output=True, text=True)
+    if commit.returncode != 0:
+        # Nothing staged (no change) is expected and harmless; anything else
+        # should be visible in the logs instead of failing silently.
+        if "nothing to commit" not in commit.stderr:
+            logger.warning("git commit failed for stack '%s': %s", stack_name, commit.stderr.strip())
 
     # Appliquer la rétention (max_versions)
     try:
         settings = get_history_settings()
         max_versions = settings.get('max_versions', 50)
         _git_cleanup(stack_name, max_versions)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("History cleanup failed for stack '%s': %s", stack_name, e)
 
 
 def _get_git_history(stack_name: str = None, max_count: int = 50) -> list:
@@ -2900,76 +2914,110 @@ def _git_restore(stack_name: str, hash: str) -> dict:
 
 
 def _git_cleanup(stack_name: str, max_versions: int = 50) -> None:
-    """Keep only the last N versions, squash older ones.
+    """Keep only the latest ``max_versions`` snapshots of a stack, squash older ones.
 
-    Uses git reset --soft to squash commits beyond the limit into one.
-    Only affects commits that touch the specific stack path.
+    The repository in ``data/stacks`` is shared by every stack, so commits
+    touching one stack are interleaved with commits for other stacks. To honour
+    the setting ("keep the N newest backups, compress the older ones") the
+    squash is done with a soft reset plus per-version replays:
+
+    1. soft-reset HEAD to the newest commit that must be folded away — the index
+       and working tree keep the current (newest) state, so no data is lost;
+    2. build a synthetic ``Historique antérieur compressé`` baseline commit that
+       holds the stack files exactly as they were just before the oldest kept
+       snapshot (all other files stay at their newest state);
+    3. replay the kept snapshots oldest → newest, checking out each version's
+       stack files and committing with the original message. The final tree is
+       identical to the previous HEAD.
+
+    Any failure leaves the working tree intact and only logs a warning.
     """
     stacks_dir = Path(get_data_dir()) / 'stacks'
     git_dir = stacks_dir / '.git'
     if not git_dir.exists():
         return
 
-    # Count commits for this stack
-    count_result = subprocess.run(
-        ["git", "rev-list", "--count", "HEAD", "--", str(stacks_dir / stack_name)],
-        cwd=str(stacks_dir), capture_output=True, text=True
-    )
-    if count_result.returncode != 0:
-        return
+    stack_path = str(stacks_dir / stack_name)
 
-    try:
-        count = int(count_result.stdout.strip())
-    except ValueError:
-        return
+    def _run(args):
+        return subprocess.run(args, cwd=str(stacks_dir), capture_output=True, text=True)
 
-    if count <= max_versions:
+    # Commits touching this stack, newest first.
+    log = _run(["git", "log", "--format=%H", "--", stack_path])
+    if log.returncode != 0:
+        return
+    commits = [ln for ln in log.stdout.strip().split('\n') if ln]
+    if len(commits) <= max_versions:
         return  # Nothing to clean up
 
-    # Simple approach: squash old commits
-    # We use git reset --soft to squash everything after the Nth commit
-    # This keeps the last max_versions commits as-is
     try:
-        # Get the hash of the (count - max_versions + 1)th commit from the end
-        # This is the first commit we want to KEEP (everything before gets squashed)
-        keep_result = subprocess.run(
-            ["git", "log", "--oneline", "--", str(stacks_dir / stack_name)],
-            cwd=str(stacks_dir), capture_output=True, text=True
-        )
-        if keep_result.returncode != 0:
+        kept = commits[:max_versions]                # newest snapshots to keep
+        oldest_kept = kept[-1]
+        squash_until = commits[max_versions]         # newest snapshot to fold away
+
+        # Snapshot the tree we must end up with (current HEAD = newest state).
+        head_tree = _run(["git", "rev-parse", "HEAD^{tree}"]).stdout.strip()
+
+        # 1. Soft-reset to the newest squashed commit: only the branch pointer
+        #    moves, the index and working tree keep the newest state.
+        if _run(["git", "reset", "--soft", squash_until]).returncode != 0:
+            logger.warning("Cleanup failed for stack '%s': git reset failed", stack_name)
             return
 
-        lines = keep_result.stdout.strip().split('\n')
-        if len(lines) <= max_versions:
+        # 2. Restore the stack files to their state just before ``oldest_kept``
+        #    and create the compressed baseline as a fresh root commit. Older
+        #    history (for this and other stacks) is collapsed into it while all
+        #    file contents stay at their newest state.
+        if _run(["git", "checkout", squash_until, "--", stack_path]).returncode != 0:
+            logger.warning("Cleanup failed for stack '%s': git checkout failed", stack_name)
+            return
+        tree = _run(["git", "write-tree"]).stdout.strip()
+        baseline = _run(["git", "commit-tree", tree, "-m", "Historique antérieur compressé"]).stdout.strip()
+        if not tree or not baseline:
+            logger.warning("Cleanup failed for stack '%s': could not build baseline", stack_name)
+            return
+        if _run(["git", "reset", "--soft", baseline]).returncode != 0:
             return
 
-        # The hash of the commit to start squashing from
-        # We keep the last max_versions commits
-        squash_after = lines[max_versions - 1].split()[0]  # First commit to KEEP
+        # 3. Replay the kept versions oldest → newest with their original
+        #    messages, so recent backups stay individually browsable.
+        for rev in reversed(kept):
+            if _run(["git", "checkout", rev, "--", stack_path]).returncode != 0:
+                break
+            msg = _run(["git", "log", "-1", "--format=%s", rev]).stdout.strip()
+            _run(["git", "commit", "-m", msg, "--allow-empty"])
 
-        # Reset soft to this commit (keeps working tree intact)
-        # Then recommit with a "squashed" message
-        subprocess.run(
-            ["git", "reset", "--soft", squash_after],
-            cwd=str(stacks_dir), capture_output=True
-        )
-        subprocess.run(
-            ["git", "commit", "-m", "Historique antérieur compressé", "--allow-empty"],
-            cwd=str(stacks_dir), capture_output=True
-        )
+        # Sanity check: the rewritten history must hold the exact same files.
+        final_tree = _run(["git", "rev-parse", "HEAD^{tree}"]).stdout.strip()
+        if final_tree != head_tree:
+            logger.warning(
+                "Cleanup for stack '%s' produced a different tree (%s != %s)!",
+                stack_name, final_tree[:12], head_tree[:12],
+            )
         logger.info("Cleaned up history for stack '%s': kept %d versions", stack_name, max_versions)
     except Exception as e:
         logger.warning("Failed to cleanup history for '%s': %s", stack_name, e)
 
 
 def get_history_settings() -> dict:
-    """Get history retention settings from settings.yaml."""
+    """Get history retention settings from settings.yaml.
+
+    Falls back to a sane default (``max_versions=50``) when the file is
+    missing or malformed so that git cleanup never breaks on bad config.
+    """
     import yaml
-    settings_path = Path(get_data_dir()) / 'settings.yaml'
-    if settings_path.exists():
-        with open(settings_path) as f:
-            settings = yaml.safe_load(f) or {}
-        return settings.get('history_retention', {'max_versions': 50})
+    try:
+        settings_path = Path(get_data_dir()) / 'settings.yaml'
+        if settings_path.exists():
+            with open(settings_path) as f:
+                settings = yaml.safe_load(f) or {}
+            if isinstance(settings, dict):
+                retention = settings.get('history_retention') or {}
+                max_versions = retention.get('max_versions')
+                if isinstance(max_versions, int) and max_versions > 0:
+                    return {'max_versions': max_versions}
+    except Exception as e:
+        logger.warning("Could not read history retention settings: %s", e)
     return {'max_versions': 50}
 
 
