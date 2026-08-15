@@ -211,7 +211,7 @@ class AgentManager:
         Returns ``None`` for comments / keep-alive lines. Recognised events:
 
         - ``output`` → ``{"type": "output", "line": str}``
-        - ``done`` → ``{"type": "done", "success": bool, "output": str}``
+        - ``done`` → ``{"type": "done", "success": bool, "output": str, "error": str}``
         - ``error`` → ``{"type": "error", "error": str}``
         """
         if not event or not data_lines:
@@ -228,6 +228,10 @@ class AgentManager:
                 "type": "done",
                 "success": bool(data.get("success", True)),
                 "output": data.get("output", ""),
+                # The agent embeds the real failure message in the final
+                # ``done`` event's ``error`` field; propagate it so
+                # :meth:`_consume_stream` can surface it to JSON/LLM callers.
+                "error": data.get("error", ""),
             }
         if event == "error":
             return {"type": "error", "error": data.get("error", "Erreur inconnue")}
@@ -300,6 +304,11 @@ class AgentManager:
                         lines.append(evt["line"])
                 elif evt["type"] == "done":
                     success = bool(evt.get("success", True))
+                    # The agent embeds the real failure message in the final
+                    # ``done`` event's ``error`` field; surface it so JSON/LLM
+                    # callers get a consistent ``{success, output, error}`` dict.
+                    if evt.get("error"):
+                        error = evt["error"]
                 elif evt["type"] == "error":
                     success = False
                     error = evt.get("error", "Erreur inconnue")

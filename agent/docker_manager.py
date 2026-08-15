@@ -1019,6 +1019,67 @@ async def _stream_compose_step(
         yield evt
 
 
+async def _stream_command_step(
+    args: List[str],
+    cwd: Optional[str],
+    label: Optional[str],
+    idle_timeout: int,
+    collect: List[str],
+) -> AsyncIterator[Dict[str, Any]]:
+    """Run one CLI command and stream its output as SSE events.
+
+    Yields ``output`` events (a labeled header plus every line, all also
+    appended to *collect* so the caller can build the final summary) and then
+    a single ``result`` event that the caller inspects to decide the flow.
+
+    Used by the single-container update sequence (``pull`` / ``stop`` /
+    ``rm`` / ``compose up`` steps) where each step must be streamed and
+    labelled while the overall flow stays under the caller's control.
+    """
+    if label:
+        collect.append(label)
+        yield {"type": STREAM_EVENT_OUTPUT, "line": label}
+    full_cmd = " ".join(args)
+    try:
+        async for line in _run_command_stream(args, cwd=cwd, idle_timeout=idle_timeout):
+            collect.append(line)
+            yield {"type": STREAM_EVENT_OUTPUT, "line": line}
+    except StreamCommandError as e:
+        yield {
+            "type": STREAM_EVENT_RESULT,
+            "success": False,
+            "output": "\n".join(collect),
+            "error": e.message or f"Command failed with exit code {e.returncode}",
+            "command": full_cmd,
+        }
+        return
+    except asyncio.TimeoutError as e:
+        yield {
+            "type": STREAM_EVENT_RESULT,
+            "success": False,
+            "output": "\n".join(collect),
+            "error": str(e),
+            "command": full_cmd,
+        }
+        return
+    except Exception as e:
+        yield {
+            "type": STREAM_EVENT_RESULT,
+            "success": False,
+            "output": "\n".join(collect),
+            "error": str(e),
+            "command": full_cmd,
+        }
+        return
+    yield {
+        "type": STREAM_EVENT_RESULT,
+        "success": True,
+        "output": "\n".join(collect),
+        "error": "",
+        "command": full_cmd,
+    }
+
+
 def _compose_up_command(name: str) -> str:
     """Return the compose subcommand used to bring a stack up.
 
@@ -1037,6 +1098,67 @@ def _compose_down_command(name: str) -> str:
     if compose_file is None or not Path(compose_file).exists():
         return "stop"
     return "down"
+
+
+def _compose_project_services(project: str) -> Optional[Dict[str, Any]]:
+    """Return the ``services`` mapping parsed from a project's compose file.
+
+    Returns ``None`` when the compose file cannot be resolved or parsed (the
+    caller then treats the service as unresolvable and falls back to a
+    per-container update).  An empty dict means the file parsed but declares
+    no services.
+    """
+    compose_file, _cwd = _resolve_stack_compose(project)
+    if compose_file is None or not Path(compose_file).exists():
+        return None
+    try:
+        import yaml
+        compose = yaml.safe_load(compose_file.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return None
+    services = compose.get("services")
+    if not isinstance(services, dict):
+        return {}
+    return services
+
+
+def _compose_service_update_plan(project: str, service: str) -> Dict[str, Any]:
+    """Return an update plan for a single compose service.
+
+    Result keys:
+
+    - ``compose_available`` — the project's compose file was resolved and
+      parsed (false for external stacks whose compose file cannot be located).
+    - ``service_declared`` — the service appears in the compose ``services:``
+      mapping (false when the file exists but the service was removed).
+    - ``build_only`` — the service is built locally (``build:``) with no
+      ``image:`` key, so there is nothing to pull from a registry.
+    - ``image`` — the service's configured ``image:`` value, if any.
+    """
+    services = _compose_project_services(project)
+    if services is None:
+        return {
+            "compose_available": False,
+            "service_declared": False,
+            "build_only": False,
+            "image": None,
+        }
+    svc = services.get(service)
+    if not isinstance(svc, dict):
+        return {
+            "compose_available": True,
+            "service_declared": False,
+            "build_only": False,
+            "image": None,
+        }
+    image = svc.get("image")
+    build = svc.get("build") is not None
+    return {
+        "compose_available": True,
+        "service_declared": True,
+        "build_only": bool(build) and not (isinstance(image, str) and image.strip()),
+        "image": image.strip() if isinstance(image, str) and image.strip() else None,
+    }
 
 
 async def stream_start_stack(name: str, idle_timeout: int = STREAM_IDLE_TIMEOUT) -> AsyncIterator[Dict[str, Any]]:
@@ -1676,13 +1798,223 @@ async def _recreate_container(c, container_id: str, spec: Dict, client, attrs: D
         return {"success": False, "error": str(e)}
 
 
-async def update_container_image(container_id: str) -> Dict[str, Any]:
-    """Pull the latest image for a container and recreate it.
+async def _update_compose_container_image(
+    container_ref: str,
+    project: str,
+    service: str,
+    image_name: str,
+    plan: Dict[str, Any],
+    client,
+) -> Dict[str, Any]:
+    """Non-streamed, JSON variant of the single-container compose update.
 
-    - **Stack container** (Compose project): runs ``docker compose up -d`` on
-      the project, which pulls the new image and recreates the service.
-    - **Standalone container**: pulls the image, then recreates the container
-      with its current configuration (ports, volumes, env, networks, labels).
+    Applies the same sequence as :func:`_stream_compose_container_update`
+    (pull → stop/rm → ``docker compose up -d --no-deps <service>``) and
+    returns an aggregated ``{success, output, error}`` dict for JSON/LLM
+    callers.  Only the targeted container/service is ever touched — no
+    ``compose down``, no unscoped ``compose up -d``.
+    """
+    steps: List[str] = []
+
+    # 1. Pull the service image.
+    if plan.get("build_only"):
+        steps.append("pull (ignoré: service construit localement)")
+    else:
+        pull_result = await _run_compose(project, f"pull {service}")
+        if not pull_result.get("success"):
+            # Fallback: direct image pull (service not resolvable).
+            try:
+                await asyncio.to_thread(client.images.pull, image_name)
+            except Exception as e:
+                return {"success": False, "error": f"Image pull failed: {e}"}
+        steps.append("pull")
+
+    # 2. Stop/rm the single container (exact ID — never a global down/up).
+    try:
+        c = client.containers.get(container_ref)
+        try:
+            c.stop(timeout=10)
+        except Exception:
+            pass  # already stopped → ``remove(force=True)`` still works
+        c.remove(force=True)
+    except Exception as e:
+        return {"success": False, "error": f"Container removal failed: {e}"}
+    steps.append("stop/rm")
+
+    # 3. Recreate only the targeted service (--no-deps → no dependency churn).
+    up_result = await _run_compose(project, f"up -d --no-deps {service}")
+    if not up_result.get("success"):
+        return {
+            "success": False,
+            "error": up_result.get("error", "compose up failed"),
+            "command": up_result.get("command", ""),
+        }
+    steps.append("up -d --no-deps <service>")
+
+    output_parts: List[str] = []
+    if up_result.get("output"):
+        output_parts.append(up_result["output"].strip())
+    output_parts.append("Étapes exécutées: " + ", ".join(steps))
+    return {"success": True, "output": "\n".join(output_parts)}
+
+
+async def _stream_compose_container_update(
+    container_ref: str,
+    project: str,
+    service: str,
+    image_name: str,
+    idle_timeout: int,
+) -> AsyncIterator[Dict[str, Any]]:
+    """Stream pull → stop/rm → ``compose up -d`` for ONE stack container.
+
+    Every step is labelled so the user sees exactly what runs:
+
+    1. ``docker compose pull <service>`` — fallback ``docker pull <image>``
+       when the service cannot be targeted.  Build-only services (``build:``
+       with no ``image:``) skip the pull with an explicit message.
+    2. ``docker stop <container_ref>`` then ``docker rm -f <container_ref>`` —
+       always addressed by the exact container ID, never a global down/up.
+    3. ``docker compose up -d --no-deps <service>`` — scoped to the single
+       service so the project's other containers are not recreated.
+
+    Isolation contract: this generator never runs ``compose down`` and never
+    runs an unscoped ``compose up -d``.  On a pull failure it stops before
+    removing/recreating anything; on a removal failure it reports a clear
+    error.  The final event is a ``result`` dict.
+    """
+    collect: List[str] = []
+    plan = _compose_service_update_plan(project, service)
+    compose_available = bool(plan["compose_available"])
+    short_ref = container_ref[:12] if len(container_ref) > 12 else container_ref
+
+    # ---------- Step 1: pull ----------
+    if compose_available and plan["build_only"]:
+        # Locally-built service (build:) with no registry image to pull.
+        msg = (
+            f"── Service '{service}' est construit localement (build:) : "
+            f"pas d'image de registre, étape pull ignorée ──"
+        )
+        collect.append(msg)
+        yield {"type": STREAM_EVENT_OUTPUT, "line": msg}
+    else:
+        result = None
+        if compose_available:
+            args, work_dir = _resolve_compose_args(project, f"pull {service}")
+            async for evt in _stream_command_step(
+                args, work_dir, f"── docker compose pull {service} ──", idle_timeout, collect
+            ):
+                if evt["type"] == STREAM_EVENT_RESULT:
+                    result = evt
+                else:
+                    yield evt
+            if not result or not result["success"]:
+                # Service not resolvable / compose pull unsupported → direct pull.
+                args = ["docker", "pull", image_name]
+                result = None
+                async for evt in _stream_command_step(
+                    args, None, f"── Fallback: docker pull {image_name} ──", idle_timeout, collect
+                ):
+                    if evt["type"] == STREAM_EVENT_RESULT:
+                        result = evt
+                    else:
+                        yield evt
+        else:
+            # No compose file available: pull the image directly.
+            args = ["docker", "pull", image_name]
+            async for evt in _stream_command_step(
+                args, None, f"── docker pull {image_name} ──", idle_timeout, collect
+            ):
+                if evt["type"] == STREAM_EVENT_RESULT:
+                    result = evt
+                else:
+                    yield evt
+
+        if not result or not result["success"]:
+            # Pull failed → stop here: do NOT remove or recreate the container.
+            error = (result or {}).get("error", "Image pull failed")
+            yield {
+                "type": STREAM_EVENT_RESULT,
+                "success": False,
+                "output": "\n".join(collect),
+                "error": error,
+                "command": (result or {}).get("command", ""),
+            }
+            return
+
+    # ---------- Step 2: stop/rm the single container ----------
+    async for evt in _stream_command_step(
+        ["docker", "stop", container_ref], None, f"── docker stop {short_ref} ──", idle_timeout, collect
+    ):
+        if evt["type"] == STREAM_EVENT_RESULT:
+            pass  # graceful stop; ``rm -f`` below handles a still-running one
+        else:
+            yield evt
+
+    rm_result = None
+    async for evt in _stream_command_step(
+        ["docker", "rm", "-f", container_ref], None, f"── docker rm -f {short_ref} ──", idle_timeout, collect
+    ):
+        if evt["type"] == STREAM_EVENT_RESULT:
+            rm_result = evt
+        else:
+            yield evt
+    if rm_result is None or not rm_result["success"]:
+        error = (rm_result or {}).get("error", "Container removal failed")
+        yield {
+            "type": STREAM_EVENT_RESULT,
+            "success": False,
+            "output": "\n".join(collect),
+            "error": error,
+            "command": (rm_result or {}).get("command", ""),
+        }
+        return
+
+    # ---------- Step 3: recreate the single service ----------
+    # ``docker compose up -d --no-deps <service>`` recreates only the targeted
+    # service container; ``--no-deps`` prevents compose from starting or
+    # recreating the project's other services.  Modern Docker Compose (v2, the
+    # ``docker compose`` plugin used here) supports service targeting, so no
+    # unscoped ``up -d`` fallback is performed — that would recreate the whole
+    # project and break the isolation guarantee.
+    args, work_dir = _resolve_compose_args(project, f"up -d --no-deps {service}")
+    result = None
+    async for evt in _stream_command_step(
+        args, work_dir, f"── docker compose up -d --no-deps {service} ──", idle_timeout, collect
+    ):
+        if evt["type"] == STREAM_EVENT_RESULT:
+            result = evt
+        else:
+            yield evt
+    if result is None or not result["success"]:
+        error = (result or {}).get("error", "compose up failed")
+        yield {
+            "type": STREAM_EVENT_RESULT,
+            "success": False,
+            "output": "\n".join(collect),
+            "error": error,
+            "command": (result or {}).get("command", ""),
+        }
+        return
+
+    yield {
+        "type": STREAM_EVENT_RESULT,
+        "success": True,
+        "output": "\n".join(collect),
+        "error": "",
+        "command": "",
+    }
+
+
+async def update_container_image(container_id: str) -> Dict[str, Any]:
+    """Pull the latest image for a single container and recreate it.
+
+    - **Stack container** (Compose project with a resolvable compose file):
+      pulls the service image, stops/removes the single container, then runs
+      ``docker compose up -d --no-deps <service>`` so only that service is
+      recreated.  Never runs ``compose down`` nor an unscoped ``compose up -d``.
+    - **Standalone container** (or a stack container whose compose file cannot
+      be resolved): pulls the image, then recreates the container with its
+      current configuration (ports, volumes, env, networks, labels).
     """
     try:
         client = get_docker_client()
@@ -1691,14 +2023,22 @@ async def update_container_image(container_id: str) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
     attrs = c.attrs
-    project = (attrs.get("Config", {}).get("Labels") or {}).get("com.docker.compose.project", "")
-    if project:
-        # Compose stack → ``up -d`` pulls the new image and recreates.
-        return await compose_up(project)
-
+    labels = attrs.get("Config", {}).get("Labels") or {}
+    project = labels.get("com.docker.compose.project", "")
+    service = labels.get("com.docker.compose.service", "")
     image_name = (attrs.get("Config", {}).get("Image", "") or "").strip()
     if not image_name:
         return {"success": False, "error": "No image configured for this container"}
+
+    if project:
+        plan = _compose_service_update_plan(project, service)
+        if plan["compose_available"] and plan["service_declared"]:
+            return await _update_compose_container_image(
+                c.id, project, service, image_name, plan, client
+            )
+        # Compose file unresolvable or service no longer declared → fall
+        # through to the per-container recreate below (only touches this
+        # container, never a global down/up).
 
     # 1. Pull the new image
     try:
@@ -1716,13 +2056,15 @@ async def update_container_image(container_id: str) -> Dict[str, Any]:
 async def stream_update_container_image(
     container_id: str, idle_timeout: int = STREAM_IDLE_TIMEOUT
 ) -> AsyncIterator[Dict[str, Any]]:
-    """Stream an image update for a container in real time.
+    """Stream an image update for a single container in real time.
 
-    - **Stack container** (Compose project): streams ``docker compose up -d``
-      on the project, which pulls the new image and recreates the service.
-    - **Standalone container**: streams the ``docker pull`` progress, then
-      recreates the container with its current configuration (ports, volumes,
-      env, networks, labels).
+    - **Stack container** (Compose project): streams the labelled sequence
+      ``docker compose pull <service>`` (fallback ``docker pull <image>``) →
+      ``docker stop/rm <container_id>`` → ``docker compose up -d --no-deps
+      <service>``.  Only the targeted container/service is touched.
+    - **Standalone container** (or a stack container whose compose file cannot
+      be resolved): streams the ``docker pull`` progress, then recreates the
+      container with its current configuration.
 
     Yields ``output`` events for each line and a final ``result`` event.
     """
@@ -1734,14 +2076,9 @@ async def stream_update_container_image(
         return
 
     attrs = c.attrs
-    project = (attrs.get("Config", {}).get("Labels") or {}).get("com.docker.compose.project", "")
-    if project:
-        async for evt in _stream_compose_step(
-            project, _compose_up_command(project), label=f"── docker compose up -d ({project}) ──", idle_timeout=idle_timeout
-        ):
-            yield evt
-        return
-
+    labels = attrs.get("Config", {}).get("Labels") or {}
+    project = labels.get("com.docker.compose.project", "")
+    service = labels.get("com.docker.compose.service", "")
     image_name = (attrs.get("Config", {}).get("Image", "") or "").strip()
     if not image_name:
         yield {
@@ -1753,8 +2090,22 @@ async def stream_update_container_image(
         }
         return
 
+    if project:
+        plan = _compose_service_update_plan(project, service)
+        if plan["compose_available"] and plan["service_declared"]:
+            async for evt in _stream_compose_container_update(
+                c.id, project, service, image_name, idle_timeout
+            ):
+                yield evt
+            return
+        # Compose file unresolvable or service no longer declared → fall
+        # through to the per-container pull + recreate below (only touches
+        # this container, never a global down/up).
+
     output_lines: list = []
-    yield {"type": STREAM_EVENT_OUTPUT, "line": f"── docker pull {image_name} ──"}
+    pull_label = f"── docker pull {image_name} ──"
+    output_lines.append(pull_label)
+    yield {"type": STREAM_EVENT_OUTPUT, "line": pull_label}
     try:
         async for line in _run_command_stream(["docker", "pull", image_name], idle_timeout=idle_timeout):
             output_lines.append(line)

@@ -37,6 +37,7 @@ const DockyApp = {
     // Update indicators
     _updateAvailableCount: 0,     // nombre de containers avec une mise à jour dispo
     _updateCheckToken: 0,         // jeton de rendu pour ignorer les réponses async périmées
+    _updateCheckCache: {},        // clé -> dernier résultat de check d'update (source de vérité anti-flicker)
     _versionMismatches: [],       // liste des agents avec version désynchronisée
     _prevMismatchCount: 0,        // dernier nombre de mismatches (pour éviter le spam de toasts)
     _lastVersionCheck: null,      // timestamp du dernier check de versions (ms)
@@ -371,7 +372,8 @@ const DockyApp = {
     renderStacks() {
         const container = document.getElementById("dashboard-content");
         if (!container) return;
-        this._updateAvailableCount = 0;
+        this._pruneUpdateCache();
+        this._updateAvailableCount = this._countCachedUpdates();
         this._updateCheckToken = (this._updateCheckToken || 0) + 1;
 
         if (this.stacks.length === 0) {
@@ -425,9 +427,10 @@ const DockyApp = {
                   + '<button class="icon-btn btn-restart" title="Redémarrer" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'restart\', \'' + escapedAgent + '\')">' + this.icon('refresh-cw') + '</button>'
                   + '<button class="icon-btn" title="Update" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'update\', \'' + escapedAgent + '\')">' + this.icon('arrow-up') + '</button>'
                   + '<button class="icon-btn btn-logs" title="Logs" onclick="DockyApp.openStackLogs(\'' + this.escapeHtml(stack.name) + '\', \'' + escapedAgent + '\')">' + this.icon('clipboard-list') + '</button>';
+            const stackUpdateKey = this._stackUpdateCacheKey(stack.name, stack.agent_name || '');
             const updateBadge = isStandalone
                 ? ''
-                : '<button class="update-badge hidden" id="stack-update-card-' + this.escapeHtml(stack.name) + '@' + escapedAgent + '" onclick="event.stopPropagation();DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'update\', \'' + escapedAgent + '\')" title="Mise à jour disponible">' + this.icon('arrow-up') + ' Update</button>';
+                : '<button class="update-badge ' + this._updateBadgeClass(stackUpdateKey) + '" id="stack-update-card-' + this.escapeHtml(stack.name) + '@' + escapedAgent + '" onclick="event.stopPropagation();DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'update\', \'' + escapedAgent + '\')" title="Mise à jour disponible">' + this.icon('arrow-up') + ' Update</button>';
 
             html += `
                 <div class="stack-card ${isExpanded ? "expanded" : ""}" data-stack="${this.escapeHtml(stack.name)}" data-agent="${escapedAgent}">
@@ -564,7 +567,7 @@ const DockyApp = {
                     </div>
                     <div class="container-extra">
                         ${ports ? `<span class="meta-badge meta-ports">${this.icon('cable')} ${this.escapeHtml(ports)}</span>` : ""}
-                        <button class="update-badge hidden" id="update-${this.escapeHtml(c.id)}" onclick="DockyApp.containerAction('${this.escapeHtml(c.id)}', 'update-image', '${agt}')" title="Mettre à jour">${this.icon('arrow-up')} Update dispo</button>
+                        <button class="update-badge ${this._updateBadgeClass(this._containerUpdateCacheKey(c.id))}" id="update-${this.escapeHtml(c.id)}" onclick="DockyApp.containerAction('${this.escapeHtml(c.id)}', 'update-image', '${agt}')" title="Mettre à jour">${this.icon('arrow-up')} Update dispo</button>
                     </div>
                     <div class="container-actions">
                         <button class="icon-btn btn-start" title="Start" onclick="DockyApp.containerAction('${this.escapeHtml(c.id)}', 'start', '${agt}')">${this.icon('play')}</button>
@@ -600,7 +603,8 @@ const DockyApp = {
     renderGridDashboard() {
         const container = document.getElementById("dashboard-content");
         if (!container) return;
-        this._updateAvailableCount = 0;
+        this._pruneUpdateCache();
+        this._updateAvailableCount = this._countCachedUpdates();
         this._updateCheckToken = (this._updateCheckToken || 0) + 1;
         
         if (this.stacks.length === 0) {
@@ -825,7 +829,8 @@ const DockyApp = {
     renderTableDashboard() {
         const container = document.getElementById("dashboard-content");
         if (!container) return;
-        this._updateAvailableCount = 0;
+        this._pruneUpdateCache();
+        this._updateAvailableCount = this._countCachedUpdates();
         this._updateCheckToken = (this._updateCheckToken || 0) + 1;
 
         if (this.stacks.length === 0) {
@@ -881,13 +886,27 @@ const DockyApp = {
                 html += '<span class="meta-badge">🐳 ' + containers.length + '</span>';
                 html += '</div>';
 
+                // Zone scrollable horizontalement (colonnes redimensionnables)
+                html += '<div class="table-stack-scroll">';
+
+                // En-tête de colonnes avec poignées de redimensionnement
+                html += '<div class="table-col-header">';
+                html += '<div class="table-col-head table-col-status" title="Statut"></div>';
+                html += '<div class="table-col-head table-col-name" title="Conteneur">Conteneur<div class="col-resizer" data-col="name"></div></div>';
+                html += '<div class="table-col-head table-col-image" title="Image">Image<div class="col-resizer" data-col="image"></div></div>';
+                html += '<div class="table-col-head table-col-resources" title="Ressources">Ressources</div>';
+                html += '<div class="table-col-head table-col-ports" title="Ports">Ports<div class="col-resizer" data-col="ports"></div></div>';
+                html += '<div class="table-col-head table-col-actions" title="Actions"></div>';
+                html += '</div>';
+
                 // Container rows (triés)
                 for (const c of containers) {
                     const agent = stack.agent_name || '';
                     html += this.renderTableRow(c, agent, borderColor, stack.name);
                 }
 
-                html += '</div>';
+                html += '</div>'; // table-stack-scroll
+                html += '</div>'; // table-stack-group
             }
         }
 
@@ -897,6 +916,13 @@ const DockyApp = {
 
         html += '</div>';
         container.innerHTML = html;
+
+        // Restaurer et appliquer les largeurs de colonnes sauvegardées
+        const tableRoot = container.querySelector('.table-dashboard');
+        if (tableRoot) {
+            this._applyTableColWidths(tableRoot);
+        }
+        this.attachTableColumnResizers();
 
         // Load stats for running containers; check updates for all containers
         // (the check is now lightweight and cached).
@@ -952,7 +978,7 @@ const DockyApp = {
         return '<div class="table-container-row" data-id="' + escapedId + '" data-stack="' + escapedName + '" data-agent="' + this.escapeHtml(agent || '') + '" style="border-left-color:' + borderColor + '" onclick="event.stopPropagation(); DockyApp.selectContainerInGrid(\'' + escapedId + '\', \'' + escapedName + '\', \'' + this.escapeHtml(agent || '') + '\')" ondblclick="event.stopPropagation(); DockyApp.openContainerEdit(\'' + escapedId + '\', \'' + escapedName + '\', \'' + this.escapeHtml(agent || '') + '\')">'
             + '<div class="table-row-status">' + statusDot + '</div>'
             + '<div class="table-row-name" title="' + name + '">' + name
-            + '<span id="update-' + escapedId + '" class="update-badge hidden" title="Mise à jour disponible" onclick="event.stopPropagation();DockyApp.containerAction(\'' + escapedId + '\', \'update-image\', \'' + agt + '\')">' + this.icon('arrow-up') + ' Update</span>'
+            + '<span id="update-' + escapedId + '" class="update-badge ' + this._updateBadgeClass(this._containerUpdateCacheKey(c.id)) + '" title="Mise à jour disponible" onclick="event.stopPropagation();DockyApp.containerAction(\'' + escapedId + '\', \'update-image\', \'' + agt + '\')">' + this.icon('arrow-up') + ' Update</span>'
             + '</div>'
             + '<div class="table-row-image" title="' + image + '">' + this.icon('package') + ' ' + image + '</div>'
             + '<div class="table-row-resources">'
@@ -968,6 +994,84 @@ const DockyApp = {
             + '<button class="grid-icon-btn btn-console" title="Console" onclick="DockyApp.openConsole(\'' + escapedId + '\', \'' + name + '\', \'' + agt + '\')">' + this.icon('terminal') + '</button>'
             + '<button class="grid-icon-btn btn-update" title="Update" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'update-image\', \'' + agt + '\')">' + this.icon('arrow-up') + '</button>'
             + '</div></div>';
+    },
+
+    // -------------------------------------------------------
+    // Colonnes redimensionnables (mode tableau)
+    // -------------------------------------------------------
+
+    _tableColWidthsKey: 'docky_table_col_widths',
+    _tableColDefaults: { name: 180, image: 160, ports: 120 },
+    _tableColMin: 70,
+
+    _getTableColWidths() {
+        try {
+            const raw = localStorage.getItem(this._tableColWidthsKey);
+            return raw ? JSON.parse(raw) : {};
+        } catch (e) { return {}; }
+    },
+
+    // Applique les largeurs sauvegardées via des variables CSS sur la racine du
+    // tableau (héritées par l'en-tête ET les lignes de tous les groupes).
+    _applyTableColWidths(root) {
+        const widths = this._getTableColWidths();
+        for (const col of Object.keys(widths)) {
+            if (this._tableColDefaults[col] === undefined) continue;
+            const w = Math.max(this._tableColMin, widths[col]);
+            root.style.setProperty('--col-' + col, w + 'px');
+        }
+    },
+
+    _saveTableColWidth(col, w) {
+        const widths = this._getTableColWidths();
+        widths[col] = Math.max(this._tableColMin, w);
+        try { localStorage.setItem(this._tableColWidthsKey, JSON.stringify(widths)); } catch (e) { /* ignore */ }
+    },
+
+    // Attache les poignées .col-resizer : mousedown → mousemove (ajustement) →
+    // mouseup (relâche + persistance localStorage). Ne casse ni le tri ni le
+    // scroll horizontal (les largeurs sont des variables CSS, pas des styles fixes).
+    attachTableColumnResizers() {
+        const root = document.querySelector('.table-dashboard');
+        if (!root) return;
+        const self = this;
+
+        root.querySelectorAll('.col-resizer').forEach((resizer) => {
+            if (resizer.dataset.bound === '1') return;
+            resizer.dataset.bound = '1';
+
+            resizer.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+
+                const col = resizer.dataset.col;
+                if (!col) return;
+                const startX = e.clientX;
+                const current = parseInt(getComputedStyle(root).getPropertyValue('--col-' + col), 10)
+                    || self._tableColDefaults[col] || 120;
+                let finalW = current;
+
+                document.body.style.cursor = 'col-resize';
+                document.body.style.userSelect = 'none';
+                resizer.classList.add('active');
+
+                const onMove = (ev) => {
+                    finalW = Math.max(self._tableColMin, current + (ev.clientX - startX));
+                    root.style.setProperty('--col-' + col, finalW + 'px');
+                };
+                const onUp = () => {
+                    document.removeEventListener('mousemove', onMove);
+                    document.removeEventListener('mouseup', onUp);
+                    document.body.style.cursor = '';
+                    document.body.style.userSelect = '';
+                    resizer.classList.remove('active');
+                    self._saveTableColWidth(col, finalW);
+                };
+
+                document.addEventListener('mousemove', onMove);
+                document.addEventListener('mouseup', onUp);
+            });
+        });
     },
 
     hashString(s) { let h = 0; for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0; return Math.abs(h); },
@@ -1009,7 +1113,7 @@ const DockyApp = {
             + '<div class="grid-card-top"><span class="grid-card-name" title="' + name + '">' + name + '</span>' + statusDot + '</div>'
             + '<div class="grid-card-image" title="' + image + '">' + this.icon('package') + ' ' + image + '</div>'
             + '<div class="grid-card-resources" id="resources-' + escapedId + '"><div class="resource-line"><span class="resource-label">CPU</span><div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div><span class="resource-value">—</span></div><div class="resource-line"><span class="resource-label">RAM</span><div class="progress-bar"><div class="progress-fill ram" style="width:0%"></div></div><span class="resource-value">—</span></div></div>'
-            + '<div class="grid-card-extra">' + portsBadge + '<button class="update-badge hidden" id="update-' + escapedId + '" onclick="event.stopPropagation();DockyApp.containerAction(\'' + escapedId + '\', \'update-image\', \'' + agt + '\')" title="Mettre à jour">' + this.icon('arrow-up') + '</button></div>'
+            + '<div class="grid-card-extra">' + portsBadge + '<button class="update-badge ' + this._updateBadgeClass(this._containerUpdateCacheKey(c.id)) + '" id="update-' + escapedId + '" onclick="event.stopPropagation();DockyApp.containerAction(\'' + escapedId + '\', \'update-image\', \'' + agt + '\')" title="Mettre à jour">' + this.icon('arrow-up') + '</button></div>'
             + '<div class="grid-card-actions" onclick="event.stopPropagation()">'
             + '<button class="grid-icon-btn btn-start" title="Start" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'start\', \'' + agt + '\')">' + this.icon('play') + '</button>'
             + '<button class="grid-icon-btn btn-stop" title="Stop" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'stop\', \'' + agt + '\')">' + this.icon('square') + '</button>'
@@ -1061,14 +1165,27 @@ const DockyApp = {
         const isStandalone = stack.standalone === true;
         const escapedName = this.escapeHtml(stack.name);
         const escapedAgent = this.escapeHtml(stack.agent_name || '');
-        
-        let html = '<div class="stack-context-panel">';
+        const stackKey = stack.name + '@' + (stack.agent_name || '');
+
+        // Anti-flicker : si l'éditeur affiche déjà CETTE stack, on ne reconstruit pas
+        // le DOM du panel (sinon le contenu disparaissait/réapparaissait à chaque
+        // auto-refresh ~5 s qui re-appelait showStackContextPanel depuis le rendu).
+        if (panel.dataset.stackKey === stackKey && this._editorLoadedKey === stackKey) {
+            this.selectedStackAgent = stack.agent_name || null;
+            // On garde quand même le badge d'update de stack à jour (léger, sans re-render).
+            if (!isStandalone) {
+                this.checkStackUpdate(stack.name, stack.agent_name || '', this._updateCheckToken);
+            }
+            return;
+        }
+
+        let html = '<div class="stack-context-panel" data-stack-key="' + this.escapeHtml(stackKey) + '">';
         html += '<div class="stack-context-header">';
         html += '<h2 class="stack-context-title">' + escapedName + '</h2>';
         if (isStandalone) html += '<span class="stack-type-badge stack-badge-standalone">standalone</span>';
         else if (!isManaged) html += '<span class="stack-type-badge stack-badge-external">externe</span>';
         else html += '<span class="stack-type-badge stack-badge-docky">' + this.escapeHtml(stack.agent_name || stack.agent || 'agent') + '</span>';
-        if (!isStandalone) html += '<button class="update-badge hidden" id="stack-update-panel-' + escapedName + '@' + escapedAgent + '" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'update\', \'' + escapedAgent + '\')" title="Mise à jour disponible">' + this.icon('arrow-up') + ' Update</button>';
+        if (!isStandalone) html += '<button class="update-badge ' + this._updateBadgeClass(this._stackUpdateCacheKey(stack.name, stack.agent_name || '')) + '" id="stack-update-panel-' + escapedName + '@' + escapedAgent + '" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'update\', \'' + escapedAgent + '\')" title="Mise à jour disponible">' + this.icon('arrow-up') + ' Update</button>';
         html += '</div>';
         
         // Boutons de commande du stack
@@ -1152,6 +1269,10 @@ const DockyApp = {
         this._selectedStack = null;
         this.selectedStack = null;
         this.selectedStackAgent = null;
+        this._editorLoadedKey = null;
+        this._composeEditMode = false;
+        const body = document.getElementById('compose-body');
+        if (body) body.dataset.stackKey = '';
         const cards = document.querySelectorAll('.grid-container-card');
         cards.forEach(card => card.classList.remove('grid-dimmed'));
         const sections = document.querySelectorAll('.table-stack-group');
@@ -1490,12 +1611,47 @@ const DockyApp = {
     // Update check
     // -------------------------------------------------------
 
+    _containerUpdateCacheKey(containerId) { return 'c:' + containerId; },
+
+    _stackUpdateCacheKey(stackName, agent) { return 's:' + stackName + '@' + (agent || ''); },
+
+    // Classe CSS initiale d'un badge d'update d'après le cache : si un résultat
+    // "update_available" est déjà connu, on rend le badge visible immédiatement
+    // (aucun flicker au re-render, même avant la fin du prochain check async).
+    _updateBadgeClass(cacheKey) {
+        const cached = this._updateCheckCache[cacheKey];
+        return (cached && cached.update_available === true) ? '' : 'hidden';
+    },
+
+    // Recompte le nombre de containers avec update dispo depuis le cache
+    // (source de vérité : le compteur ne revient plus à 0 à chaque re-render).
+    _countCachedUpdates() {
+        let n = 0;
+        for (const k of Object.keys(this._updateCheckCache)) {
+            if (k.charAt(0) === 'c' && k.charAt(1) === ':'
+                && this._updateCheckCache[k] && this._updateCheckCache[k].update_available === true) n++;
+        }
+        return n;
+    },
+
+    // Retire du cache les entrées de containers/stacks qui n'existent plus
+    // (évite que le compteur global reste bloqué sur des valeurs obsolètes).
+    _pruneUpdateCache() {
+        const activeContainers = new Set((this._allContainersCache || []).map(c => this._containerUpdateCacheKey(c.id)));
+        const activeStacks = new Set((this.stacks || []).map(s => this._stackUpdateCacheKey(s.name, s.agent_name || '')));
+        for (const k of Object.keys(this._updateCheckCache)) {
+            if (k.charAt(0) === 'c' && !activeContainers.has(k)) delete this._updateCheckCache[k];
+            else if (k.charAt(0) === 's' && !activeStacks.has(k)) delete this._updateCheckCache[k];
+        }
+    },
+
     async checkUpdate(containerId, agent, token) {
         const renderToken = (token !== undefined) ? token : this._updateCheckToken;
         // Éviter les appels concurrents pour le même container
         const key = 'update-' + containerId;
         if (this._pendingFetches[key]) return;
         this._pendingFetches[key] = true;
+        const cacheKey = this._containerUpdateCacheKey(containerId);
 
         try {
             const url = '/api/containers/' + encodeURIComponent(containerId) + '/update-check' + this.agentQuery(agent);
@@ -1503,7 +1659,19 @@ const DockyApp = {
             if (resp.status === 401) return;
             const data = await resp.json();
 
-            // Ignore les réponses d'un rendu précédent (race du compteur)
+            // On met à jour le cache AVANT toute manipulation du DOM : c'est lui qui
+            // pilote l'état initial des badges au prochain rendu (anti-flicker).
+            this._updateCheckCache[cacheKey] = data || { update_available: false };
+            // Le compteur global est recalculé depuis le cache : pas de retour à 0
+            // pendant qu'un re-render est en cours (on ne réécrit le DOM que si la
+            // valeur change réellement).
+            const newCount = this._countCachedUpdates();
+            if (newCount !== this._updateAvailableCount) {
+                this._updateAvailableCount = newCount;
+                this.updateStatsBar();
+            }
+
+            // On ne touche au DOM que si le rendu qui a déclenché ce check est toujours actif
             if (renderToken !== this._updateCheckToken) return;
 
             const badge = document.getElementById('update-' + containerId);
@@ -1520,14 +1688,13 @@ const DockyApp = {
                     } else if (data.local_digest && data.remote_digest) {
                         badge.title = data.local_digest + ' → ' + data.remote_digest;
                     }
-                    this._updateAvailableCount = (this._updateAvailableCount || 0) + 1;
-                    this.updateStatsBar();
                 }
             } else if (data && data.update_available === false && badge) {
                 badge.classList.add('hidden');
             }
         } catch (e) {
-            // Ignorer les erreurs (réseau, annulation…)
+            // En cas d'erreur on conserve le cache existant et le badge déjà affiché
+            // (on ne vide jamais l'affichage à cause d'un fetch transitoirement échoué).
         } finally {
             this._pendingFetches[key] = false;
         }
@@ -1538,12 +1705,17 @@ const DockyApp = {
         const key = 'stack-update-' + stackName + '@' + (agent || '');
         if (this._pendingFetches[key]) return;
         this._pendingFetches[key] = true;
+        const cacheKey = this._stackUpdateCacheKey(stackName, agent);
 
         try {
             const url = '/api/stacks/' + encodeURIComponent(stackName) + '/update-check' + this.agentQuery(agent);
             const resp = await fetch(url, { credentials: 'same-origin' });
             if (resp.status === 401) return;
             const data = await resp.json();
+
+            // Cache mis à jour en premier : les badges seront rendus dans le bon état
+            // dès le prochain rendu, sans disparition/reapparition.
+            this._updateCheckCache[cacheKey] = data || { update_available: false };
 
             if (renderToken !== this._updateCheckToken) return;
 
@@ -1557,7 +1729,7 @@ const DockyApp = {
                 for (const badge of badges) badge.classList.add('hidden');
             }
         } catch (e) {
-            // Ignorer les erreurs (réseau, annulation…)
+            // Ignorer les erreurs (réseau, annulation…) : on conserve l'état affiché.
         } finally {
             this._pendingFetches[key] = false;
         }
@@ -1986,6 +2158,8 @@ const DockyApp = {
     fileContents: {},      // filename -> current editor content
     savedContents: {},     // filename -> last saved content (server)
     editorLoading: false,
+    _editorLoadedKey: null,   // clé (name@agent) de la stack actuellement chargée dans l'éditeur
+    _editorLoadToken: 0,      // token anti-race : incrémenté à chaque loadEditor, le dernier clic gagne
     deployTargetStack: null,
     deleteTargetStack: null,
     permsTargetFile: null,
@@ -2049,17 +2223,39 @@ const DockyApp = {
         this.loadEditor(name, agent);
     },
 
-    async loadEditor(name, agent) {
-        // Protéger le refresh : si en mode édition, ne pas recharger le contenu
-        if (this._composeEditMode) {
-            // Just re-render sans recharger
+    async loadEditor(name, agent, force) {
+        const key = name + '@' + (agent || '');
+
+        // Token anti-race : chaque appel invalide les fetchs encore en vol d'un
+        // clic précédent. Si un nouveau clic a eu lieu pendant un await, on
+        // abandonne la mise à jour (pas d'écriture de contenu ni de
+        // _editorLoadedKey) — le dernier clic gagne.
+        const _loadToken = ++this._editorLoadToken;
+        const isStale = () => _loadToken !== this._editorLoadToken;
+
+        // Anti-flicker : cette stack est déjà chargée dans l'éditeur, on ne re-fetche
+        // pas et on ne reconstruit pas le DOM. Le contenu de l'éditeur ne doit jamais
+        // être remplacé par un rechargement périodique tant qu'il est affiché.
+        // (force=true pour les rechargements volontaires : création/restauration.)
+        if (!force && this._editorLoadedKey === key) {
+            this.selectedStack = key;
+            this.selectedStackAgent = agent || null;
             this.renderEditor();
             return;
         }
 
-        this.selectedStack = name + '@' + (agent || '');
+        // Changement de stack pendant l'édition : on quitte le mode édition pour
+        // recharger proprement (sinon renderEditor afficherait l'ancien contenu).
+        this._composeEditMode = false;
+
+        this.selectedStack = key;
         this.selectedStackAgent = agent || null;
 
+        const setEditorKey = () => {
+            this._editorLoadedKey = key;
+            const body = document.getElementById('compose-body');
+            if (body) body.dataset.stackKey = key;
+        };
 
         // External / standalone stacks cannot be edited (files are not in /data/stacks/)
         const stackInfo = this.stacks.find((s) => s.name === name && (s.agent_name||'') === (agent||''));
@@ -2075,6 +2271,7 @@ const DockyApp = {
                 label + " Les fichiers ne sont pas accessibles. " +
                 "Vous pouvez démarrer/arrêter/redémarrer cette stack depuis le dashboard."
             );
+            setEditorKey();
             return;
         }
 
@@ -2091,12 +2288,14 @@ const DockyApp = {
         let batchOk = false;
         try {
             const batchResp = await fetch(batchUrl, { credentials: "same-origin" });
+            if (isStale()) return;
             if (batchResp.status === 401) {
                 window.location.href = "/login";
                 return;
             }
             if (batchResp.ok) {
                 const batchData = await batchResp.json();
+                if (isStale()) return;
                 if (batchData && batchData.files && batchData.files.length > 0) {
                     // Build stackFiles and fileContents from batch data
                     this.stackFiles = batchData.files.map(f => ({
@@ -2105,8 +2304,7 @@ const DockyApp = {
                         is_dir: false
                     }));
                     for (const f of batchData.files) {
-                        this.fileContents[f.filename] = f.content || "";
-                        this.savedContents[f.filename] = f.content || "";
+                        this._setEditorFileContent(f.filename, f.content || "");
                     }
                     batchOk = true;
                 }
@@ -2118,30 +2316,37 @@ const DockyApp = {
         // --- Fallback: legacy sequential load ---
         if (!batchOk) {
             const filesData = await this.apiFetch("/api/stacks/" + encodeURIComponent(name) + "/files" + agentParam);
+            if (isStale()) return;
             if (!filesData || !filesData.files) {
                 this.renderEditorPlaceholder("Impossible de charger les fichiers de la stack.");
+                setEditorKey();
                 return;
             }
             this.stackFiles = filesData.files;
             if (this.stackFiles.length === 0) {
                 this.renderEditorPlaceholder("Aucun fichier dans cette stack.");
+                setEditorKey();
                 return;
             }
             // Load all file contents sequentially (legacy path)
             for (const f of this.stackFiles) {
                 const resp = await fetch("/api/stacks/" + encodeURIComponent(name) + "/files/" + encodeURIComponent(f.name) + agentParam, { credentials: "same-origin" });
+                if (isStale()) return;
                 if (resp.ok) {
                     const text = await resp.text();
-                    this.fileContents[f.name] = text;
-                    this.savedContents[f.name] = text;
+                    if (isStale()) return;
+                    this._setEditorFileContent(f.name, text);
                 } else {
-                    this.fileContents[f.name] = "";
-                    this.savedContents[f.name] = "";
+                    // Fetch en échec : on ne remplace jamais l'affichage par un
+                    // contenu vide — on conserve ce qu'on avait déjà.
+                    this._setEditorFileContent(f.name, this.fileContents[f.name] || "");
                 }
             }
         }
 
+        if (isStale()) return;
         this.editorLoading = false;
+        setEditorKey();
         // Select first file (prefer docker-compose.yml)
         let first = this.stackFiles[0].name;
         for (const f of this.stackFiles) {
@@ -2170,6 +2375,15 @@ const DockyApp = {
         body.innerHTML = '<div class="placeholder"><p>' + this.escapeHtml(msg) + '</p><p class="placeholder-hint">Cliquez sur une stack du dashboard ou choisissez-la dans la liste.</p></div>';
     },
 
+    // Ne remplace le contenu d'un fichier QUE si le contenu reçu diffère du
+    // contenu actuel. Ne jamais écraser avec un contenu vide/indisponible.
+    _setEditorFileContent(filename, content) {
+        if (content === null || content === undefined) return;
+        if (this.fileContents[filename] === content) return;
+        this.fileContents[filename] = content;
+        this.savedContents[filename] = content;
+    },
+
     renderEditorLoading() {
         const body = document.getElementById("compose-body");
         if (!body) return;
@@ -2190,6 +2404,16 @@ const DockyApp = {
     renderEditor() {
         const body = document.getElementById("compose-body");
         if (!body || !this.selectedStack) return;
+
+        // Préserver curseur + scroll si l'éditeur (textarea) est déjà affiché,
+        // pour ne pas faire sauter le curseur quand on re-rend le même contenu.
+        const oldEditor = document.getElementById("code-editor");
+        let cursorPos = -1;
+        let editorScrollTop = 0;
+        if (oldEditor && this._composeEditMode) {
+            cursorPos = oldEditor.selectionStart;
+            editorScrollTop = oldEditor.scrollTop;
+        }
 
         // Tabs
         let tabsHtml = '<div class="compose-tabs">';
@@ -2264,6 +2488,15 @@ const DockyApp = {
 
         if (typeof lucide !== 'undefined') {
             lucide.createIcons();
+        }
+
+        // Restaurer curseur + scroll après le re-render (contenu identique)
+        if (this._composeEditMode && cursorPos >= 0) {
+            const editor = document.getElementById("code-editor");
+            if (editor) {
+                editor.selectionStart = editor.selectionEnd = Math.min(cursorPos, editor.value.length);
+                editor.scrollTop = editorScrollTop;
+            }
         }
     },
 
@@ -2709,7 +2942,7 @@ const DockyApp = {
             this.closeNewStackModal();
             this.showToast("Stack créée : " + name, "success");
             await this.refreshStacks();
-            this.loadEditor(name, this.selectedStackAgent);
+            this.loadEditor(name, this.selectedStackAgent, true);
         } else {
             const data = await resp.json().catch(() => ({}));
             this.showToast("Erreur création : " + (data.detail || resp.statusText), "error");
@@ -3457,7 +3690,7 @@ const DockyApp = {
             if (result.success) {
                 this.showToast("✓ Stack restaurée", "success");
                 this.closeHistory();
-                this.loadEditor(name, agent);
+                this.loadEditor(name, agent, true);
             } else {
                 this.showToast("Erreur: " + (result.error || "Échec"), "error");
             }

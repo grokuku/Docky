@@ -2303,10 +2303,64 @@ body {
     -ms-user-select: none;
     transition: background var(--transition), opacity 0.3s ease, filter 0.3s ease;
     font-size: 0.8rem;
+    /* Permet au contenu d'être scrollable horizontalement quand les colonnes
+       redimensionnées dépassent la largeur du panneau. */
+    min-width: max-content;
 }
 
 .table-container-row:hover {
     background: rgba(255,255,255,0.03);
+}
+
+/* Zone scrollable horizontalement : en-tête + lignes du groupe */
+.table-stack-scroll {
+    overflow-x: auto;
+}
+
+/* En-tête de colonnes (redimensionnables à la souris) */
+.table-col-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 12px;
+    border-left: 3px solid transparent; /* aligné avec la bordure d'accent des lignes */
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+    font-size: 0.65rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    min-width: max-content;
+}
+
+.table-col-head {
+    flex-shrink: 0;
+    position: relative;
+    display: flex;
+    align-items: center;
+    white-space: nowrap;
+}
+
+.table-col-status { width: 20px; }
+.table-col-name { width: var(--col-name, 180px); }
+.table-col-image { width: var(--col-image, 160px); }
+.table-col-resources { flex: 1 1 auto; min-width: 0; }
+.table-col-ports { width: var(--col-ports, 120px); }
+.table-col-actions { flex: 0 0 154px; }
+
+/* Poignée de redimensionnement au bord droit de la cellule d'en-tête */
+.col-resizer {
+    position: absolute;
+    right: -6px;
+    top: 0;
+    bottom: 0;
+    width: 6px;
+    cursor: col-resize;
+    z-index: 5;
+}
+.col-resizer:hover,
+.col-resizer.active {
+    background: rgba(255,255,255,0.15);
 }
 
 .table-row-status {
@@ -2318,7 +2372,7 @@ body {
 }
 
 .table-row-name {
-    width: 180px;
+    width: var(--col-name, 180px);
     flex-shrink: 0;
     font-weight: 600;
     color: var(--text-primary);
@@ -2328,7 +2382,7 @@ body {
 }
 
 .table-row-image {
-    width: 160px;
+    width: var(--col-image, 160px);
     flex-shrink: 0;
     color: #9090b0;
     font-size: 0.75rem;
@@ -2388,7 +2442,7 @@ body {
 }
 
 .table-row-ports {
-    width: 120px;
+    width: var(--col-ports, 120px);
     flex-shrink: 0;
     font-size: 0.65rem;
     color: #a0a0b8;
@@ -2404,9 +2458,10 @@ body {
 }
 
 @media (max-width: 1000px) {
-    .table-row-image { display: none; }
-    .table-row-ports { display: none; }
-    .table-row-name { width: 120px; }
+    .table-row-image, .table-col-image { display: none; }
+    .table-row-ports, .table-col-ports { display: none; }
+    /* Ne pas forcer width:120px ici : cela écraserait var(--col-name, ...)
+       et rendrait le drag des colonnes inopérant à l'écran étroit. */
 }
 
 /* Stack context panel (right column) */
