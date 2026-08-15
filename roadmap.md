@@ -1,7 +1,7 @@
 # Docky — Roadmap
 
-> **Dernière mise à jour :** 2025-07-08
-> **Version courante :** 0.0.1
+> **Dernière mise à jour :** 2026-08-15
+> **Version courante :** 0.0.3 (source de vérité : `version.txt` — voir « Versioning »)
 
 ## 🎯 Vision
 
@@ -22,7 +22,7 @@ L'orchestrateur se connecte aux agents, centralise la configuration, et offre un
 │  (Web UI + LLM + API Discord)             │
 │                                            │
 │  Dashboard (bin-packing, cards, couleurs) │
-│  Chat LLM (28 tools, WebClaw, SOUL.md)    │
+│  Chat LLM (30 tools, WebClaw, SOUL.md)    │
 │  Éditeur Compose (proxy vers l'agent)     │
 │  Settings (LLM, agents, mot de passe)      │
 │  Popups logs + console                     │
@@ -67,23 +67,26 @@ L'orchestrateur se connecte aux agents, centralise la configuration, et offre un
 
 - Cache en mémoire (dict Python) des états des containers et stacks par agent
 - **Stale-while-revalidate** : le cache sert les données immédiatement pour le rendu, le rafraîchissement se fait en arrière-plan
-- Rafraîchi via les **Docker events** (temps réel) + **sanity check** toutes les 10min
+- Rafraîchi via les **Docker events** (temps réel) + **sanity check** toutes les 10min + **refresh périodique de sécurité toutes les 60s** (filet de sécurité — voir « Architecture event-driven »)
 - Pas de cache pour les fichiers (toujours fetch frais)
 
-### Architecture event-driven (remplacement du polling)
+### Architecture event-driven (avec filet de sécurité)
 
-Le système est passé d'une architecture basée sur le **polling** (requêtes REST répétées) à une architecture **event-driven** en temps réel :
+Le système privilégie une architecture **event-driven** en temps réel, mais **conserve des filets de sécurité périodiques** — il ne s'agit pas d'un « plus de polling » absolu :
 
 - **Docker events (agent → orchestrateur)** : l'agent écoute les events Docker via le SDK (`docker events`) et les transmet à l'orchestrateur via une connexion WebSocket dédiée (WS agent → orchestrateur)
 - **WebSocket events (orchestrateur → frontend)** : l'orchestrateur relaye les événements au frontend via une WebSocket, permettant des mises à jour instantanées du dashboard
 - **Heartbeat frontend (30s)** : le frontend envoie un heartbeat toutes les 30s pour maintenir la connexion WebSocket active et détecter les déconnexions
 - **Sanity check (10min)** : toutes les 10 minutes, l'orchestrateur fait une vérification complète des états via REST (rattrapage si des events ont été manqués)
-- **Full refresh au startup seulement** : au démarrage, un refresh complet REST est fait pour initialiser le cache ; ensuite, seuls les events Docker mettent à jour l'état
+- **Refresh périodique de sécurité (60s)** : l'orchestrateur relance un refresh complet du cache toutes les 60s. Filet de sécurité : garantit la cohérence même si une connexion WS est tombée. Le rendu reste instantané (stale-while-revalidate — le cache est servi immédiatement, le rafraîchissement se fait en arrière-plan)
+- **Auto-refresh frontend (5s, activable)** : le dashboard relit le cache de l'orchestrateur toutes les 5s (case « auto-refresh », activée par défaut) — léger car servi depuis le cache
+- **Full refresh au startup** : au démarrage, un refresh complet REST initialise le cache ; ensuite les events WS + les filets périodiques maintiennent l'état à jour
 
 **Avantages** :
-- Temps réel (plus d'attente de 3s de polling)
-- Moins de charge réseau (events seulement quand ça change)
-- Plus fiable (sanity check en backup)
+- Temps réel (mise à jour immédiate du dashboard sur changement d'état)
+- Robustesse (sanity check 10min + refresh 60s en backup si des events sont manqués)
+- Rendus instantanés (stale-while-revalidate, pas de temps d'attente réseau)
+- ⚠️ Le **pur event-driven** (suppression du refresh 60s et du polling UI) reste un objectif en backlog — voir Phase 9
 
 ### Historique git des stacks
 
@@ -197,7 +200,7 @@ Le projet migre progressivement des emoji vers des icônes SVG **Lucide** pour u
 
 - Interface texte simple, peut être masqué pour gagner de la place
 - Le LLM a accès à l'état de tous les agents en temps réel
-- 28 tools disponibles (voir section LLM)
+- 30 tools disponibles (voir section LLM)
 - Validation humaine pour exec dans un container et clean_agent
 - Tool calls visibles ("🔧 Actions effectuées: ...")
 - SOUL.md éditable via l'interface
@@ -230,9 +233,9 @@ Le projet migre progressivement des emoji vers des icônes SVG **Lucide** pour u
 - Paramètres (temperature, max_tokens, etc.)
 - Scan des modèles via GET /v1/models de l'API
 
-### Tools du LLM (28 outils)
+### Tools du LLM (30 outils)
 
-**Containers (10) :**
+**Containers (9) :**
 - start_container(agent_name, container_id)
 - stop_container(agent_name, container_id)
 - restart_container(agent_name, container_id)
@@ -243,7 +246,7 @@ Le projet migre progressivement des emoji vers des icônes SVG **Lucide** pour u
 - list_containers(agent_name) — agent_name="all" pour tous les agents
 - get_agent_status(agent_name)
 
-**Stacks (9) :**
+**Stacks (11) :**
 - start_stack(agent_name, stack_name)
 - stop_stack(agent_name, stack_name)
 - restart_stack(agent_name, stack_name)
@@ -287,7 +290,7 @@ Le projet migre progressivement des emoji vers des icônes SVG **Lucide** pour u
 ### Prompt système simplifié
 
 - Le system prompt est généré dynamiquement par `build_system_prompt()`
-- **Ne liste plus** les 28 outils un par un dans le prompt
+- **Ne liste plus** les 30 outils un par un dans le prompt
 - Contient : identité Docky, agents disponibles, containers/stacks/ports par agent, soul.md, règles importantes pour docker-compose
 - **Règles orientées action** : concises, directives — « Agis directement », « Utilise les outils », « Sois concis »
 - Référence aux règles docker-compose (pas de `version:`, métadonnées obligatoires, `restart: unless-stopped`, tag `latest` par défaut)
@@ -323,6 +326,8 @@ Chaque docker-compose.yml créé par Docky commence par un bloc de métadonnées
 
 Ces métadonnées sont parsées et affichées dans le contexte du LLM.
 
+Le champ `@category` est conservé comme **simple métadonnée descriptive** : la fonctionnalité « famille » (outil `categorize_stack`, endpoints `stacks-meta`, option UI) a été retirée en v0.0.3 (décision produit).
+
 ### Historique de conversation
 
 - Le backend `run_chat()` retourne l'**historique complet** (`history`) incluant les tool calls et leurs résultats
@@ -355,7 +360,10 @@ Ces métadonnées sont parsées et affichées dans le contexte du LLM.
 | POST | /agent/containers/{id}/stop | Arrêter |
 | POST | /agent/containers/{id}/restart | Redémarrer |
 | POST | /agent/containers/{id}/exec | Exec one-shot |
-| GET | /agent/containers/{id}/update-check | Vérif update image |
+| GET | /agent/containers/{id}/edit-spec | Spécification complète (édition / recréation) |
+| POST | /agent/containers/{id}/update | Recréer un container (même image) |
+| POST | /agent/containers/{id}/update-image | Pull de la nouvelle image + recréation (streaming SSE) |
+| GET | /agent/containers/{id}/update-check | Vérif update image (manifest inspect, TTL 300s) |
 | GET | /agent/stacks | Liste des stacks (managed + externes) |
 | GET | /agent/stacks/{name}/files | Liste des fichiers |
 | GET | /agent/stacks/{name}/files/{filename} | Contenu d'un fichier |
@@ -367,10 +375,19 @@ Ces métadonnées sont parsées et affichées dans le contexte du LLM.
 | POST | /agent/stacks/{name}/stop | Arrêter une stack |
 | POST | /agent/stacks/{name}/restart | Redémarrer une stack |
 | POST | /agent/stacks/{name}/update | Mettre à jour (pull + up -d) |
+| GET | /agent/stacks/{name}/logs | Logs d'une stack (docker compose logs) |
+| GET | /agent/stacks/{name}/update-check | Check d'update des images d'une stack |
+| GET | /agent/stacks/{name}/files-with-content | Fichiers d'une stack avec leur contenu |
 | POST | /agent/stacks/import | Importer une stack externe (avec dry_run) |
 | PUT | /agent/stacks/{name}/files/{filename}/permissions | Changer chmod |
+| GET | /agent/stacks/{name}/history | Historique git d'une stack |
+| GET | /agent/stacks/{name}/history/{hash} | Version git précise d'une stack |
+| POST | /agent/stacks/{name}/history/restore/{hash} | Restaurer une version antérieure |
+| GET | /agent/settings/git-history | Paramètres de rétention de l'historique |
+| PUT | /agent/settings/git-history | Modifier la rétention de l'historique |
 | GET | /agent/ports | Liste des ports utilisés |
 | POST | /agent/system/prune | Docker system prune |
+| WS | /agent/events | Events Docker temps réel (agent → orchestrateur) |
 
 ### Normalisation des noms de stack (bugs corrigés)
 
@@ -434,7 +451,7 @@ Ces métadonnées sont parsées et affichées dans le contexte du LLM.
 │   │   ├── compose_reference.md  # Référence docker-compose (bundlé)
 │   │   ├── auth/           # Authentification JWT
 │   │   ├── agent_manager/  # Communication avec agents distants
-│   │   ├── llm/            # Client LLM + 28 tools + WebClaw/Firecrawl
+│   │   ├── llm/            # Client LLM + 30 tools + WebClaw/Firecrawl
 │   │   ├── routes/         # Routes API + dashboard
 │   │   └── static/         # JS, CSS
 │   ├── templates/          # Templates HTML (login, dashboard, settings, popups)
@@ -465,9 +482,18 @@ Ces métadonnées sont parsées et affichées dans le contexte du LLM.
 ├── docker-compose.yml      # Exemple: orchestrateur + agent ensemble
 ├── .env.example            # Template de configuration
 ├── .gitignore
-├── version.txt             # 0.0.1
+├── version.txt             # 0.0.3
 └── roadmap.md
 ```
+
+---
+
+## 🔖 Versioning
+
+- **Source de vérité** : `version.txt` (racine du dépôt) — actuellement **0.0.3**. Les Dockerfiles embarquent la version via `ARG VERSION` (label `version` + fichier `/app/version.txt` écrit dans l'image).
+- **Orchestrateur** : `orchestrator/app/main.py` déclare `FastAPI(version="0.1.0")` — valeur **cosmétique/décorative**, indépendante de `version.txt` (visible uniquement dans le schéma OpenAPI, pas dans l'UI). ⚠️ À réconcilier avec `version.txt` (0.0.3) ou à supprimer.
+- **Agent** : la version est lue depuis le `version.txt` embarqué dans l'image et exposée par `/agent/health`.
+- **UI** : le dashboard affiche la version (`version-badge`) et alerte en cas de désynchronisation orchestrateur/agents (`/api/version-check`, badge « Mismatch »).
 
 ---
 
@@ -483,11 +509,13 @@ Ces métadonnées sont parsées et affichées dans le contexte du LLM.
 - .gitignore protège les fichiers sensibles (settings.yaml, users.yaml, api_keys.yaml, .env)
 - Warning sur la page Settings : recommandation d'utiliser un LLM local
 
-### Points à définir plus tard
-- Rate limiting
-- HTTPS géré par reverse proxy externe
-- Chiffrement de la communication orchestrator ↔ agent (TLS)
-- Proxy WebSocket pour logs/console (actuellement 501 Not Implemented)
+### Backlog sécurité
+- **Forçage du changement du mot de passe admin par défaut** (`docky123` au premier login) — non implémenté
+- **Rate limiting** sur `/login` (anti brute-force) — non implémenté
+- **CSRF** sur les routes sensibles (actions POST/PUT/DELETE) — non implémenté
+- **HTTPS** : géré en externe par le reverse proxy (déjà en place)
+- **TLS orchestrateur ↔ agent** : chiffrement de la communication (actuellement en clair, clé API en header `Authorization: Bearer`) — non implémenté
+- **Proxy WebSocket** pour logs/console temps réel (actuellement : popups HTTP avec polling 3s / exec one-shot HTTP)
 
 ---
 
@@ -525,7 +553,7 @@ Ces métadonnées sont parsées et affichées dans le contexte du LLM.
 - [x] Client API compatible OpenAI
 - [x] Interface de chat (texte, toggle 💬)
 - [x] Injection du contexte (état containers + soul.md + métadonnées)
-- [x] 28 tools disponibles (sans liste verbeuse dans le prompt)
+- [x] 30 tools disponibles (sans liste verbeuse dans le prompt)
 - [x] Validation humaine pour exec dans container
 - [x] Validation humaine pour clean_agent
 - [x] Mise à jour automatique de soul.md par le LLM
@@ -588,11 +616,11 @@ Ces métadonnées sont parsées et affichées dans le contexte du LLM.
 - [x] Scripts supprimés (install.sh, update.sh) — utilisation des images Docker
 
 ### Phase 6 — Architecture event-driven & Git history ✅
-- [x] **Docker events** via WebSocket agent → orchestrateur (remplacement du polling)
+- [x] **Docker events** via WebSocket agent → orchestrateur (temps réel, en complément du refresh périodique)
 - [x] **WebSocket events** orchestrateur → frontend (mise à jour temps réel du dashboard)
 - [x] **Heartbeat frontend** (30s) pour maintenir la connexion WS active
 - [x] **Sanity check** toutes les 10min (rattrapage si events manqués)
-- [x] **Full refresh au startup seulement** (plus de polling périodique)
+- [x] **Full refresh au startup** + **refresh périodique de sécurité toutes les 60s** (filet de sécurité — pas de pur event-driven, voir section « Architecture »)
 - [x] **Git dans /data/stacks/** : dépôt Git initialisé automatiquement sur l'agent
 - [x] **Commit automatique** à chaque sauvegarde de fichier (compose, .env, etc.)
 - [x] **Modale d'historique** avec preview des fichiers et restore vers une version antérieure
@@ -609,19 +637,40 @@ Ces métadonnées sont parsées et affichées dans le contexte du LLM.
   - Chat (💬🤖🗑 → message-circle, bot?, trash-2)
   - Divers (✅⏳📭🔇👤🔒 → check-circle, loader, inbox, volume-x, user, lock)
 
+### Améliorations récentes (v0.0.3) ✅
+- [x] **Streaming SSE temps réel des actions** (update/deploy/start/stop/restart) : pas de limite de temps globale, **timeout par activité** — l'action s'arrête seulement si le silence dépasse **120 s** (côté agent)
+- [x] **Check d'update léger** : `docker manifest inspect` **sans téléchargement** de l'image + **cache TTL 300 s** ; indicateur visuel (badges containers + stacks, tooltip, compteur)
+- [x] **Logs stack** : nouvel endpoint `/api/stacks/{name}/logs` + popup UI (même popup que les logs container, mode stack)
+- [x] **Check d'update stack** : badges d'update sur les stacks (`/api/stacks/{name}/update-check`)
+- [x] **Start de stack = `docker compose up -d`** (fonctionne même si la stack n'est pas déployée — crée les containers manquants)
+- [x] **Recréation de container standalone robuste** : volumes, config, réseaux, labels préservés, avec rollback en cas d'échec
+- [x] **Vérification du code de sortie pour exec** : exit code non-nul → échec remonté (au lieu d'un succès silencieux)
+- [x] **Erreurs agent réelles** : agent injoignable → **502** ; erreur métier → **500** (avec message)
+- [x] **Invalidation du cache après actions** (le cache stale-while-revalidate est invalidé à la fin de chaque action)
+- [x] **Suppression du code mort** : dossier `orchestrator/app/docker_manager/` (ancien accès Docker direct) et dépendance `docker` côté orchestrateur
+- [x] **Suppression de la fonctionnalité « famille »** (décision produit) : `categorize_stack`, endpoints `stacks-meta`, option UI — le champ `@category` reste une simple métadonnée descriptive
+- [x] **Suppression de la modale logs WS morte**
+- [x] **Bump version 0.0.3** (`version.txt`)
+
 ### Phase 8 — API Agent externe (Discord) 🔜
 - [ ] Endpoints REST orchestrateur (agents, containers, stacks, logs)
 - [ ] Système de clé API + whitelist IP
 - [ ] Validation humaine à la première connexion
 - [ ] Documentation de l'API
 
-### Phase 9 — Polish et Sécurité 🔜
+### Phase 9 — Tests, découpage, Sécurité et Polish 🔜
+- [ ] **Tests automatisés** : aucun test n'existe aujourd'hui (orchestrateur + agent) — priorité
+- [ ] **Découpage des fichiers monolithiques** : `orchestrator/app/routes/api.py` (~1800 lignes), `orchestrator/app/llm/client.py` (~1600 lignes), `orchestrator/app/static/js/app.js` (~3700 lignes)
+- [ ] **Forçage du changement du mot de passe admin par défaut** (`docky123`)
+- [ ] **Rate limiting** sur `/login`
+- [ ] **CSRF** sur les routes sensibles
+- [ ] **TLS orchestrateur ↔ agent**
+- [ ] **Pur event-driven** : suppression du refresh polling de 60s (et du polling UI) — actuellement conservés volontairement en filet de sécurité
 - [ ] Proxy WebSocket pour logs/console (actuellement popups HTTP)
 - [ ] Design final et cohérent (refonte UI)
 - [ ] Gestion des erreurs et notifications
 - [ ] Tests de sécurité
 - [ ] Documentation utilisateur
-- [ ] Affichage de la version dans l'interface
 - [ ] Script d'installation de l'agent (one-liner)
 
 ---
@@ -634,7 +683,8 @@ Ces métadonnées sont parsées et affichées dans le contexte du LLM.
 - Images Docker publiées sur ghcr.io (multi-arch amd64 + arm64)
 - Installation via docker pull + docker-compose (plus besoin de scripts d'install)
 - L'outil est destiné à un usage personnel dans un premier temps, mais conçu pour pouvoir évoluer
-- Les Phases 1-7 (Phases 1-5 + améliorations post-Phase 5 + Phase 6 event-driven & Git history + Phase 7 Lucide icons) ont été réalisées
+- Les Phases 1-7 (Phases 1-5 + améliorations post-Phase 5 + Phase 6 event-driven & Git history + Phase 7 Lucide icons) sont réalisées, ainsi que les améliorations récentes de la **v0.0.3** (streaming SSE, check d'update léger, logs stack, … — voir le plan de réalisation)
+- L'affichage de la version dans l'interface (badge v0.0.3 + alerte « Mismatch ») est **implémenté**
 
 ## 🔑 Décisions clés
 
@@ -646,7 +696,7 @@ Ces métadonnées sont parsées et affichées dans le contexte du LLM.
 - Pas de changement dans les outils LLM (même API /v1 compatible)
 
 ### Prompt système simplifié
-- Le system prompt ne liste **plus** les 28 outils un par un
+- Le system prompt ne liste **plus** les 30 outils un par un
 - À la place : règles concises orientées action (« Agis directement », « Utilise les outils », « Sois concis »)
 - Le LLM découvre les outils via la définition OpenAI `tools` (transmise dans l'appel API)
 - Résultat : prompt plus court, moins de tokens consommés, comportement plus fiable
