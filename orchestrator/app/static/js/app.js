@@ -64,7 +64,6 @@ const DockyApp = {
     // Sort & Group
     _sortMode: 'name-asc',   // persisted in localStorage
     _groupMode: 'none',      // persisted in localStorage
-    _stacksMeta: {},         // loaded from /api/settings/stacks-meta
     _statsCache: {},         // containerId -> { cpu_percent, mem_percent, mem_usage, mem_limit }
 
     // -------------------------------------------------------
@@ -3468,20 +3467,6 @@ const DockyApp = {
     },
 
     // -------------------------------------------------------
-    // Init
-    // -------------------------------------------------------
-
-    loadStacksMeta() {
-        this.apiFetch('/api/settings/stacks-meta').then(data => {
-            if (data && typeof data === 'object') {
-                this._stacksMeta = data;
-            }
-        }).catch(() => {
-            this._stacksMeta = {};
-        });
-    },
-
-    // -------------------------------------------------------
     // Sort & Group
     // -------------------------------------------------------
 
@@ -3561,13 +3546,6 @@ const DockyApp = {
                 if (!groups[agent]) groups[agent] = [];
                 groups[agent].push(stack);
             }
-        } else if (mode === 'family') {
-            for (const stack of stacks) {
-                const meta = this._stacksMeta[stack.name] || {};
-                const family = meta.family || 'Autres';
-                if (!groups[family]) groups[family] = [];
-                groups[family].push(stack);
-            }
         }
 
         return Object.entries(groups).map(([label, s]) => ({ label, stacks: s }));
@@ -3614,7 +3592,10 @@ const DockyApp = {
         } catch (e) { /* ignore */ }
         try {
             const groupSaved = localStorage.getItem('docky_group_mode');
-            if (groupSaved) this._groupMode = groupSaved;
+            // Fallback: an obsolete value (e.g. 'family') must not break rendering
+            if (groupSaved === 'none' || groupSaved === 'agent') {
+                this._groupMode = groupSaved;
+            }
         } catch (e) { /* ignore */ }
 
         // Appliquer les valeurs aux selects
@@ -3633,7 +3614,6 @@ const DockyApp = {
         // Check périodique des versions toutes les heures (3600s)
         this._versionCheckInterval = setInterval(() => this.checkVersions(), 3600000);
         this.startAgentsRefresh();
-        this.loadStacksMeta();
         this.refreshStacks();
         this.updateStatsBar();
 

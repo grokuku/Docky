@@ -717,37 +717,6 @@ async def api_update_git_history_settings(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# Settings - Stacks metadata
-# ---------------------------------------------------------------------------
-
-@router.get("/settings/stacks-meta")
-async def api_get_stacks_meta(request: Request):
-    """Return the stacks metadata (family, sort, grouping)."""
-    username = _check_auth(request)
-    if username is None:
-        return _unauthorized()
-    from app.config import load_settings
-    settings = load_settings()
-    return settings.get('stacks_meta', {})
-
-
-@router.put("/settings/stacks-meta")
-async def api_update_stacks_meta(request: Request):
-    """Update the stacks metadata (family, sort, grouping)."""
-    username = _check_auth(request)
-    if username is None:
-        return _unauthorized()
-    try:
-        data = await request.json()
-    except Exception:
-        return JSONResponse(status_code=400, content={"detail": "Invalid JSON"})
-    settings = load_settings()
-    settings['stacks_meta'] = data
-    save_settings(settings)
-    return {"success": True}
-
-
-# ---------------------------------------------------------------------------
 # Containers
 # ---------------------------------------------------------------------------
 
