@@ -1245,15 +1245,22 @@ body {
 
 .container-actions {
     display: flex;
-    gap: 3px;
+    align-items: center;
+    gap: 4px;
     flex-shrink: 0;
 }
 
 /* Icon buttons */
 
 .icon-btn {
+    /* Taille fixe : les boutons d'action restent identiques et visibles quel
+       que soit le contenu ou l'espace (pas de rétrécissement/déformation). */
     width: 30px;
     height: 30px;
+    min-width: 30px;
+    min-height: 30px;
+    flex-shrink: 0;
+    flex-grow: 0;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -2238,7 +2245,7 @@ body {
     filter: grayscale(0.8);
     transition: opacity 0.3s, filter 0.3s;
 }
-.grid-icon-btn { width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--border-color); border-radius: 5px; background: rgba(0,0,0,0.2); color: var(--text-secondary); cursor: pointer; font-size: 0.72rem; line-height: 1; padding: 0; transition: all var(--transition); }
+.grid-icon-btn { width: 24px; height: 24px; min-width: 24px; min-height: 24px; flex-shrink: 0; flex-grow: 0; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--border-color); border-radius: 5px; background: rgba(0,0,0,0.2); color: var(--text-secondary); cursor: pointer; font-size: 0.72rem; line-height: 1; padding: 0; transition: all var(--transition); }
 .grid-icon-btn:hover { border-color: var(--accent); color: var(--text-primary); transform: translateY(-1px); }
 .grid-icon-btn.btn-start:hover { border-color: var(--success); color: var(--success); }
 .grid-icon-btn.btn-stop:hover { border-color: var(--danger); color: var(--danger); }
@@ -2263,7 +2270,7 @@ body {
 .grid-card-extra .update-badge { flex-shrink: 0; }
 /* Les 6 boutons d'action passent sur 2 lignes si la carte est étroite : ils
    restent cliquables et visibles sans déborder sur le bord de la carte. */
-.grid-card-actions { display: flex; gap: 3px; justify-content: center; flex-wrap: wrap; margin-top: auto; }
+.grid-card-actions { display: flex; align-items: center; gap: 3px; justify-content: center; flex-wrap: wrap; margin-top: auto; }
 
 /* ============================================================
    Table Dashboard — mode tableau
@@ -2484,6 +2491,9 @@ body {
 
 .table-row-actions {
     display: flex;
+    align-items: center;
+    /* 6 boutons fixes de 24px + 5 espaces de 2px = 154px, exactement la
+       largeur de .table-col-actions (flex: 0 0 154px) : pas de débordement. */
     gap: 2px;
     flex-shrink: 0;
 }
@@ -2515,7 +2525,7 @@ body {
     50% { opacity: 1; }
 }
 
-@media (max-width: 700px) { .grid-card-name { font-size: 0.72rem; } .grid-icon-btn { width: 22px; height: 22px; font-size: 0.65rem; } }
+@media (max-width: 700px) { .grid-card-name { font-size: 0.72rem; } .grid-icon-btn { width: 22px; height: 22px; min-width: 22px; min-height: 22px; font-size: 0.65rem; } }
 
 /* Path mappings (agent settings) */
 

@@ -2281,17 +2281,26 @@ def check_stack_update(stack_name: str) -> Dict[str, Any]:
             continue
 
         repository, tag = _split_image_reference(image_name)
-        local_digest = _local_repo_digest_for_image(image_name)
+        local_digests = _local_repo_digests_for_image(image_name)
         remote_digests = _remote_manifest_digests(repository, tag)
         remote_digest = remote_digests[0] if remote_digests else None
         service_update = bool(
-            local_digest and remote_digest and local_digest not in remote_digests
+            remote_digest
+            and local_digests
+            and not any(d in remote_digests for d in local_digests)
         )
         any_update = any_update or service_update
 
+        logger.info(
+            "update-check stack=%s service=%s image=%s tag=%s local_digests=%s "
+            "remote_digests=%s update_available=%s",
+            stack_name, service_name, image_name, tag or "", local_digests,
+            remote_digests, service_update,
+        )
+
         result_services[service_name] = {
             "update_available": service_update,
-            "local_digest": local_digest,
+            "local_digest": local_digests[0] if local_digests else None,
             "remote_digest": remote_digest,
             "image": image_name,
         }
@@ -3199,6 +3208,57 @@ def _split_image_reference(image_name: str) -> tuple:
     return image_name, "latest"
 
 
+def _canonical_repository(repository: str) -> str:
+    """Normalize a repository name for update-check cache-key consistency.
+
+    Docker accepts several spellings of the same image on Docker Hub
+    (``nginx``, ``docker.io/nginx``, ``docker.io/library/nginx``), and the
+    update/invalidate path may receive a different spelling than the one the
+    check uses.  If they map to different cache keys, ``_invalidate_update_check``
+    misses the entry the next ``check_image_update`` reads and the "update
+    dispo" badge stays visible even after a successful update.
+
+    Only Docker Hub short forms are collapsed; third-party registries
+    (``ghcr.io/org/repo``, ``localhost:5000/repo``, ``registry:5000/repo``)
+    and bare ``library/...`` namespaces are left untouched so private
+    registries are never misinterpreted.
+    """
+    repository = (repository or "").strip()
+    if repository.startswith("docker.io/library/"):
+        return repository[len("docker.io/library/"):]
+    if repository.startswith("docker.io/"):
+        return repository[len("docker.io/"):]
+    return repository
+
+
+def _update_cache_key(repository: str, tag: str) -> tuple:
+    """Build the canonical update-check cache key for ``repository:tag``.
+
+    Both the check (:func:`_remote_manifest_digests`) and the invalidation
+    (:func:`_invalidate_update_check`) MUST agree on this key, otherwise a
+    stale remote-digest entry survives an update and the badge stays visible
+    until the 300 s TTL expires (and, with a wrong-tag comparison, forever).
+    """
+    return (_canonical_repository(repository), tag)
+
+
+def _update_check_cache_info(repository: str, tag: str) -> Dict[str, Any]:
+    """Describe the cached remote-digest entry for ``repository:tag``.
+
+    Used by the diagnostic log in :func:`check_image_update` so an operator
+    can tell whether the result was served from cache (and how old) or absent
+    (a fresh registry inspection was required).
+    """
+    entry = _update_check_cache.get(_update_cache_key(repository, tag))
+    if entry is None:
+        return {"cached": False}
+    return {
+        "cached": True,
+        "age_s": round(time.time() - entry.get("ts", 0.0), 1),
+        "error": entry.get("error"),
+    }
+
+
 def _clean_update_check_cache(now: float) -> None:
     """Remove expired entries from the in-memory update-check cache."""
     expired = [
@@ -3270,7 +3330,7 @@ def _remote_manifest_digests(repository: str, tag: str) -> List[str]:
     empty list when the registry is unreachable or the image is not found;
     update checks are deliberately non-blocking.
     """
-    cache_key = (repository, tag)
+    cache_key = _update_cache_key(repository, tag)
     now = time.time()
     cached = _update_check_cache.get(cache_key)
     if cached is not None and now - cached.get("ts", 0.0) < _UPDATE_CHECK_TTL:
@@ -3322,7 +3382,9 @@ def _invalidate_update_check(image_ref: str) -> None:
     if not image_ref:
         return
     repository, tag = _split_image_reference(image_ref)
-    _update_check_cache.pop((repository, tag), None)
+    key = _update_cache_key(repository, tag)
+    if _update_check_cache.pop(key, None) is not None:
+        logger.info("update-check cache invalidated image_ref=%s key=%r", image_ref, key)
 
 
 def _invalidate_stack_update_cache(stack_name: str) -> int:
@@ -3394,20 +3456,14 @@ def _local_repo_digests(image) -> List[str]:
     return digests
 
 
-def _local_repo_digest(image) -> Optional[str]:
-    """Extract the first ``sha256:...`` part from an image's ``RepoDigests``."""
-    digests = _local_repo_digests(image)
-    return digests[0] if digests else None
-
-
-def _local_repo_digest_for_image(image_name: str) -> Optional[str]:
-    """Return the local repo digest for a pulled image, if available."""
+def _local_repo_digests_for_image(image_name: str) -> List[str]:
+    """Return ALL local repo digests for a pulled image, if available."""
     try:
         client = get_docker_client()
         image = client.images.get(image_name)
     except (NotFound, DockerException, APIError):
-        return None
-    return _local_repo_digest(image)
+        return []
+    return _local_repo_digests(image)
 
 
 def check_image_update(container_id: str) -> Dict[str, Any]:
@@ -3417,13 +3473,22 @@ def check_image_update(container_id: str) -> Dict[str, Any]:
     via ``docker manifest inspect`` (no image pull).  Returns a dict with
     ``update_available`` (bool), ``local_digest``, ``remote_digest``,
     ``local_tag`` and ``remote_tag``.
+
+    The image reference used for BOTH the remote lookup and the cache key is
+    the container's ``Config.Image`` — the exact reference it was created
+    with — NOT ``image.tags[0]``.  For a multi-tag image the first tag can be
+    a different one than the container actually runs (e.g. ``myapp:latest``
+    while the container was created from ``myapp:1.0``): comparing against
+    the wrong tag's manifest would report ``update_available=True`` forever
+    even after a successful update, and the invalidation key (also derived
+    from ``Config.Image``) would not match the key this check reads.
     """
     try:
         client = get_docker_client()
         c = client.containers.get(container_id)
         image = c.image
-        image_name = image.tags[0] if image.tags else None
     except (NotFound, DockerException, APIError) as e:
+        logger.warning("update-check container=%s unavailable: %s", container_id, e)
         return {
             "update_available": False,
             "image": None,
@@ -3434,6 +3499,10 @@ def check_image_update(container_id: str) -> Dict[str, Any]:
             "error": str(e),
         }
 
+    # Authoritative reference: the exact image the container was created with.
+    # image.tags[0] is deliberately NOT used (see docstring).
+    config_image = (c.attrs.get("Config", {}).get("Image") or "").strip()
+    image_name = config_image or (image.tags[0] if image.tags else None)
     if not image_name:
         return {
             "update_available": False,
@@ -3448,6 +3517,12 @@ def check_image_update(container_id: str) -> Dict[str, Any]:
     repository, tag = _split_image_reference(image_name)
     local_digests = _local_repo_digests(image)
     if not local_digests:
+        logger.info(
+            "update-check image=%s tag=%s local_digests=[] update_available=False "
+            "reason=no_local_repo_digest (locally built image or registry "
+            "without digests)",
+            image_name, tag or "",
+        )
         return {
             "update_available": False,
             "image": image_name,
@@ -3458,6 +3533,7 @@ def check_image_update(container_id: str) -> Dict[str, Any]:
             "error": "No local repo digest found",
         }
 
+    cache_before = _update_check_cache_info(repository, tag)
     remote_digests = _remote_manifest_digests(repository, tag)
     remote_digest = remote_digests[0] if remote_digests else None
     # ``update_available`` is false as soon as ANY local repo digest appears
@@ -3465,6 +3541,16 @@ def check_image_update(container_id: str) -> Dict[str, Any]:
     update_available = bool(
         remote_digest
         and not any(local_digest in remote_digests for local_digest in local_digests)
+    )
+
+    # Diagnostic line: if the badge ever stays visible, this log tells us the
+    # exact image/tag/digests that were compared and whether the remote list
+    # came from cache (and how old) or from a fresh registry inspection.
+    logger.info(
+        "update-check container=%s image=%s tag=%s local_digests=%s "
+        "remote_digests=%s update_available=%s cache_before=%s",
+        container_id, image_name, tag or "", local_digests, remote_digests,
+        update_available, cache_before,
     )
 
     return {

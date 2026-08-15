@@ -1770,7 +1770,37 @@ const DockyApp = {
             const url = '/api/containers/' + encodeURIComponent(containerId) + '/update-check' + this.agentQuery(agent);
             const resp = await fetch(url, { credentials: 'same-origin' });
             if (resp.status === 401) return;
-            const data = await resp.json();
+            if (resp.status === 404) {
+                // Défense supplémentaire, pas la cause principale : le backend
+                // répond 404 quand le container n'existe plus (par ex. après un
+                // update-image réussi qui a recréé le container avec un NOUVEL
+                // id). En pratique le badge fantôme est déjà purgé via le chemin
+                // 200-with-false + _pruneUpdateCache au re-render ; on ne fait ici
+                // que retirer l'entrée du cache et resynchroniser le compteur pour
+                // rester cohérent si un vrai 404 arrivait.
+                delete this._updateCheckCache[cacheKey];
+                const newCount = this._countCachedUpdates();
+                if (newCount !== this._updateAvailableCount) {
+                    this._updateAvailableCount = newCount;
+                    this.updateStatsBar();
+                }
+                return;
+            }
+            let data = null;
+            try {
+                data = await resp.json();
+            } catch (e) {
+                data = null;
+            }
+            if (!data || typeof data !== 'object') {
+                // Réponse inattendue (HTML d'erreur, etc.) : ne pas planter ni
+                // écrire une entrée vide qui masquerait/afflicherait un badge.
+                if (renderToken === this._updateCheckToken) {
+                    const badge = document.getElementById('update-' + containerId);
+                    if (badge) badge.classList.add('hidden');
+                }
+                return;
+            }
 
             // On met à jour le cache AVANT toute manipulation du DOM : c'est lui qui
             // pilote l'état initial des badges au prochain rendu (anti-flicker).
@@ -3902,6 +3932,31 @@ const DockyApp = {
 
     _sortContainers(containers) {
         const mode = this._sortMode;
+        // Tri par défaut = ordre alphabétique par nom (insensible à la casse,
+        // localeCompare sur le nom complet) AU SEIN de chaque groupe de stack.
+        // Appliqué APRÈS le filtrage recherche mais AVANT le rendu des lignes
+        // (appelé par renderTableDashboard ET renderGridDashboard).
+        // Un tri explicite (select sort-select) reste prioritaire : name-desc,
+        // status, cpu-desc, ram-desc.
+        if (mode === 'name-asc') {
+            return [...containers].sort((a, b) =>
+                (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
+        }
+        if (mode === 'name-desc') {
+            return [...containers].sort((a, b) =>
+                (b.name || '').localeCompare(a.name || '', undefined, { sensitivity: 'base' }));
+        }
+        if (mode === 'status') {
+            // Cohérent avec containerStatusBadge : running → partial → stopped.
+            const rank = (s) => {
+                const st = (s || '').toLowerCase();
+                if (st === 'running') return 0;
+                if (st === 'restarting' || st === 'paused') return 1;
+                if (st === 'exited' || st === 'stopped' || st === 'dead' || st === 'error' || st === 'created') return 2;
+                return 3;
+            };
+            return [...containers].sort((a, b) => rank(a.status) - rank(b.status));
+        }
         if (mode !== 'cpu-desc' && mode !== 'ram-desc') {
             // Keep original order (already grouped by stack)
             return containers;
