@@ -36,15 +36,15 @@ async def dashboard(request: Request):
 
 
 @router.get("/popup/logs")
-async def popup_logs(request: Request, agent: str = "", container: str = "", name: str = ""):
-    """Popup page showing container logs (openable in a separate window)."""
+async def popup_logs(request: Request, agent: str = "", container: str = "", name: str = "", stack: str = ""):
+    """Popup page showing container or stack logs (separate window)."""
     username = _is_authenticated(request)
     if username is None:
         return RedirectResponse(url="/login", status_code=303)
     return templates.TemplateResponse(
         request,
         "logs.html",
-        {"username": username, "agent": agent, "container": container, "name": name},
+        {"username": username, "agent": agent, "container": container, "name": name, "stack": stack},
     )
 
 

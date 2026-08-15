@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 import httpx
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, Query
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from app.auth.router import COOKIE_NAME
 from app.auth.jwt_utils import verify_token
@@ -129,10 +129,85 @@ def _resolve_agent(agent_name: Optional[str]):
 
 
 def _check_agent_error(result):
-    """If *result* is a dict reporting an agent-side error, return a 502."""
+    """If *result* is a dict reporting an agent-side error, return an HTTP error.
+
+    Distinguishes two failure modes:
+
+    - **agent unreachable** (transport / HTTP error, tagged ``unreachable``)
+      → 502 “Failed to communicate with agent”.
+    - **business error returned by the agent** (``{success: false, error: msg}``)
+      → 500 with ``detail`` set to the real message so the UI no longer masks
+      the underlying Docker/compose error.
+
+    The response body always carries ``success: False`` so JSON consumers that
+    inspect ``result.success`` (e.g. ``applyContainerEdit``) keep working and
+    can display ``result.error``.
+    """
     if isinstance(result, dict) and not result.get("success", True) and result.get("error"):
-        return _agent_unreachable(str(result["error"]))
+        if result.get("unreachable"):
+            return _agent_unreachable(str(result["error"]))
+        message = str(result["error"])
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": message, "detail": message},
+        )
     return None
+
+
+def _sse_response(event_iter, on_success=None):
+    """Wrap an async iterator of stream events into an SSE response.
+
+    Re-emits the events produced by ``agent_manager.stream_*`` methods
+    (``output`` / ``done`` / ``error``) as ``text/event-stream`` frames to the
+    browser. The ``Cache-Control: no-cache`` and ``X-Accel-Buffering: no``
+    headers prevent buffering by browsers and reverse proxies.
+
+    If *on_success* is provided, it is awaited (once) after the stream ends and
+    the final ``done`` event reported success. It is used to invalidate the
+    agent cache so the UI reflects the new state immediately.
+    """
+    async def generate():
+        success = False
+        try:
+            async for evt in event_iter:
+                if evt["type"] == "output":
+                    yield f"event: output\ndata: {json.dumps({'line': evt.get('line', '')}, ensure_ascii=False)}\n\n"
+                elif evt["type"] == "done":
+                    success = bool(evt.get("success", True))
+                    payload = {"success": success, "output": evt.get("output", "")}
+                    if evt.get("error"):
+                        payload["error"] = evt["error"]
+                    yield f"event: done\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                elif evt["type"] == "error":
+                    yield f"event: error\ndata: {json.dumps({'error': evt.get('error', 'Erreur inconnue')}, ensure_ascii=False)}\n\n"
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            yield f"event: error\ndata: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+        finally:
+            if success and on_success is not None:
+                try:
+                    await on_success()
+                except Exception as e:
+                    logger.warning("SSE on_success callback failed: %s", e)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
+def _sse_action_response(agent_name: str, event_iter):
+    """SSE response for an action that invalidates the agent cache on success."""
+    async def _on_success():
+        await agent_manager.invalidate_cache(agent_name)
+
+    return _sse_response(event_iter, on_success=_on_success)
 
 
 # ---------------------------------------------------------------------------
@@ -796,16 +871,17 @@ async def api_update_container(
 async def api_update_container_image(
     request: Request, container_id: str, agent: str = Query(...)
 ):
-    """Pull the latest image for a container and recreate it (⬆ button)."""
+    """Pull the latest image for a container and recreate it (⬆ button).
+
+    Streams the progress as SSE to the browser.
+    """
     username = _check_auth(request)
     if username is None:
         return _unauthorized()
     agent_name, err = _resolve_agent(agent)
     if err is not None:
         return err
-    result = await agent_manager.update_container_image(agent_name, container_id)
-    err = _check_agent_error(result)
-    return err if err is not None else result
+    return _sse_action_response(agent_name, agent_manager.stream_update_container_image(agent_name, container_id))
 
 
 # ---------------------------------------------------------------------------
@@ -825,106 +901,6 @@ async def api_container_logs(
         return err
     lines = await agent_manager.get_container_logs(agent_name, container_id, tail=tail)
     return {"lines": lines}
-
-
-@router.websocket("/containers/{container_id}/logs/stream")
-async def ws_container_logs(websocket: WebSocket, container_id: str):
-    """WebSocket for streaming container logs in real-time.
-
-    Proxies the client WebSocket to the target agent's
-    ``/agent/containers/{id}/logs/stream`` endpoint, relaying all messages
-    bidirectionally so the frontend gets a live log stream.
-    """
-    # Auth
-    username = _check_auth_ws(websocket)
-    if username is None:
-        await websocket.close(code=4401)
-        return
-
-    # Get agent param
-    agent = websocket.query_params.get("agent", "")
-    if not agent:
-        await websocket.close(code=4400)
-        return
-
-    agent_name, err = _resolve_agent(agent)
-    if err is not None:
-        await websocket.close(code=4403)
-        return
-
-    # Get agent URL and API key
-    agent_info = agent_manager.agents.get(agent_name)
-    if not agent_info:
-        await websocket.close(code=4404)
-        return
-
-    agent_url = agent_info.get("url", "").rstrip("/")
-    agent_api_key = agent_info.get("api_key", "")
-
-    # Build target WS URL
-    ws_proto = "wss" if agent_url.startswith("https") else "ws"
-    agent_path = agent_url.split("://", 1)[1] if "://" in agent_url else agent_url
-    target_url = f"{ws_proto}://{agent_path}/agent/containers/{urllib.parse.quote(container_id, safe='')}/logs/stream"
-    if agent_api_key:
-        target_url += f"?api_key={urllib.parse.quote(agent_api_key, safe='')}"
-
-    # Accept the client WebSocket
-    await websocket.accept()
-
-    try:
-        import websockets as ws_lib
-        async with ws_lib.connect(target_url) as agent_ws:
-            async def client_to_agent():
-                try:
-                    while True:
-                        msg = await websocket.receive()
-                        if msg["type"] == "websocket.disconnect":
-                            break
-                        if msg.get("bytes") is not None:
-                            await agent_ws.send(msg["bytes"])
-                        elif msg.get("text") is not None:
-                            await agent_ws.send(msg["text"])
-                except WebSocketDisconnect:
-                    pass
-                except Exception as e:
-                    logger.debug("client_to_agent relay ended: %s", e)
-
-            async def agent_to_client():
-                try:
-                    async for msg in agent_ws:
-                        if isinstance(msg, bytes):
-                            await websocket.send_bytes(msg)
-                        else:
-                            await websocket.send_text(msg)
-                except Exception as e:
-                    logger.debug("agent_to_client relay ended: %s", e)
-
-            # Use FIRST_COMPLETED so that when either side closes,
-            # we cancel the other and exit cleanly.
-            tasks = [
-                asyncio.create_task(client_to_agent()),
-                asyncio.create_task(agent_to_client()),
-            ]
-            done, pending = await asyncio.wait(
-                tasks, return_when=asyncio.FIRST_COMPLETED
-            )
-            for task in pending:
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-    except Exception as e:
-        logger.warning("WS logs proxy error: %s", e)
-        try:
-            await websocket.send_text(json.dumps({"error": str(e)}))
-        except Exception:
-            pass
-    finally:
-        try:
-            await websocket.close()
-        except Exception:
-            pass
 
 
 @router.websocket("/events")
@@ -1204,56 +1180,91 @@ async def api_stack_containers(
 
 @router.post("/stacks/{name}/start")
 async def api_stack_start(request: Request, name: str, agent: str = Query(...)):
+    """Start a stack (``docker compose up -d``) — streamed as SSE progress lines."""
     username = _check_auth(request)
     if username is None:
         return _unauthorized()
     agent_name, err = _resolve_agent(agent)
     if err is not None:
         return err
-    result = await agent_manager.start_stack(agent_name, name)
-    err = _check_agent_error(result)
-    return err if err is not None else result
+    return _sse_action_response(agent_name, agent_manager.stream_start_stack(agent_name, name))
 
 
 @router.post("/stacks/{name}/stop")
 async def api_stack_stop(request: Request, name: str, agent: str = Query(...)):
+    """Stop a stack — streamed as SSE progress lines."""
     username = _check_auth(request)
     if username is None:
         return _unauthorized()
     agent_name, err = _resolve_agent(agent)
     if err is not None:
         return err
-    result = await agent_manager.stop_stack(agent_name, name)
-    err = _check_agent_error(result)
-    return err if err is not None else result
+    return _sse_action_response(agent_name, agent_manager.stream_stop_stack(agent_name, name))
 
 
 @router.post("/stacks/{name}/restart")
 async def api_stack_restart(request: Request, name: str, agent: str = Query(...)):
+    """Restart a stack — streamed as SSE progress lines."""
     username = _check_auth(request)
     if username is None:
         return _unauthorized()
     agent_name, err = _resolve_agent(agent)
     if err is not None:
         return err
-    result = await agent_manager.restart_stack(agent_name, name)
-    err = _check_agent_error(result)
-    return err if err is not None else result
+    return _sse_action_response(agent_name, agent_manager.stream_restart_stack(agent_name, name))
 
 
 @router.post("/stacks/{name}/update")
 async def api_stack_update(request: Request, name: str, agent: str = Query(...)):
+    """Update a stack (pull + up -d) — streamed as SSE progress lines."""
     username = _check_auth(request)
     if username is None:
         return _unauthorized()
     agent_name, err = _resolve_agent(agent)
     if err is not None:
         return err
-    try:
-        result = await agent_manager.update_stack(agent_name, name)
-        return result
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
+    return _sse_action_response(agent_name, agent_manager.stream_update_stack(agent_name, name))
+
+
+@router.get("/stacks/{name}/update-check")
+async def api_stack_update_check(
+    request: Request, name: str, agent: str = Query(...)
+):
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    return await agent_manager.check_stack_update(agent_name, name)
+
+
+@router.get("/stacks/{name}/logs")
+async def api_stack_logs(
+    request: Request, name: str, tail: int = Query(100), agent: str = Query(...)
+):
+    """Return the last ``tail`` log lines for a stack (docker compose logs).
+
+    Returns the same ``{"lines": [{message, stream}, ...]}`` shape as the
+    container logs endpoint so the popup ``logs.html`` can reuse its rendering.
+    """
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    result = await agent_manager.get_stack_logs(agent_name, name, tail)
+    if not isinstance(result, dict) or not result.get("success"):
+        message = result.get("error", "Failed to fetch stack logs") if isinstance(result, dict) else "Failed to fetch stack logs"
+        return JSONResponse(status_code=500, content={"detail": message, "error": message})
+    output = result.get("output", "") or ""
+    lines = [
+        {"message": line, "stream": "stdout"}
+        for line in output.splitlines()
+        if line.strip()
+    ]
+    return {"lines": lines}
 
 
 # ---------------------------------------------------------------------------
@@ -1324,9 +1335,10 @@ async def api_put_stack_file(
         return err
     body = await request.body()
     content = body.decode("utf-8")
-    ok = await agent_manager.save_stack_file(agent_name, name, filename, content)
-    if not ok:
-        return JSONResponse(status_code=502, content={"detail": "Failed to communicate with agent"})
+    result = await agent_manager.save_stack_file(agent_name, name, filename, content)
+    err = _check_agent_error(result)
+    if err is not None:
+        return err
     return {"success": True, "name": filename}
 
 
@@ -1380,9 +1392,10 @@ async def api_put_compose(request: Request, name: str, agent: str = Query(...)):
         return err
     body = await request.body()
     content = body.decode("utf-8")
-    ok = await agent_manager.save_stack_file(agent_name, name, "docker-compose.yml", content)
-    if not ok:
-        return JSONResponse(status_code=502, content={"detail": "Failed to communicate with agent"})
+    result = await agent_manager.save_stack_file(agent_name, name, "docker-compose.yml", content)
+    err = _check_agent_error(result)
+    if err is not None:
+        return err
     return {"success": True}
 
 
@@ -1410,9 +1423,10 @@ async def api_put_env(request: Request, name: str, agent: str = Query(...)):
         return err
     body = await request.body()
     content = body.decode("utf-8")
-    ok = await agent_manager.save_stack_file(agent_name, name, ".env", content)
-    if not ok:
-        return JSONResponse(status_code=502, content={"detail": "Failed to communicate with agent"})
+    result = await agent_manager.save_stack_file(agent_name, name, ".env", content)
+    err = _check_agent_error(result)
+    if err is not None:
+        return err
     return {"success": True}
 
 
@@ -1484,19 +1498,14 @@ async def api_delete_stack(request: Request, name: str, agent: str = Query(...))
 
 @router.post("/stacks/{name}/deploy")
 async def api_deploy_stack(request: Request, name: str, agent: str = Query(...)):
+    """Deploy (down + up) a stack — streamed as SSE progress lines."""
     username = _check_auth(request)
     if username is None:
         return _unauthorized()
     agent_name, err = _resolve_agent(agent)
     if err is not None:
         return err
-    try:
-        result = await agent_manager.deploy_stack(agent_name, name)
-        err = _check_agent_error(result)
-        return err if err is not None else result
-    except Exception as e:
-        logger.error("deploy_stack failed for stack '%s' on agent '%s': %s", name, agent_name, str(e), exc_info=True)
-        return JSONResponse(status_code=502, content={"detail": f"Failed to deploy stack: {str(e)}"})
+    return _sse_action_response(agent_name, agent_manager.stream_deploy_stack(agent_name, name))
 
 
 # ---------------------------------------------------------------------------

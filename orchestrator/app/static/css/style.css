@@ -1420,12 +1420,6 @@ body {
     overflow: hidden;
 }
 
-.modal-logs {
-    width: 90%;
-    max-width: 900px;
-    height: 75vh;
-}
-
 .modal-console {
     width: 90%;
     max-width: 800px;
@@ -1444,26 +1438,6 @@ body {
 .modal-header h3 {
     font-size: 0.95rem;
     font-weight: 600;
-}
-
-.modal-controls {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-}
-
-.stream-toggle {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 0.8125rem;
-    color: var(--text-secondary);
-    cursor: pointer;
-}
-
-.stream-toggle input {
-    cursor: pointer;
-    accent-color: var(--accent);
 }
 
 .modal-body {
@@ -1519,6 +1493,19 @@ body {
 .terminal-cmd {
     color: var(--accent);
     font-weight: 600;
+}
+
+.terminal-line.terminal-summary {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(128, 128, 160, 0.25);
+    font-weight: 700;
+}
+.terminal-line.terminal-summary.success {
+    color: #4ade80;
+}
+.terminal-line.terminal-summary.error {
+    color: #f87171;
 }
 
 /* Console input */
@@ -1915,7 +1902,6 @@ body {
         width: calc(100% - 32px);
     }
 
-    .modal-logs,
     .modal-console {
         width: 95%;
         height: 80vh;
@@ -2119,6 +2105,7 @@ body {
 }
 .status-indicator.status-running::before {
     background: var(--success);
+    animation: docky-pulse 1.2s ease-in-out infinite;
 }
 
 .status-indicator.status-stopped {
@@ -2127,6 +2114,11 @@ body {
 }
 .status-indicator.status-stopped::before {
     background: var(--danger);
+}
+
+@keyframes docky-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.35; transform: scale(0.75); }
 }
 
 /* Agents list */

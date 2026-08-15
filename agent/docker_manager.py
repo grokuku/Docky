@@ -6,14 +6,17 @@ ports scanning and update checks.
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
 import shutil
+import signal
 import struct
 import subprocess
+import time
 from pathlib import Path
-from typing import Any, Dict, Generator, List, Optional
+from typing import Any, AsyncIterator, Dict, Generator, List, Optional
 
 import docker
 from docker.errors import DockerException, NotFound, APIError
@@ -25,6 +28,33 @@ logger = logging.getLogger(__name__)
 # Pseudo-stack name used to group containers that are not part of any
 # Docker Compose project (i.e. standalone containers).
 STANDALONE_STACK_NAME = "Standalone"
+
+# ---------------------------------------------------------------------------
+# Streaming command execution
+# ---------------------------------------------------------------------------
+
+# Idle timeout for streamed commands: if no output is produced for this many
+# seconds the running process is killed. The counter only ticks during output
+# silences — as long as lines keep arriving the command is allowed to run.
+STREAM_IDLE_TIMEOUT = 120
+
+# Event types emitted by the docker_manager streaming generators.
+STREAM_EVENT_OUTPUT = "output"
+STREAM_EVENT_RESULT = "result"
+
+
+class StreamCommandError(Exception):
+    """Raised when a streamed subprocess exits with a non-zero status.
+
+    All output lines are yielded *before* this exception is raised, so the
+    caller can display the full progress and then report the failure.
+    """
+
+    def __init__(self, message: str, returncode: Optional[int] = None, command: str = ""):
+        super().__init__(message)
+        self.message = message
+        self.returncode = returncode
+        self.command = command
 
 
 # ---------------------------------------------------------------------------
@@ -420,8 +450,14 @@ def get_container_stats(container_id: str) -> Dict[str, Any]:
     }
 
 
-def exec_in_container(container_id: str, command: str, tty: bool = False) -> str:
-    """Execute a command in a container and return the output (one-shot)."""
+def exec_in_container(container_id: str, command: str, tty: bool = False) -> Dict[str, Any]:
+    """Execute a command in a container and return output plus the exit code.
+
+    Returns a dict with ``success`` (exit code 0), ``output`` (raw stdout/stderr
+    text) and ``exit_code``. On a hard failure (container not found, docker
+    daemon unreachable…) ``success`` is ``False`` and ``output`` starts with
+    ``[error]``.
+    """
     try:
         client = get_docker_client()
         c = client.containers.get(container_id)
@@ -429,9 +465,20 @@ def exec_in_container(container_id: str, command: str, tty: bool = False) -> str
         output = result.output
         if isinstance(output, bytes):
             output = output.decode("utf-8", errors="replace")
-        return output
+        exit_code = result.exit_code
+        if exit_code is None:
+            exit_code = -1
+        return {
+            "success": exit_code == 0,
+            "output": output if isinstance(output, str) else str(output),
+            "exit_code": exit_code,
+        }
     except (NotFound, DockerException, APIError) as e:
-        return f"[error] {e}"
+        return {
+            "success": False,
+            "output": f"[error] {e}",
+            "exit_code": -1,
+        }
 
 
 def exec_in_container_stream(container_id: str, command: str):
@@ -737,25 +784,17 @@ def _compose_file_path(stack_path: Path) -> Optional[Path]:
     return None
 
 
-async def _run_compose(stack_name: str, command: str, timeout: int = 300) -> Dict[str, Any]:
-    """Run a docker compose subcommand for a stack (non-blocking).
-
-    Works for both managed stacks (in /data/stacks/) and external stacks
-    whose compose file path is derived from container labels.
+def _resolve_compose_args(stack_name: str, command: str):
+    """Return ``(args, work_dir)`` for a ``docker compose`` invocation.
 
     For managed stacks (or external stacks whose compose file was found via
-    container labels), the ``-f`` flag is used.
-
-    For external stacks whose compose file could not be located, the
-    ``--project-name`` flag is used instead, which allows commands such as
-    ``stop``, ``restart`` and ``start`` to operate on the existing containers
-    without needing the compose file.
-
-    Uses :func:`asyncio.create_subprocess_exec` so the FastAPI event loop
-    is not blocked while Docker pulls images or starts containers.
+    container labels), the ``-f`` flag is used.  For external stacks whose
+    compose file could not be located, the ``--project-name`` flag is used
+    instead, which allows commands such as ``stop``, ``restart`` and
+    ``start`` to operate on the existing containers without needing the
+    compose file.
     """
     compose_file, cwd = _resolve_stack_compose(stack_name)
-
     cmd_parts = command.split()
 
     if compose_file is not None and Path(compose_file).exists():
@@ -766,7 +805,23 @@ async def _run_compose(stack_name: str, command: str, timeout: int = 300) -> Dic
         # External stack without a compose file: use --project-name
         args = ["docker", "compose", "--project-name", stack_name] + cmd_parts
         work_dir = None
+    return args, work_dir
 
+
+async def _run_compose(stack_name: str, command: str, timeout: int = 300) -> Dict[str, Any]:
+    """Run a docker compose subcommand for a stack (non-blocking).
+
+    Works for both managed stacks (in /data/stacks/) and external stacks
+    whose compose file path is derived from container labels.
+
+    Uses :func:`asyncio.create_subprocess_exec` so the FastAPI event loop
+    is not blocked while Docker pulls images or starts containers.
+
+    This non-streaming variant accumulates stdout/stderr and returns a single
+    result dict — kept for callers that do not need real-time output (e.g.
+    spec updates that redeploy internally).
+    """
+    args, work_dir = _resolve_compose_args(stack_name, command)
     full_cmd = " ".join(args)
     try:
         if work_dir:
@@ -806,6 +861,249 @@ async def _run_compose(stack_name: str, command: str, timeout: int = 300) -> Dic
         return {"success": False, "error": "Command timed out", "command": full_cmd}
     except Exception as e:
         return {"success": False, "error": str(e), "command": full_cmd}
+
+
+async def _run_command_stream(
+    cmd: List[str],
+    cwd: Optional[str] = None,
+    env: Optional[Dict[str, str]] = None,
+    idle_timeout: int = STREAM_IDLE_TIMEOUT,
+) -> AsyncIterator[str]:
+    """Yield stdout/stderr lines from a subprocess in real time.
+
+    Both streams are read concurrently and each decoded line is yielded as
+    soon as it is produced (docker compose writes its progress to stderr,
+    so reading only stdout would defeat the purpose of streaming).
+
+    **Idle timeout** — if *no* output arrives for ``idle_timeout`` seconds
+    the process is SIGKILLed and :class:`asyncio.TimeoutError` is raised. As
+    long as lines keep flowing the command is allowed to run indefinitely:
+    the timeout only measures output silence, not total runtime.
+
+    If the process exits with a non-zero status, all output lines are first
+    yielded and then :class:`StreamCommandError` is raised.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        cwd=cwd,
+        env=env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        # New session so a timeout kill can target the whole process group
+        # (docker CLI may spawn children that would otherwise keep the pipes
+        # open and delay reaping of the killed leader).
+        start_new_session=True,
+    )
+    queue: asyncio.Queue = asyncio.Queue()
+    remaining_readers = 2  # stdout + stderr
+
+    async def _pump(stream):
+        try:
+            while True:
+                line = await stream.readline()
+                if not line:
+                    break
+                text = line.decode("utf-8", errors="replace").rstrip("\n")
+                if text:
+                    await queue.put(text)
+        except (asyncio.CancelledError, Exception):
+            pass
+        finally:
+            # Sentinel: this reader is done (the consumer counts them).
+            await queue.put(None)
+
+    readers = [
+        asyncio.ensure_future(_pump(proc.stdout)),
+        asyncio.ensure_future(_pump(proc.stderr)),
+    ]
+    try:
+        while remaining_readers > 0:
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=idle_timeout)
+            except asyncio.TimeoutError:
+                raise TimeoutError(f"Timeout: no output for {idle_timeout}s") from None
+            if item is None:
+                remaining_readers -= 1
+            else:
+                yield item
+    finally:
+        for t in readers:
+            t.cancel()
+        if proc.returncode is None:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        # Bounded reaping: never hang the stream on orphaned children.
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except Exception:
+            pass
+
+    if proc.returncode != 0:
+        raise StreamCommandError(
+            f"Command failed with exit code {proc.returncode}",
+            returncode=proc.returncode,
+            command=" ".join(cmd),
+        )
+
+
+async def _stream_compose(
+    stack_name: str,
+    command: str,
+    idle_timeout: int = STREAM_IDLE_TIMEOUT,
+) -> AsyncIterator[Dict[str, Any]]:
+    """Run a ``docker compose`` subcommand and yield stream events.
+
+    Yields ``{"type": "output", "line": str}`` for each output line, then a
+    final ``{"type": "result", "success": bool, "output": str, "error": str,
+    "command": str}`` event.  On a timeout the process is killed and the
+    result event reports ``success: False``.
+    """
+    args, work_dir = _resolve_compose_args(stack_name, command)
+    full_cmd = " ".join(args)
+    output_lines: list = []
+    try:
+        async for line in _run_command_stream(args, cwd=work_dir, idle_timeout=idle_timeout):
+            output_lines.append(line)
+            yield {"type": STREAM_EVENT_OUTPUT, "line": line}
+    except asyncio.TimeoutError as e:
+        yield {
+            "type": STREAM_EVENT_RESULT,
+            "success": False,
+            "output": "\n".join(output_lines),
+            "error": str(e),
+            "command": full_cmd,
+        }
+        return
+    except StreamCommandError as e:
+        yield {
+            "type": STREAM_EVENT_RESULT,
+            "success": False,
+            "output": "\n".join(output_lines),
+            "error": e.message or f"Command failed with exit code {e.returncode}",
+            "command": full_cmd,
+        }
+        return
+    except Exception as e:
+        yield {
+            "type": STREAM_EVENT_RESULT,
+            "success": False,
+            "output": "\n".join(output_lines),
+            "error": str(e),
+            "command": full_cmd,
+        }
+        return
+    yield {
+        "type": STREAM_EVENT_RESULT,
+        "success": True,
+        "output": "\n".join(output_lines),
+        "error": "",
+        "command": full_cmd,
+    }
+
+
+async def _stream_compose_step(
+    name: str,
+    command: str,
+    label: Optional[str] = None,
+    idle_timeout: int = STREAM_IDLE_TIMEOUT,
+) -> AsyncIterator[Dict[str, Any]]:
+    """Run one compose command, optionally prefixing it with a label line."""
+    if label:
+        yield {"type": STREAM_EVENT_OUTPUT, "line": label}
+    async for evt in _stream_compose(name, command, idle_timeout=idle_timeout):
+        yield evt
+
+
+def _compose_up_command(name: str) -> str:
+    """Return the compose subcommand used to bring a stack up.
+
+    External stacks without a compose file fall back to ``start`` (which
+    operates on the existing containers via ``--project-name``).
+    """
+    compose_file, _cwd = _resolve_stack_compose(name)
+    if compose_file is None or not Path(compose_file).exists():
+        return "start"
+    return "up -d"
+
+
+def _compose_down_command(name: str) -> str:
+    """Return the compose subcommand used to take a stack down."""
+    compose_file, _cwd = _resolve_stack_compose(name)
+    if compose_file is None or not Path(compose_file).exists():
+        return "stop"
+    return "down"
+
+
+async def stream_start_stack(name: str, idle_timeout: int = STREAM_IDLE_TIMEOUT) -> AsyncIterator[Dict[str, Any]]:
+    """Stream ``docker compose up -d`` for a stack (the "Démarrer" action).
+
+    ``up -d`` starts existing containers AND creates the missing ones (e.g.
+    after a ``down`` or a first deploy), which is the intended semantics of a
+    "start" button. External stacks without a compose file fall back to
+    ``docker compose start`` (via :func:`_compose_up_command`).
+    """
+    async for evt in _stream_compose_step(name, _compose_up_command(name), label="── docker compose up -d ──", idle_timeout=idle_timeout):
+        yield evt
+
+
+async def stream_stop_stack(name: str, idle_timeout: int = STREAM_IDLE_TIMEOUT) -> AsyncIterator[Dict[str, Any]]:
+    """Stream ``docker compose stop`` for a stack."""
+    async for evt in _stream_compose_step(name, "stop", label="── docker compose stop ──", idle_timeout=idle_timeout):
+        yield evt
+
+
+async def stream_restart_stack(name: str, idle_timeout: int = STREAM_IDLE_TIMEOUT) -> AsyncIterator[Dict[str, Any]]:
+    """Stream ``docker compose restart`` for a stack."""
+    async for evt in _stream_compose_step(name, "restart", label="── docker compose restart ──", idle_timeout=idle_timeout):
+        yield evt
+
+
+async def stream_update_stack(name: str, idle_timeout: int = STREAM_IDLE_TIMEOUT) -> AsyncIterator[Dict[str, Any]]:
+    """Stream ``docker compose pull`` then ``docker compose up -d`` for a stack.
+
+    Raises :class:`FileNotFoundError` if the stack directory does not exist.
+    """
+    compose_file, _cwd = _resolve_stack_compose(name)
+    if compose_file is None or not Path(compose_file).exists():
+        raise FileNotFoundError(f"Stack '{name}' not found")
+    # Step 1: pull (failure is fatal — no point trying to bring the stack up)
+    async for evt in _stream_compose_step(name, "pull", label="── docker compose pull ──", idle_timeout=idle_timeout):
+        if evt.get("type") == STREAM_EVENT_RESULT:
+            if not evt.get("success"):
+                yield evt
+                return
+            # pull succeeded: swallow the intermediate result event
+        else:
+            yield evt
+    # Step 2: up -d
+    async for evt in _stream_compose_step(name, "up -d", label="── docker compose up -d ──", idle_timeout=idle_timeout):
+        yield evt
+
+
+async def stream_deploy_stack(name: str, idle_timeout: int = STREAM_IDLE_TIMEOUT) -> AsyncIterator[Dict[str, Any]]:
+    """Stream ``docker compose down`` then ``docker compose up -d`` for a stack.
+
+    Raises :class:`FileNotFoundError` if the stack directory does not exist.
+    """
+    compose_file, _cwd = _resolve_stack_compose(name)
+    if compose_file is None or not Path(compose_file).exists():
+        raise FileNotFoundError(f"Stack '{name}' not found")
+    # Step 1: down (a failing down is fatal)
+    async for evt in _stream_compose_step(name, _compose_down_command(name), label="── docker compose down ──", idle_timeout=idle_timeout):
+        if evt.get("type") == STREAM_EVENT_RESULT:
+            if not evt.get("success"):
+                yield evt
+                return
+        else:
+            yield evt
+    # Step 2: up -d
+    async for evt in _stream_compose_step(name, _compose_up_command(name), label="── docker compose up -d ──", idle_timeout=idle_timeout):
+        yield evt
 
 
 async def compose_start(name: str) -> Dict[str, Any]:
@@ -870,6 +1168,59 @@ async def compose_pull(name: str) -> Dict[str, Any]:
     if compose_file is None or not Path(compose_file).exists():
         raise FileNotFoundError(f"Stack '{name}' not found")
     return await _run_compose(name, "pull")
+
+
+def get_stack_logs(stack_name: str, tail: int = 100) -> Dict[str, Any]:
+    """Return the last ``tail`` log lines for a stack (``docker compose logs``).
+
+    Works for both managed stacks (in /data/stacks/) and external stacks whose
+    compose file path is derived from container labels. If ``docker compose
+    logs`` fails (no compose file, command error…), falls back to aggregating
+    the logs of the stack's containers.
+
+    Returns ``{"success": bool, "output": str, "error": str}`` where
+    ``output`` is the combined stdout/stderr text.
+    """
+    try:
+        tail = max(1, int(tail))
+    except (TypeError, ValueError):
+        tail = 100
+
+    args, work_dir = _resolve_compose_args(stack_name, f"logs --tail {tail} --no-color")
+    proc = None
+    compose_error = ""
+    try:
+        proc = subprocess.run(
+            args,
+            cwd=work_dir,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if proc.returncode == 0:
+            output = proc.stdout or ""
+            if proc.stderr:
+                output = ((output + "\n" + proc.stderr) if output else proc.stderr).strip()
+            return {"success": True, "output": output, "error": ""}
+        compose_error = (proc.stderr or proc.stdout or "").strip()
+    except (subprocess.SubprocessError, OSError) as e:
+        compose_error = str(e)
+
+    # Fallback: aggregate the logs of the stack's containers.
+    containers = get_stack_containers(stack_name)
+    if not containers:
+        error = compose_error or f"Stack '{stack_name}' not found or has no containers"
+        return {"success": False, "output": "", "error": error}
+    chunks: List[str] = []
+    for c in containers:
+        name = c.get("name", c.get("id", ""))
+        lines = get_container_logs(c.get("id", ""), tail=tail)
+        if not lines:
+            continue
+        chunks.append(f"── {name} ──")
+        for item in lines:
+            chunks.append(item.get("message", ""))
+    return {"success": True, "output": "\n".join(chunks), "error": ""}
 
 
 async def update_container(container_id: str, spec: Dict[str, Any]) -> Dict[str, Any]:
@@ -1014,11 +1365,125 @@ async def _update_compose_container(project: str, container_id: str, spec: Dict,
     return {"success": True, "output": f"Stack {project} redéployée avec les modifications"}
 
 
+def _ports_from_attrs(attrs: Dict) -> List[Dict[str, Any]]:
+    """Rebuild the edit-spec port list from ``docker inspect`` attrs."""
+    ports: List[Dict[str, Any]] = []
+    seen: set = set()
+    raw_ports = attrs.get("NetworkSettings", {}).get("Ports", {}) or {}
+    for container_port, bindings in raw_ports.items():
+        if bindings:
+            for b in bindings:
+                key = (container_port, b.get("HostPort", ""))
+                if key not in seen:
+                    seen.add(key)
+                    ports.append({
+                        "host_port": b.get("HostPort", ""),
+                        "container_port": container_port,
+                    })
+        else:
+            key = (container_port, "")
+            if key not in seen:
+                seen.add(key)
+                ports.append({"host_port": "", "container_port": container_port})
+    return ports
+
+
+def _bind_volumes_from_attrs(attrs: Dict) -> List[Dict[str, Any]]:
+    """Rebuild the edit-spec bind-mount list from ``docker inspect`` attrs."""
+    volumes: List[Dict[str, Any]] = []
+    for m in attrs.get("Mounts", []) or []:
+        if m.get("Type") != "bind":
+            continue
+        volumes.append({
+            "host_path": m.get("Source", ""),
+            "container_path": m.get("Destination", ""),
+            "mode": "ro" if "ro" in (m.get("Mode", "") or "") else "rw",
+        })
+    return volumes
+
+
+def _env_from_config(config: Dict) -> List[Dict[str, Any]]:
+    """Convert ``Config.Env`` (``KEY=value``) to the edit-spec env format."""
+    env: List[Dict[str, Any]] = []
+    for e in config.get("Env") or []:
+        if "=" in e:
+            k, v = e.split("=", 1)
+            env.append({"key": k, "value": v})
+        else:
+            env.append({"key": e, "value": ""})
+    return env
+
+
+def _labels_from_config(config: Dict) -> List[Dict[str, Any]]:
+    """Convert ``Config.Labels`` to the edit-spec labels format."""
+    raw_labels = config.get("Labels") or {}
+    return [{"key": k, "value": v} for k, v in raw_labels.items()]
+
+
+def _networks_from_attrs(attrs: Dict) -> List[Dict[str, Any]]:
+    """Rebuild the edit-spec network list from ``docker inspect`` attrs."""
+    networks: List[Dict[str, Any]] = []
+    for net_name, net_info in (attrs.get("NetworkSettings", {}).get("Networks", {}) or {}).items():
+        networks.append({"name": net_name, "ip": net_info.get("IPAddress", "") or ""})
+    return networks
+
+
+def _devices_from_host_config(host_config: Dict) -> List[str]:
+    """Convert ``HostConfig.Devices`` to the string form expected by docker-py."""
+    devices: List[str] = []
+    for device in host_config.get("Devices") or []:
+        if isinstance(device, dict):
+            path_on_host = device.get("PathOnHost", "")
+            path_in_container = device.get("PathInContainer", "")
+            cgroup = device.get("CgroupPermissions", "rwm")
+            if path_on_host and path_in_container:
+                devices.append(f"{path_on_host}:{path_in_container}:{cgroup}")
+        elif isinstance(device, str) and device:
+            devices.append(device)
+    return devices
+
+
+def _log_config_from_host_config(host_config: Dict) -> Optional[Dict[str, Any]]:
+    """Convert ``HostConfig.LogConfig`` to the format expected by docker-py."""
+    log_config = host_config.get("LogConfig")
+    if not isinstance(log_config, dict):
+        return None
+    log_type = log_config.get("Type", "")
+    if not log_type:
+        return None
+    return {
+        "type": log_type,
+        "config": log_config.get("Config") or {},
+    }
+
+
+def _ulimits_from_host_config(host_config: Dict) -> List[Dict[str, Any]]:
+    """Convert ``HostConfig.Ulimits`` to the format expected by docker-py."""
+    ulimits: List[Dict[str, Any]] = []
+    for ulimit in host_config.get("Ulimits") or []:
+        if not isinstance(ulimit, dict):
+            continue
+        name = ulimit.get("Name")
+        if name is None:
+            continue
+        ulimits.append({
+            "name": name,
+            "soft": ulimit.get("Soft"),
+            "hard": ulimit.get("Hard"),
+        })
+    return ulimits
+
+
 async def _recreate_container(c, container_id: str, spec: Dict, client, attrs: Dict) -> Dict:
     """Stop, remove, recreate with new params. Rollback on failure."""
+    new_c = None
+    backup_renamed = False
     try:
+        config = attrs.get("Config", {}) or {}
+        host_config = attrs.get("HostConfig", {}) or {}
+
         old_name = c.name.lstrip("/")
-        old_image = attrs.get("Config", {}).get("Image", "")
+        old_image = config.get("Image", "")
         new_name = spec.get("name", old_name)
         new_image = spec.get("image", old_image)
 
@@ -1026,35 +1491,41 @@ async def _recreate_container(c, container_id: str, spec: Dict, client, attrs: D
         name_changed = new_name != old_name
         image_changed = new_image != old_image
 
-        # Collect all spec changes to detect if anything besides name changed
-        spec_changed = image_changed
-        old_rp = attrs.get("HostConfig", {}).get("RestartPolicy", {}).get("Name", "no")
-        new_rp = spec.get("restart_policy", old_rp)
-        if new_rp != old_rp:
-            spec_changed = True
-        # Check ports, volumes, env, labels for changes by comparing to current spec
-        # (Fetching old spec fully would be heavy, so we check if any of these are provided)
-        if spec.get("ports") or spec.get("volumes") or spec.get("env") or spec.get("labels"):
-            spec_changed = True
+        old_rp = host_config.get("RestartPolicy", {}).get("Name", "no")
+        new_rp = spec.get("restart_policy") or old_rp or "no"
+
+        # Collect all spec changes to detect if anything besides name changed.
+        # An explicitly provided field counts as a change even when empty
+        # (clearing ports/env/... is a change).
+        spec_changed = image_changed or (new_rp != old_rp)
+        for key in ("ports", "volumes", "env", "labels", "networks"):
+            if key in spec and spec.get(key) is not None:
+                spec_changed = True
+                break
 
         if name_changed and not spec_changed:
             # Simple rename, no recreate needed
             await asyncio.to_thread(c.rename, new_name)
             return {"success": True, "output": f"Container renommé en {new_name}"}
 
-        # Build docker run params
-        run_kwargs = {
-            "image": new_image,
-            "name": new_name,
-            "detach": True,
-        }
+        # Preserve editable fields from the spec when provided; otherwise fall
+        # back to the current container configuration so a partial edit does
+        # not silently drop settings.
+        ports_spec = spec["ports"] if "ports" in spec and spec.get("ports") is not None else _ports_from_attrs(attrs)
+        volumes_spec = spec["volumes"] if "volumes" in spec and spec.get("volumes") is not None else _bind_volumes_from_attrs(attrs)
+        env_spec = spec["env"] if "env" in spec and spec.get("env") is not None else _env_from_config(config)
+        labels_spec = spec["labels"] if "labels" in spec and spec.get("labels") is not None else _labels_from_config(config)
+        networks_spec = spec["networks"] if "networks" in spec and spec.get("networks") is not None else _networks_from_attrs(attrs)
 
-        # Restart policy
-        run_kwargs["restart_policy"] = {"Name": spec.get("restart_policy", "no")}
+        # Restart policy (preserve retry count when relevant)
+        restart_policy = {"Name": new_rp}
+        maximum_retry_count = host_config.get("RestartPolicy", {}).get("MaximumRetryCount")
+        if maximum_retry_count is not None:
+            restart_policy["MaximumRetryCount"] = maximum_retry_count
 
         # Ports
         port_bindings = {}
-        for p in spec.get("ports", []):
+        for p in ports_spec:
             cp = p.get("container_port", "")
             hp = p.get("host_port", "")
             if cp and "/" in cp:
@@ -1063,55 +1534,104 @@ async def _recreate_container(c, container_id: str, spec: Dict, client, attrs: D
                 cport, proto = cp, "tcp"
             else:
                 continue
-            if hp:
-                port_bindings[(cport, proto)] = hp
-            else:
-                port_bindings[(cport, proto)] = None
+            port_bindings[(cport, proto)] = hp or None
 
-        # Volumes
+        # Volumes (bind mounts): docker-py maps container path -> host bind.
         volumes_dict = {}
-        binds = []
-        for v in spec.get("volumes", []):
+        for v in volumes_spec:
             hp = v.get("host_path", "")
             cp = v.get("container_path", "")
             mode = v.get("mode", "rw")
             if hp and cp:
-                binds.append(f"{hp}:{cp}:{mode}" if mode != "rw" else f"{hp}:{cp}")
-                volumes_dict[cp] = {"bind": cp, "mode": mode}
+                volumes_dict[cp] = {"bind": hp, "mode": mode}
 
         # Env
-        env_list = [f"{e['key']}={e['value']}" for e in spec.get("env", []) if e.get("key")]
+        env_list = [f"{e['key']}={e['value']}" for e in env_spec if e.get("key")]
 
         # Labels
-        labels_dict = {l["key"]: l["value"] for l in spec.get("labels", []) if l.get("key")}
+        labels_dict = {l["key"]: l["value"] for l in labels_spec if l.get("key")}
 
         # Networks (preserve existing attachments on recreate)
         network_kwargs = {}
-        networks = [n.get("name") for n in spec.get("networks", []) if n.get("name")]
+        networks = [n.get("name") for n in networks_spec if n.get("name")]
         if len(networks) == 1:
             network_kwargs["network"] = networks[0]
         elif len(networks) > 1:
             network_kwargs["networks"] = networks
+        else:
+            network_mode = host_config.get("NetworkMode", "") or ""
+            if network_mode and network_mode not in ("default", ""):
+                network_kwargs["network_mode"] = network_mode
+
+        # Preserve the remaining runtime configuration of the original
+        # container that is not exposed by the edit modal.
+        command = config.get("Cmd")
+        entrypoint = config.get("Entrypoint")
+        user = config.get("User") or ""
+        working_dir = config.get("WorkingDir") or ""
+        tty = bool(config.get("Tty", False))
+        stdin_open = bool(config.get("OpenStdin", False))
+        privileged = bool(host_config.get("Privileged", False))
+        devices = _devices_from_host_config(host_config)
+        dns = host_config.get("Dns") or None
+        cap_add = host_config.get("CapAdd") or None
+        cap_drop = host_config.get("CapDrop") or None
+        ulimits = _ulimits_from_host_config(host_config)
+        sysctls = host_config.get("Sysctls") or None
+        extra_hosts = host_config.get("ExtraHosts") or None
+        log_config = _log_config_from_host_config(host_config)
+        security_opt = host_config.get("SecurityOpt") or None
+
+        run_kwargs = {
+            "image": new_image,
+            "name": new_name,
+            "detach": True,
+            "remove": False,
+            "restart_policy": restart_policy,
+            "ports": port_bindings or None,
+            "volumes": volumes_dict or None,
+            "environment": env_list or None,
+            "labels": labels_dict or None,
+            "tty": tty,
+            "stdin_open": stdin_open,
+            "privileged": privileged,
+        }
+        if command is not None:
+            run_kwargs["command"] = command
+        if entrypoint is not None:
+            run_kwargs["entrypoint"] = entrypoint
+        if user:
+            run_kwargs["user"] = user
+        if working_dir:
+            run_kwargs["working_dir"] = working_dir
+        if devices:
+            run_kwargs["devices"] = devices
+        if dns:
+            run_kwargs["dns"] = dns
+        if cap_add:
+            run_kwargs["cap_add"] = cap_add
+        if cap_drop:
+            run_kwargs["cap_drop"] = cap_drop
+        if ulimits:
+            run_kwargs["ulimits"] = ulimits
+        if sysctls:
+            run_kwargs["sysctls"] = sysctls
+        if extra_hosts:
+            run_kwargs["extra_hosts"] = extra_hosts
+        if log_config:
+            run_kwargs["log_config"] = log_config
+        if security_opt:
+            run_kwargs["security_opt"] = security_opt
+        run_kwargs.update(network_kwargs)
 
         # Stop + backup name
         await asyncio.to_thread(c.stop, timeout=10)
         await asyncio.to_thread(c.rename, f"{old_name}_backup")
+        backup_renamed = True
         await asyncio.to_thread(c.reload)
 
         # Create new container
-        new_c = await asyncio.to_thread(
-            client.containers.run,
-            new_image,
-            detach=True,
-            name=new_name,
-            restart_policy=run_kwargs["restart_policy"],
-            ports=port_bindings or None,
-            volumes=volumes_dict or None,
-            environment=env_list or None,
-            labels=labels_dict or None,
-            remove=False,
-            **network_kwargs,
-        )
+        new_c = await asyncio.to_thread(client.containers.run, **run_kwargs)
 
         # Remove old container
         await asyncio.to_thread(
@@ -1121,12 +1641,38 @@ async def _recreate_container(c, container_id: str, spec: Dict, client, attrs: D
         return {"success": True, "output": f"Container {new_name} recréé avec les nouvelles configurations"}
 
     except Exception as e:
-        # Rollback: try to restore backup container
+        # Rollback: try to restore backup container.
+        #
+        # First free the name that may be held by a partially-created new
+        # container: docker-py may create the container and then raise (e.g.
+        # during its start step) without returning it, leaving a container
+        # named ``new_name`` behind. If it is not removed first, renaming the
+        # backup back to ``old_name`` fails with a name conflict whenever the
+        # name is unchanged (new_name == old_name).
+        rollback_candidate = new_c
+        if rollback_candidate is None and backup_renamed:
+            # The backup was renamed away, so ``new_name`` can only be held by
+            # the partially-created container (or be free). Only probe it now;
+            # before the backup rename, ``get(new_name)`` could return the
+            # original container itself, which must NOT be removed.
+            try:
+                rollback_candidate = client.containers.get(new_name)
+            except Exception:
+                rollback_candidate = None
+        if rollback_candidate is not None:
+            try:
+                await asyncio.to_thread(rollback_candidate.remove, force=True)
+            except Exception as rem_exc:
+                logger.warning(
+                    "Rollback: could not remove partially-created container: %s", rem_exc
+                )
         try:
             await asyncio.to_thread(c.start)
             await asyncio.to_thread(c.rename, old_name)
-        except Exception:
-            pass
+        except Exception as restore_exc:
+            logger.warning(
+                "Rollback: could not restore container '%s': %s", old_name, restore_exc
+            )
         return {"success": False, "error": str(e)}
 
 
@@ -1167,6 +1713,108 @@ async def update_container_image(container_id: str) -> Dict[str, Any]:
     return await _recreate_container(c, container_id, spec, client, attrs)
 
 
+async def stream_update_container_image(
+    container_id: str, idle_timeout: int = STREAM_IDLE_TIMEOUT
+) -> AsyncIterator[Dict[str, Any]]:
+    """Stream an image update for a container in real time.
+
+    - **Stack container** (Compose project): streams ``docker compose up -d``
+      on the project, which pulls the new image and recreates the service.
+    - **Standalone container**: streams the ``docker pull`` progress, then
+      recreates the container with its current configuration (ports, volumes,
+      env, networks, labels).
+
+    Yields ``output`` events for each line and a final ``result`` event.
+    """
+    try:
+        client = get_docker_client()
+        c = client.containers.get(container_id)
+    except Exception as e:
+        yield {"type": STREAM_EVENT_RESULT, "success": False, "output": "", "error": str(e), "command": ""}
+        return
+
+    attrs = c.attrs
+    project = (attrs.get("Config", {}).get("Labels") or {}).get("com.docker.compose.project", "")
+    if project:
+        async for evt in _stream_compose_step(
+            project, _compose_up_command(project), label=f"── docker compose up -d ({project}) ──", idle_timeout=idle_timeout
+        ):
+            yield evt
+        return
+
+    image_name = (attrs.get("Config", {}).get("Image", "") or "").strip()
+    if not image_name:
+        yield {
+            "type": STREAM_EVENT_RESULT,
+            "success": False,
+            "output": "",
+            "error": "No image configured for this container",
+            "command": "",
+        }
+        return
+
+    output_lines: list = []
+    yield {"type": STREAM_EVENT_OUTPUT, "line": f"── docker pull {image_name} ──"}
+    try:
+        async for line in _run_command_stream(["docker", "pull", image_name], idle_timeout=idle_timeout):
+            output_lines.append(line)
+            yield {"type": STREAM_EVENT_OUTPUT, "line": line}
+    except Exception as e:
+        yield {
+            "type": STREAM_EVENT_RESULT,
+            "success": False,
+            "output": "\n".join(output_lines),
+            "error": f"Image pull failed: {e}",
+            "command": "docker pull " + image_name,
+        }
+        return
+
+    # 2. Recreate the container with its current configuration
+    try:
+        spec = _get_container_full_spec(container_id)
+        if spec is None:
+            yield {
+                "type": STREAM_EVENT_RESULT,
+                "success": False,
+                "output": "\n".join(output_lines),
+                "error": "Container not found after pull",
+                "command": "",
+            }
+            return
+        result = await _recreate_container(c, container_id, spec, client, attrs)
+    except Exception as e:
+        yield {
+            "type": STREAM_EVENT_RESULT,
+            "success": False,
+            "output": "\n".join(output_lines),
+            "error": str(e),
+            "command": "",
+        }
+        return
+
+    if not result.get("success"):
+        yield {
+            "type": STREAM_EVENT_RESULT,
+            "success": False,
+            "output": "\n".join(output_lines),
+            "error": result.get("error", "Recreate failed"),
+            "command": "",
+        }
+        return
+
+    recreate_output = result.get("output", "") or ""
+    if recreate_output:
+        output_lines.append(recreate_output)
+        yield {"type": STREAM_EVENT_OUTPUT, "line": recreate_output}
+    yield {
+        "type": STREAM_EVENT_RESULT,
+        "success": True,
+        "output": "\n".join(output_lines),
+        "error": "",
+        "command": "",
+    }
+
+
 async def update_stack(name: str) -> Dict[str, Any]:
     """Update a stack: ``docker compose pull`` then ``docker compose up -d``.
 
@@ -1191,6 +1839,79 @@ async def update_stack(name: str) -> Dict[str, Any]:
     return {
         "success": success,
         "output": "\n".join(output_parts),
+    }
+
+
+def check_stack_update(stack_name: str) -> Dict[str, Any]:
+    """Check whether any service image of a stack has an update available.
+
+    Reads the stack compose file, inspects each service image via
+    ``docker manifest inspect`` (no pull) and compares it with the local
+    image digest.  Returns ``update_available`` plus per-service details.
+    """
+    compose_file, _cwd = _resolve_stack_compose(stack_name)
+    if compose_file is None or not Path(compose_file).exists():
+        raise FileNotFoundError(f"Stack '{stack_name}' not found")
+
+    import yaml
+    try:
+        raw_compose = compose_file.read_text(encoding="utf-8")
+        compose = yaml.safe_load(raw_compose) or {}
+    except Exception as e:
+        return {
+            "update_available": False,
+            "services": {},
+            "error": f"Failed to read compose file: {e}",
+        }
+
+    if not isinstance(compose, dict):
+        return {
+            "update_available": False,
+            "services": {},
+            "error": "Invalid compose file",
+        }
+
+    services = compose.get("services") or {}
+    if not isinstance(services, dict):
+        return {
+            "update_available": False,
+            "services": {},
+            "error": "Invalid compose services section",
+        }
+    result_services: Dict[str, Any] = {}
+    any_update = False
+
+    for service_name, service in services.items():
+        if not isinstance(service, dict):
+            continue
+        image = service.get("image")
+        if not isinstance(image, str) or not image.strip():
+            continue
+        image_name = image.strip()
+        # Compose variable interpolation cannot be resolved without the
+        # stack environment; skip it silently rather than failing the check.
+        if "${" in image_name:
+            continue
+
+        repository, tag = _split_image_reference(image_name)
+        local_digest = _local_repo_digest_for_image(image_name)
+        remote_digests = _remote_manifest_digests(repository, tag)
+        remote_digest = remote_digests[0] if remote_digests else None
+        service_update = bool(
+            local_digest and remote_digest and local_digest not in remote_digests
+        )
+        any_update = any_update or service_update
+
+        result_services[service_name] = {
+            "update_available": service_update,
+            "local_digest": local_digest,
+            "remote_digest": remote_digest,
+            "image": image_name,
+        }
+
+    return {
+        "update_available": any_update,
+        "services": result_services,
     }
 
 
@@ -2006,58 +2727,226 @@ def _parse_proc_net() -> List[int]:
 # Update check
 # ---------------------------------------------------------------------------
 
+# In-memory registry check cache: (repository, tag) -> {ts, digests, error}.
+# The frontend checks updates in a loop; this avoids hitting the registry for
+# every container on every refresh.
+_UPDATE_CHECK_TTL = 300.0
+_update_check_cache: Dict[tuple, Dict[str, Any]] = {}
+
+
+def _split_image_reference(image_name: str) -> tuple:
+    """Split an image reference into ``(repository, tag)``.
+
+    Defaults to ``latest`` when no tag is present. Handles the common
+    ``registry:port/repository:tag`` form by splitting on the *last* colon:
+
+    - ``myimage`` / ``localhost:5000/myimage`` → ``('myimage', 'latest')``;
+      the ``:port`` of a registry is NOT mistaken for a tag because the part
+      after the last colon contains a ``/`` (a repo path, not a tag).
+    - ``myimage:tag`` / ``localhost:5000/myimage:tag`` → explicit tag.
+    - Digest references (``repo@sha256:...``) are returned as ``(ref, "")``.
+    """
+    image_name = (image_name or "").strip()
+    if not image_name:
+        return "", "latest"
+    if "@" in image_name:
+        return image_name, ""
+    if ":" in image_name:
+        repo, tag = image_name.rsplit(":", 1)
+        if tag and "/" not in tag:
+            return repo, tag
+    return image_name, "latest"
+
+
+def _clean_update_check_cache(now: float) -> None:
+    """Remove expired entries from the in-memory update-check cache."""
+    expired = [
+        key for key, entry in _update_check_cache.items()
+        if now - entry.get("ts", 0.0) >= _UPDATE_CHECK_TTL
+    ]
+    for key in expired:
+        _update_check_cache.pop(key, None)
+
+
+def _extract_remote_digests(payload: Any) -> List[str]:
+    """Extract image manifest digests from ``docker manifest inspect`` JSON.
+
+    Docker's verbose output format varies between versions:
+    * a list of objects, each possibly with a ``Descriptor.digest``;
+    * a single object with a ``Descriptor.digest``;
+    * a manifest list with ``manifests[].digest``.
+    """
+    digests: List[str] = []
+
+    def walk(obj: Any) -> None:
+        if isinstance(obj, list):
+            for item in obj:
+                walk(item)
+            return
+        if not isinstance(obj, dict):
+            return
+
+        descriptor = obj.get("Descriptor")
+        if isinstance(descriptor, dict) and descriptor.get("digest"):
+            digests.append(descriptor["digest"])
+
+        for manifest in obj.get("manifests", []) or []:
+            if isinstance(manifest, dict) and manifest.get("digest"):
+                digests.append(manifest["digest"])
+            else:
+                walk(manifest)
+
+        # Fallback for a bare manifest object that carries its own digest.
+        if obj.get("digest") and isinstance(obj["digest"], str):
+            digests.append(obj["digest"])
+
+        # Recurse into nested objects (e.g. ``SchemaV2Manifest``) so
+        # ``manifests`` is found regardless of the docker output format.
+        # ``config`` and ``layers`` only contain blob digests, not image
+        # manifest digests, so they are skipped.
+        for key, value in obj.items():
+            if key in ("Descriptor", "manifests", "config", "layers"):
+                continue
+            if isinstance(value, (dict, list)):
+                walk(value)
+
+    walk(payload)
+
+    # De-duplicate while preserving order.
+    seen = set()
+    unique: List[str] = []
+    for digest in digests:
+        if digest and digest not in seen:
+            seen.add(digest)
+            unique.append(digest)
+    return unique
+
+
+def _remote_manifest_digests(repository: str, tag: str) -> List[str]:
+    """Return remote digests for ``repository:tag`` using a TTL cache.
+
+    Uses ``docker manifest inspect --verbose`` (no image pull).  Returns an
+    empty list when the registry is unreachable or the image is not found;
+    update checks are deliberately non-blocking.
+    """
+    cache_key = (repository, tag)
+    now = time.time()
+    cached = _update_check_cache.get(cache_key)
+    if cached is not None and now - cached.get("ts", 0.0) < _UPDATE_CHECK_TTL:
+        return cached.get("digests", [])
+
+    _clean_update_check_cache(now)
+
+    ref = repository if not tag else f"{repository}:{tag}"
+    digests: List[str] = []
+    error = None
+    try:
+        proc = subprocess.run(
+            ["docker", "manifest", "inspect", "--verbose", ref],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if proc.returncode == 0:
+            try:
+                payload = json.loads(proc.stdout)
+            except json.JSONDecodeError:
+                payload = None
+            digests = _extract_remote_digests(payload)
+            if not digests:
+                error = "No digest found in manifest inspect output"
+        else:
+            error = (proc.stderr or proc.stdout or "").strip()[:500]
+    except (OSError, subprocess.SubprocessError) as exc:
+        error = str(exc)
+
+    _update_check_cache[cache_key] = {
+        "ts": now,
+        "digests": digests,
+        "error": error,
+    }
+    return digests
+
+
+def _local_repo_digest(image) -> Optional[str]:
+    """Extract the ``sha256:...`` part from an image's ``RepoDigests``."""
+    try:
+        digest_list = image.attrs.get("RepoDigests", []) or []
+    except Exception:
+        return None
+    for digest in digest_list:
+        if digest and "@" in digest:
+            return digest.rsplit("@", 1)[-1]
+    return None
+
+
+def _local_repo_digest_for_image(image_name: str) -> Optional[str]:
+    """Return the local repo digest for a pulled image, if available."""
+    try:
+        client = get_docker_client()
+        image = client.images.get(image_name)
+    except (NotFound, DockerException, APIError):
+        return None
+    return _local_repo_digest(image)
+
+
 def check_image_update(container_id: str) -> Dict[str, Any]:
     """Check if a newer image is available on the registry for a container.
 
-    Compares the local image digest with the remote registry digest.
-    Returns a dict with ``update_available`` (bool), ``local_digest`` and
-    ``remote_digest`` (if available).
+    Compares the local image digest with the remote registry digest obtained
+    via ``docker manifest inspect`` (no image pull).  Returns a dict with
+    ``update_available`` (bool), ``local_digest``, ``remote_digest``,
+    ``local_tag`` and ``remote_tag``.
     """
     try:
         client = get_docker_client()
         c = client.containers.get(container_id)
         image = c.image
         image_name = image.tags[0] if image.tags else None
-        local_id = image.id
-
-        if not image_name:
-            return {
-                "update_available": False,
-                "local_digest": local_id,
-                "remote_digest": None,
-                "error": "No image tag found",
-            }
-
-        local_digest = None
-        try:
-            digest_list = image.attrs.get("RepoDigests", [])
-            if digest_list:
-                local_digest = digest_list[0]
-        except Exception:
-            pass
-
-        try:
-            remote_image = client.images.pull(image_name)
-            remote_digest = remote_image.id
-            update_available = remote_digest != local_id
-            return {
-                "update_available": update_available,
-                "local_digest": local_digest or local_id,
-                "remote_digest": remote_digest,
-                "image": image_name,
-            }
-        except (DockerException, APIError) as e:
-            return {
-                "update_available": False,
-                "local_digest": local_digest or local_id,
-                "remote_digest": None,
-                "image": image_name,
-                "error": str(e),
-            }
     except (NotFound, DockerException, APIError) as e:
         return {
             "update_available": False,
+            "image": None,
             "local_digest": None,
             "remote_digest": None,
+            "local_tag": None,
+            "remote_tag": None,
             "error": str(e),
         }
+
+    if not image_name:
+        return {
+            "update_available": False,
+            "image": None,
+            "local_digest": None,
+            "remote_digest": None,
+            "local_tag": None,
+            "remote_tag": None,
+            "error": "No image tag found",
+        }
+
+    repository, tag = _split_image_reference(image_name)
+    local_digest = _local_repo_digest(image)
+    if not local_digest:
+        return {
+            "update_available": False,
+            "image": image_name,
+            "local_digest": None,
+            "remote_digest": None,
+            "local_tag": tag or None,
+            "remote_tag": tag or None,
+            "error": "No local repo digest found",
+        }
+
+    remote_digests = _remote_manifest_digests(repository, tag)
+    remote_digest = remote_digests[0] if remote_digests else None
+    update_available = bool(remote_digest and local_digest not in remote_digests)
+
+    return {
+        "update_available": update_available,
+        "image": image_name,
+        "local_digest": local_digest,
+        "remote_digest": remote_digest,
+        "local_tag": tag or None,
+        "remote_tag": tag or None,
+    }

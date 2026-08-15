@@ -30,22 +30,19 @@ const DockyApp = {
     agentsRefreshTimer: 30000,
     selectedStackAgent: null,    // agent for the currently edited stack
     expandedStackAgent: null,    // agent for the currently expanded stack
-    logsContainerAgent: null,    // agent for the container whose logs are open
     consoleContainerAgent: null, // agent for the container whose console is open
 
     _pendingFetches: {},  // containerId -> true/false; 'update-'+id for update checks
 
     // Update indicators
     _updateAvailableCount: 0,     // nombre de containers avec une mise à jour dispo
+    _updateCheckToken: 0,         // jeton de rendu pour ignorer les réponses async périmées
     _versionMismatches: [],       // liste des agents avec version désynchronisée
     _prevMismatchCount: 0,        // dernier nombre de mismatches (pour éviter le spam de toasts)
     _lastVersionCheck: null,      // timestamp du dernier check de versions (ms)
     _versionCheckInterval: null,  // intervalle de check des versions (1h)
 
     // WebSockets
-    logsWs: null,
-    logsStreamMode: false,
-    logsContainerId: null,
     consoleWs: null,
     consoleContainerId: null,
     consoleHistory: [],
@@ -376,6 +373,7 @@ const DockyApp = {
         const container = document.getElementById("dashboard-content");
         if (!container) return;
         this._updateAvailableCount = 0;
+        this._updateCheckToken = (this._updateCheckToken || 0) + 1;
 
         if (this.stacks.length === 0) {
             container.innerHTML = `
@@ -426,7 +424,11 @@ const DockyApp = {
                 : '<button class="icon-btn btn-start" title="Démarrer" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'start\', \'' + escapedAgent + '\')">' + this.icon('play') + '</button>'
                   + '<button class="icon-btn btn-stop" title="Arrêter" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'stop\', \'' + escapedAgent + '\')">' + this.icon('square') + '</button>'
                   + '<button class="icon-btn btn-restart" title="Redémarrer" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'restart\', \'' + escapedAgent + '\')">' + this.icon('refresh-cw') + '</button>'
-                  + '<button class="icon-btn" title="Update" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'update\', \'' + escapedAgent + '\')">' + this.icon('arrow-up') + '</button>';
+                  + '<button class="icon-btn" title="Update" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'update\', \'' + escapedAgent + '\')">' + this.icon('arrow-up') + '</button>'
+                  + '<button class="icon-btn btn-logs" title="Logs" onclick="DockyApp.openStackLogs(\'' + this.escapeHtml(stack.name) + '\', \'' + escapedAgent + '\')">' + this.icon('clipboard-list') + '</button>';
+            const updateBadge = isStandalone
+                ? ''
+                : '<button class="update-badge hidden" id="stack-update-card-' + this.escapeHtml(stack.name) + '@' + escapedAgent + '" onclick="event.stopPropagation();DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'update\', \'' + escapedAgent + '\')" title="Mise à jour disponible">' + this.icon('arrow-up') + ' Update</button>';
 
             html += `
                 <div class="stack-card ${isExpanded ? "expanded" : ""}" data-stack="${this.escapeHtml(stack.name)}" data-agent="${escapedAgent}">
@@ -445,6 +447,7 @@ const DockyApp = {
                             ${editBtn}
                             ${importBtn}
                             ${stackActionBtns}
+                            ${updateBadge}
                             <span class="stack-chevron">${isExpanded ? "▼" : "▶"}</span>
                         </div>
                     </div>
@@ -458,6 +461,13 @@ const DockyApp = {
 
         if (typeof lucide !== 'undefined') {
             lucide.createIcons();
+        }
+
+        // Check léger et caché des mises à jour de stack
+        for (const stack of this.stacks) {
+            if (stack.standalone !== true) {
+                this.checkStackUpdate(stack.name, stack.agent_name || '', this._updateCheckToken);
+            }
         }
 
         // If a stack is expanded, load its containers
@@ -574,12 +584,13 @@ const DockyApp = {
             lucide.createIcons();
         }
 
-        // Load resources for running containers
+        // Load resources for running containers; check updates for all
+        // containers (the check is now lightweight and cached).
         for (const c of containers) {
             if (c.status === "running") {
                 this.loadContainerStats(c.id, agent);
-                this.checkUpdate(c.id, agent);
             }
+            this.checkUpdate(c.id, agent, this._updateCheckToken);
         }
     },
 
@@ -591,6 +602,7 @@ const DockyApp = {
         const container = document.getElementById("dashboard-content");
         if (!container) return;
         this._updateAvailableCount = 0;
+        this._updateCheckToken = (this._updateCheckToken || 0) + 1;
         
         if (this.stacks.length === 0) {
             container.innerHTML = '<div class="placeholder"><p>📭 Aucune stack trouvée</p></div>';
@@ -734,6 +746,7 @@ const DockyApp = {
         // Build HTML
         let cardsHtml = '';
         const runningContainers = [];
+        const updateContainers = [];
         
         for (const cell of allCells) {
             if (cell.type === 'group-header') {
@@ -745,6 +758,7 @@ const DockyApp = {
             const agent = cell.agent;
             
             cardsHtml += this.renderGridContainerCard(cell.container, cardX, cardY, cellW, cellH, agent, cell.borderColor, cell.bgColor, cell.stackName);
+            updateContainers.push({ id: cell.container.id, agent });
             if (cell.container.status === "running") runningContainers.push({ id: cell.container.id, agent });
         }
         
@@ -752,7 +766,9 @@ const DockyApp = {
         
         for (const rc of runningContainers) {
             this.loadContainerStats(rc.id, rc.agent);
-            this.checkUpdate(rc.id, rc.agent);
+        }
+        for (const uc of updateContainers) {
+            this.checkUpdate(uc.id, uc.agent, this._updateCheckToken);
         }
 
         if (typeof lucide !== 'undefined') {
@@ -811,6 +827,7 @@ const DockyApp = {
         const container = document.getElementById("dashboard-content");
         if (!container) return;
         this._updateAvailableCount = 0;
+        this._updateCheckToken = (this._updateCheckToken || 0) + 1;
 
         if (this.stacks.length === 0) {
             container.innerHTML = '<div class="placeholder"><p>📭 Aucune stack trouvée</p></div>';
@@ -882,13 +899,18 @@ const DockyApp = {
         html += '</div>';
         container.innerHTML = html;
 
-        // Load stats for running containers
+        // Load stats for running containers; check updates for all containers
+        // (the check is now lightweight and cached).
         const runningContainers = allContainers.filter(c => c.status === 'running');
         for (const rc of runningContainers) {
             const rcStack = this.stacks.find(s => s.name === (rc.stack||'') && (s.agent_name||'') === (rc.agent_name||''));
             const agent = rcStack ? (rcStack.agent_name || '') : '';
             this.loadContainerStats(rc.id, agent);
-            this.checkUpdate(rc.id, agent);
+        }
+        for (const c of allContainers) {
+            const rcStack = this.stacks.find(s => s.name === (c.stack||'') && (s.agent_name||'') === (c.agent_name||''));
+            const agent = rcStack ? (rcStack.agent_name || '') : '';
+            this.checkUpdate(c.id, agent, this._updateCheckToken);
         }
 
         if (typeof lucide !== 'undefined') {
@@ -1047,6 +1069,7 @@ const DockyApp = {
         if (isStandalone) html += '<span class="stack-type-badge stack-badge-standalone">standalone</span>';
         else if (!isManaged) html += '<span class="stack-type-badge stack-badge-external">externe</span>';
         else html += '<span class="stack-type-badge stack-badge-docky">' + this.escapeHtml(stack.agent_name || stack.agent || 'agent') + '</span>';
+        if (!isStandalone) html += '<button class="update-badge hidden" id="stack-update-panel-' + escapedName + '@' + escapedAgent + '" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'update\', \'' + escapedAgent + '\')" title="Mise à jour disponible">' + this.icon('arrow-up') + ' Update</button>';
         html += '</div>';
         
         // Boutons de commande du stack
@@ -1056,6 +1079,7 @@ const DockyApp = {
             html += '<button class="btn btn-sm btn-danger" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'stop\', \'' + escapedAgent + '\')">' + this.icon('square') + ' Arrêter</button>';
             html += '<button class="btn btn-sm btn-warning" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'restart\', \'' + escapedAgent + '\')">' + this.icon('refresh-cw') + ' Redémarrer</button>';
             html += '<button class="btn btn-sm btn-info" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'update\', \'' + escapedAgent + '\')">' + this.icon('arrow-up') + ' Update</button>';
+            html += '<button class="btn btn-sm" onclick="DockyApp.openStackLogs(\'' + escapedName + '\', \'' + escapedAgent + '\')">' + this.icon('clipboard-list') + ' Logs</button>';
             if (isManaged) html += '<button class="btn btn-sm" onclick="DockyApp.selectStackFromDashboard(\'' + escapedName + '\', \'' + escapedAgent + '\')">' + this.icon('pen-square') + ' Éditer</button>';
             if (!isManaged && !isStandalone) {
                 if (stack.source_path) {
@@ -1093,6 +1117,11 @@ const DockyApp = {
         
         if (typeof lucide !== 'undefined') {
             lucide.createIcons();
+        }
+
+        // Check léger et caché des mises à jour de stack
+        if (!isStandalone) {
+            this.checkStackUpdate(stack.name, stack.agent_name || '', this._updateCheckToken);
         }
 
         // Charger le compose si managed
@@ -1265,7 +1294,7 @@ const DockyApp = {
         if (titleEl) titleEl.textContent = title || "Exécution…";
         const status = document.getElementById("activity-status");
         if (status) {
-            status.textContent = "En cours";
+            status.textContent = "En cours…";
             status.className = "status-indicator status-running";
         }
         const output = document.getElementById("activity-output");
@@ -1276,6 +1305,8 @@ const DockyApp = {
     _appendActivity(text, type) {
         const output = document.getElementById("activity-output");
         if (!output) return;
+        const empty = output.querySelector(".terminal-empty");
+        if (empty) empty.remove();
         const line = document.createElement("div");
         line.className = "terminal-line" + (type ? " " + type : "");
         line.textContent = text;
@@ -1289,17 +1320,114 @@ const DockyApp = {
             status.textContent = success ? "Terminé" : "Échec";
             status.className = "status-indicator " + (success ? "status-running" : "status-stopped");
         }
-        // Afficher la sortie
-        if (output) {
-            const outDiv = document.getElementById("activity-output");
-            if (outDiv) {
-                outDiv.innerHTML = '';
-                const pre = document.createElement("pre");
-                pre.className = "terminal-output-content";
-                pre.textContent = output;
-                outDiv.appendChild(pre);
-            }
+        const outDiv = document.getElementById("activity-output");
+        if (!outDiv) return;
+        // En mode streaming, les lignes ont déjà été affichées en direct : on
+        // les conserve et on ajoute seulement une ligne de résumé.
+        const hasStreamed = outDiv.querySelector(".terminal-line") !== null;
+        if (hasStreamed) {
+            const summary = document.createElement("div");
+            summary.className = "terminal-line terminal-summary " + (success ? "success" : "error");
+            summary.textContent = success ? "✓ Terminé" : "✗ Échec";
+            outDiv.appendChild(summary);
+            outDiv.scrollTop = outDiv.scrollHeight;
+            return;
         }
+        // Fallback JSON : afficher le résultat complet.
+        outDiv.innerHTML = '';
+        const pre = document.createElement("pre");
+        pre.className = "terminal-output-content";
+        pre.textContent = output;
+        outDiv.appendChild(pre);
+    },
+
+    _parseSSEBlock(block) {
+        let event = null;
+        let data = "";
+        for (const rawLine of block.split("\n")) {
+            const line = rawLine.replace(/\r$/, "");
+            if (line.startsWith("event:")) event = line.slice(6).trim();
+            else if (line.startsWith("data:")) data += (data ? "\n" : "") + line.slice(5).trim();
+        }
+        if (!event) return null;
+        let parsed;
+        try { parsed = data ? JSON.parse(data) : {}; } catch (e) { parsed = { raw: data }; }
+        return { event, data: parsed };
+    },
+
+    /**
+     * Consomme un endpoint SSE (fetch + ReadableStream) et affiche les lignes
+     * progressivement dans l'Activity Modal.
+     *
+     * Résout avec { success, output } une fois le flux terminé, ou rejette une
+     * Error si le serveur a renvoyé une erreur / le flux a été coupé.
+     */
+    async _streamAction(url) {
+        let resp;
+        try {
+            resp = await fetch(url, { method: "POST", credentials: "same-origin" });
+        } catch (e) {
+            throw new Error("Erreur réseau : " + e.message);
+        }
+        if (resp.status === 401) {
+            window.location.href = "/login";
+            return { success: false, output: "", error: "Non autorisé" };
+        }
+        if (!resp.ok) {
+            let detail = "HTTP " + resp.status;
+            try {
+                const data = await resp.json();
+                detail = data.detail || data.error || data.message || detail;
+            } catch (e) { /* body non JSON */ }
+            throw new Error(detail);
+        }
+        if (!resp.body) throw new Error("Réponse sans flux de données");
+
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let output = "";
+        let success = false;
+        let streamEnded = false;
+        try {
+            while (!streamEnded) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+                let sep;
+                while ((sep = buffer.indexOf("\n\n")) !== -1) {
+                    const block = buffer.slice(0, sep);
+                    buffer = buffer.slice(sep + 2);
+                    const parsed = this._parseSSEBlock(block);
+                    if (!parsed) continue;
+                    if (parsed.event === "output") {
+                        const line = parsed.data.line || "";
+                        if (line) {
+                            output += (output ? "\n" : "") + line;
+                            this._appendActivity(line, "");
+                        }
+                    } else if (parsed.event === "done") {
+                        success = !!parsed.data.success;
+                        if (parsed.data.output) output = parsed.data.output;
+                        if (!success && parsed.data.error) {
+                            // Priorise le message d'erreur réel de l'agent dans
+                            // le résumé final, même quand du output a déjà été
+                            // affiché (sinon il était silencieusement perdu).
+                            // Les lignes output restent affichées ci-dessous.
+                            output = parsed.data.error + (output ? "\n\n" + output : "");
+                        }
+                        // Le flux se termine normalement après l'événement done.
+                        streamEnded = true;
+                        break;
+                    } else if (parsed.event === "error") {
+                        throw new Error(parsed.data.error || "Erreur inconnue");
+                    }
+                }
+            }
+        } catch (e) {
+            throw e;
+        }
+        return { success, output };
     },
 
     closeActivity() {
@@ -1314,16 +1442,30 @@ const DockyApp = {
     async containerAction(id, action, agent) {
         const labels = {start: 'Démarrer', stop: 'Arrêter', restart: 'Redémarrer', update: 'Mettre à jour', 'update-image': 'Mettre à jour'};
         this._openActivity(`${labels[action] || action} — container`);
-        try {
-            const result = await this.apiPost(`/api/containers/${id}/${action}` + this.agentQuery(agent));
-            const success = result && result.success;
-            const output = result ? (result.output || result.error || JSON.stringify(result)) : "Pas de réponse";
-            this._finishActivity(success, output);
-            if (success) this.showToast(`Container ${action} OK`, "success");
-            else this.showToast(`Échec ${action} container`, "error");
-        } catch(e) {
-            this._finishActivity(false, e.message);
-            this.showToast("Erreur: " + e.message, "error");
+        // update-image est streamé (pull + recreate progressifs).
+        // start/stop/restart container restent JSON (rapides, basés SDK).
+        if (action === 'update-image') {
+            try {
+                const result = await this._streamAction(`/api/containers/${encodeURIComponent(id)}/${action}` + this.agentQuery(agent));
+                this._finishActivity(result.success, result.output);
+                if (result.success) this.showToast(`Container ${action} OK`, "success");
+                else this.showToast(`Échec ${action} container`, "error");
+            } catch(e) {
+                this._finishActivity(false, e.message);
+                this.showToast("Erreur: " + e.message, "error");
+            }
+        } else {
+            try {
+                const result = await this.apiPost(`/api/containers/${encodeURIComponent(id)}/${action}` + this.agentQuery(agent));
+                const success = result && result.success;
+                const output = result ? (result.output || result.error || JSON.stringify(result)) : "Pas de réponse";
+                this._finishActivity(success, output);
+                if (success) this.showToast(`Container ${action} OK`, "success");
+                else this.showToast(`Échec ${action} container`, "error");
+            } catch(e) {
+                this._finishActivity(false, e.message);
+                this.showToast("Erreur: " + e.message, "error");
+            }
         }
         // Refresh immédiat
         this.refreshStacks();
@@ -1334,12 +1476,10 @@ const DockyApp = {
         const labels = {start: 'Démarrer', stop: 'Arrêter', restart: 'Redémarrer', update: 'Mettre à jour', deploy: 'Déployer'};
         this._openActivity(`${labels[action] || action} — ${name}`);
         try {
-            const result = await this.apiPost(`/api/stacks/${encodeURIComponent(name)}/${action}` + this.agentQuery(agt));
-            const success = result && result.success;
-            const output = result ? (result.output || result.error || JSON.stringify(result)) : "Pas de réponse";
-            this._finishActivity(success, output);
-            if (success) this.showToast(`Stack ${action} OK`, "success");
-            else this.showToast(`Échec ${action}: ${result?.error || ''}`, "error");
+            const result = await this._streamAction(`/api/stacks/${encodeURIComponent(name)}/${action}` + this.agentQuery(agt));
+            this._finishActivity(result.success, result.output);
+            if (result.success) this.showToast(`Stack ${action} OK`, "success");
+            else this.showToast(`Échec ${action}: ${result.output || ''}`, "error");
         } catch(e) {
             this._finishActivity(false, e.message);
             this.showToast("Erreur: " + e.message, "error");
@@ -1351,7 +1491,8 @@ const DockyApp = {
     // Update check
     // -------------------------------------------------------
 
-    async checkUpdate(containerId, agent) {
+    async checkUpdate(containerId, agent, token) {
+        const renderToken = (token !== undefined) ? token : this._updateCheckToken;
         // Éviter les appels concurrents pour le même container
         const key = 'update-' + containerId;
         if (this._pendingFetches[key]) return;
@@ -1362,17 +1503,59 @@ const DockyApp = {
             const resp = await fetch(url, { credentials: 'same-origin' });
             if (resp.status === 401) return;
             const data = await resp.json();
+
+            // Ignore les réponses d'un rendu précédent (race du compteur)
+            if (renderToken !== this._updateCheckToken) return;
+
+            const badge = document.getElementById('update-' + containerId);
             if (data && data.update_available) {
-                const badge = document.getElementById('update-' + containerId);
                 if (badge) {
                     badge.classList.remove('hidden');
                     // Tooltip avec versions si disponibles
                     if (data.local_tag && data.remote_tag) {
-                        badge.title = data.local_tag + ' → ' + data.remote_tag;
+                        let tip = data.local_tag + ' → ' + data.remote_tag;
+                        if (data.local_digest && data.remote_digest && data.local_digest !== data.remote_digest) {
+                            tip += ' (nouveau digest)';
+                        }
+                        badge.title = tip;
+                    } else if (data.local_digest && data.remote_digest) {
+                        badge.title = data.local_digest + ' → ' + data.remote_digest;
                     }
                     this._updateAvailableCount = (this._updateAvailableCount || 0) + 1;
                     this.updateStatsBar();
                 }
+            } else if (data && data.update_available === false && badge) {
+                badge.classList.add('hidden');
+            }
+        } catch (e) {
+            // Ignorer les erreurs (réseau, annulation…)
+        } finally {
+            this._pendingFetches[key] = false;
+        }
+    },
+
+    async checkStackUpdate(stackName, agent, token) {
+        const renderToken = (token !== undefined) ? token : this._updateCheckToken;
+        const key = 'stack-update-' + stackName + '@' + (agent || '');
+        if (this._pendingFetches[key]) return;
+        this._pendingFetches[key] = true;
+
+        try {
+            const url = '/api/stacks/' + encodeURIComponent(stackName) + '/update-check' + this.agentQuery(agent);
+            const resp = await fetch(url, { credentials: 'same-origin' });
+            if (resp.status === 401) return;
+            const data = await resp.json();
+
+            if (renderToken !== this._updateCheckToken) return;
+
+            const cardBadge = document.getElementById('stack-update-card-' + stackName + '@' + (agent || ''));
+            const panelBadge = document.getElementById('stack-update-panel-' + stackName + '@' + (agent || ''));
+            const badges = [cardBadge, panelBadge].filter(Boolean);
+
+            if (data && data.update_available) {
+                for (const badge of badges) badge.classList.remove('hidden');
+            } else if (data && data.update_available === false) {
+                for (const badge of badges) badge.classList.add('hidden');
             }
         } catch (e) {
             // Ignorer les erreurs (réseau, annulation…)
@@ -1389,88 +1572,12 @@ const DockyApp = {
         // Open logs in a popup window so the user can keep it on another screen
         const url = `/popup/logs?agent=${encodeURIComponent(agent || '')}&container=${encodeURIComponent(containerId)}&name=${encodeURIComponent(name || '')}`;
         window.open(url, `logs-${containerId}`, 'width=900,height=650,scrollbars=yes,resizable=yes');
-        // Also keep the legacy modal available via a state flag for backwards compat
-        this.logsContainerId = containerId;
-        this.logsContainerAgent = agent;
-        this.logsStreamMode = false;
     },
 
-    renderLogs(lines) {
-        const output = document.getElementById("logs-output");
-        if (!output) return;
-        if (!lines || lines.length === 0) {
-            output.innerHTML = '<div class="terminal-line terminal-empty">— Aucun log —</div>';
-            return;
-        }
-        let html = "";
-        for (const item of lines) {
-            let msg;
-            if (typeof item === "object" && item !== null) {
-                // Nouveau format: {"message": "...", "stream": "stdout"}
-                msg = item.message || "";
-            } else {
-                // Ancien format: string simple
-                msg = String(item);
-            }
-            html += `<div class="terminal-line">${this.escapeHtml(msg)}</div>`;
-        }
-        output.innerHTML = html;
-        output.scrollTop = output.scrollHeight;
-    },
-
-    toggleLogsStream() {
-        const toggle = document.getElementById("logs-stream-toggle");
-        this.logsStreamMode = toggle ? toggle.checked : false;
-        if (this.logsStreamMode) {
-            this.startLogsStream();
-        } else {
-            this.stopLogsStream();
-        }
-    },
-
-    startLogsStream() {
-        this.stopLogsStream();
-        const containerId = this.logsContainerId;
-        if (!containerId) return;
-        const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-        const wsUrl = `${proto}//${window.location.host}/api/containers/${containerId}/logs/stream`;
-        try {
-            this.logsWs = new WebSocket(wsUrl);
-            this.logsWs.onmessage = (event) => {
-                const output = document.getElementById("logs-output");
-                if (!output) return;
-                const lineDiv = document.createElement("div");
-                lineDiv.className = "terminal-line";
-                lineDiv.textContent = event.data;
-                output.appendChild(lineDiv);
-                // Keep last 1000 lines
-                while (output.children.length > 1000) {
-                    output.removeChild(output.firstChild);
-                }
-                output.scrollTop = output.scrollHeight;
-            };
-            this.logsWs.onerror = () => {
-                this.showToast("Erreur stream logs", "error");
-            };
-            this.logsWs.onclose = () => {
-                this.logsWs = null;
-            };
-        } catch (e) {
-            this.showToast("WebSocket logs: " + e.message, "error");
-        }
-    },
-
-    stopLogsStream() {
-        if (this.logsWs) {
-            try { this.logsWs.close(); } catch (e) {}
-            this.logsWs = null;
-        }
-    },
-
-    closeLogs() {
-        this.stopLogsStream();
-        document.getElementById("logs-modal").classList.add("hidden");
-        this.logsContainerId = null;
+    openStackLogs(stackName, agent) {
+        // Open stack logs in the same popup as container logs (stack mode).
+        const url = `/popup/logs?agent=${encodeURIComponent(agent || '')}&stack=${encodeURIComponent(stackName)}&name=${encodeURIComponent(stackName)}`;
+        window.open(url, `logs-stack-${stackName}`, 'width=900,height=650,scrollbars=yes,resizable=yes');
     },
 
     // -------------------------------------------------------
@@ -2113,6 +2220,7 @@ const DockyApp = {
         toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.stackAction(\'' + _escapedName + '\', \'stop\', \'' + _escapedAgent + '\')" title="Arrêter">' + this.icon('square') + '</button>';
         toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.stackAction(\'' + _escapedName + '\', \'restart\', \'' + _escapedAgent + '\')" title="Redémarrer">' + this.icon('refresh-cw') + '</button>';
         toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.stackAction(\'' + _escapedName + '\', \'update\', \'' + _escapedAgent + '\')" title="Tout mettre à jour">' + this.icon('arrow-up') + ' Tout update</button>';
+        toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.openStackLogs(\'' + _escapedName + '\', \'' + _escapedAgent + '\')" title="Logs">' + this.icon('clipboard-list') + ' Logs</button>';
         toolbarHtml += '<div class="spacer"></div>';
         // Bouton bascule lecture seule / édition
         if (this._composeEditMode) {
@@ -2292,13 +2400,16 @@ const DockyApp = {
             this.showToast("Erreur lors de la sauvegarde", "error");
             return;
         }
-        // Deploy
-        const result = await this.apiPost("/api/stacks/" + encodeURIComponent(stackName) + "/deploy" + agentParam);
-        if (result && result.success) {
-            this.showToast("Déploiement réussi ✓", "success");
-        } else {
-            const err = result && result.error ? result.error : "";
-            this.showToast("Déploiement échoué : " + err, "error");
+        // Deploy (streamé)
+        this._openActivity(`Déployer — ${stackName}`);
+        try {
+            const result = await this._streamAction("/api/stacks/" + encodeURIComponent(stackName) + "/deploy" + agentParam);
+            this._finishActivity(result.success, result.output);
+            if (result.success) this.showToast("Déploiement réussi ✓", "success");
+            else this.showToast("Déploiement échoué : " + (result.output || ""), "error");
+        } catch(e) {
+            this._finishActivity(false, e.message);
+            this.showToast("Déploiement échoué : " + e.message, "error");
         }
         this.updateModifiedIndicators();
         this.refreshStacks();
@@ -3554,19 +3665,7 @@ const DockyApp = {
             });
         }
 
-        // Logs stream toggle
-        const streamToggle = document.getElementById("logs-stream-toggle");
-        if (streamToggle) {
-            streamToggle.addEventListener("change", () => this.toggleLogsStream());
-        }
-
         // Close modals on backdrop click
-        const logsModal = document.getElementById("logs-modal");
-        if (logsModal) {
-            logsModal.addEventListener("click", (e) => {
-                if (e.target === logsModal) this.closeLogs();
-            });
-        }
         const consoleModal = document.getElementById("console-modal");
         if (consoleModal) {
             consoleModal.addEventListener("click", (e) => {
@@ -3659,7 +3758,6 @@ const DockyApp = {
         // ESC to close modals
         document.addEventListener("keydown", (e) => {
             if (e.key === "Escape") {
-                this.closeLogs();
                 this.closeConsole();
                 this.closeHistory();
                 this.closeNewStackModal();

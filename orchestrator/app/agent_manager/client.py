@@ -21,7 +21,7 @@ import json
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 import httpx
 
@@ -32,6 +32,15 @@ logger = logging.getLogger(__name__)
 # Per-agent cache entries older than this many seconds are refreshed from the
 # network when rebuilding the aggregate cache.
 _AGENT_CACHE_TTL = 60.0
+
+# Timeout profile for streamed (SSE) agent requests.
+#
+# The read timeout is PER READ: as long as the agent keeps sending output
+# lines, no timeout fires. It only triggers after a silence longer than the
+# read timeout. It must stay ABOVE the agent-side idle timeout (120 s): the
+# agent kills the command first and reports a clean SSE ``done``/``error``
+# event before httpx would time out and abort the connection.
+STREAM_TIMEOUT = httpx.Timeout(connect=10, read=150, write=30, pool=10)
 
 
 class AgentManager:
@@ -196,6 +205,120 @@ class AgentManager:
                 return resp.json()
             return resp.text
 
+    def _parse_sse_event(self, event: Optional[str], data_lines: List[str]) -> Optional[Dict[str, Any]]:
+        """Convert one SSE block into a normalized event dict.
+
+        Returns ``None`` for comments / keep-alive lines. Recognised events:
+
+        - ``output`` → ``{"type": "output", "line": str}``
+        - ``done`` → ``{"type": "done", "success": bool, "output": str}``
+        - ``error`` → ``{"type": "error", "error": str}``
+        """
+        if not event or not data_lines:
+            return None
+        raw = "\n".join(data_lines)
+        try:
+            data = json.loads(raw)
+        except Exception:
+            data = {"raw": raw}
+        if event == "output":
+            return {"type": "output", "line": data.get("line", "")}
+        if event == "done":
+            return {
+                "type": "done",
+                "success": bool(data.get("success", True)),
+                "output": data.get("output", ""),
+            }
+        if event == "error":
+            return {"type": "error", "error": data.get("error", "Erreur inconnue")}
+        return None
+
+    async def _stream_request(self, agent_name: str, method: str, path: str, **kwargs) -> AsyncIterator[Dict[str, Any]]:
+        """Open a streaming HTTP request to an agent and yield parsed SSE events.
+
+        Injects the ``Authorization: Bearer <key>`` header like :meth:`_request`
+        and uses :data:`STREAM_TIMEOUT` (read timeout per-read) so long-running
+        operations keep streaming for as long as the agent emits output.
+
+        Yields dicts of the form produced by :meth:`_parse_sse_event`.
+        """
+        if agent_name not in self.agents:
+            raise ValueError(f"Agent '{agent_name}' not found")
+        agent = self.agents[agent_name]
+        url = f"{agent['url']}{path}"
+        headers = kwargs.pop("headers", {})
+        headers["Authorization"] = f"Bearer {agent['api_key']}"
+        headers["Accept"] = "text/event-stream"
+        timeout = kwargs.pop("timeout", STREAM_TIMEOUT)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream(method, url, headers=headers, **kwargs) as resp:
+                if resp.status_code != 200:
+                    body = (await resp.aread()).decode("utf-8", errors="replace")
+                    raise RuntimeError(f"Agent returned HTTP {resp.status_code}: {body[:500]}")
+                content_type = resp.headers.get("content-type", "")
+                if content_type and "text/event-stream" not in content_type:
+                    # A non-streaming answer is unexpected here (agent not
+                    # upgraded, or a JSON error): surface it instead of
+                    # silently yielding nothing.
+                    body = (await resp.aread()).decode("utf-8", errors="replace")
+                    raise RuntimeError(
+                        f"Agent returned non-streaming response ({content_type}): {body[:500]}"
+                    )
+                event: Optional[str] = None
+                data_lines: List[str] = []
+                async for line in resp.aiter_lines():
+                    if not line:
+                        evt = self._parse_sse_event(event, data_lines)
+                        if evt is not None:
+                            yield evt
+                        event = None
+                        data_lines = []
+                        continue
+                    if line.startswith("event:"):
+                        event = line[len("event:"):].strip()
+                    elif line.startswith("data:"):
+                        data_lines.append(line[len("data:"):].strip())
+                # Flush a trailing event if the stream closed without a blank line
+                evt = self._parse_sse_event(event, data_lines)
+                if evt is not None:
+                    yield evt
+
+    async def _consume_stream(self, agent_name: str, method: str, path: str) -> Dict[str, Any]:
+        """Consume a streamed action and return an aggregated JSON result.
+
+        Used by the JSON helpers (kept for LLM tools and other non-browser
+        callers): the SSE output lines are accumulated and the final ``done``
+        event decides success.
+        """
+        lines: List[str] = []
+        success = True
+        error = ""
+        try:
+            async for evt in self._stream_request(agent_name, method, path):
+                if evt["type"] == "output":
+                    if evt.get("line"):
+                        lines.append(evt["line"])
+                elif evt["type"] == "done":
+                    success = bool(evt.get("success", True))
+                elif evt["type"] == "error":
+                    success = False
+                    error = evt.get("error", "Erreur inconnue")
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+        result: Dict[str, Any] = {"success": success, "output": "\n".join(lines)}
+        if error:
+            result["error"] = error
+        return result
+
+    def _agent_error(self, exc: Exception) -> Dict[str, Any]:
+        """Turn an exception raised while talking to an agent into an error dict.
+
+        Transport-level failures (agent unreachable / HTTP error) are tagged
+        with ``unreachable: True`` so :func:`_check_agent_error` can tell them
+        apart from *business* errors returned by the agent itself.
+        """
+        return {"success": False, "error": str(exc), "unreachable": True}
+
     # ------------------------------------------------------------------
     # Containers
     # ------------------------------------------------------------------
@@ -307,22 +430,34 @@ class AgentManager:
     async def update_container(self, agent_name: str, container_id: str, spec: Dict) -> Dict:
         """Apply changes to a container on an agent."""
         try:
-            return await self._request(
+            result = await self._request(
                 agent_name, "POST", f"/agent/containers/{container_id}/update",
                 json=spec,
             )
+            if isinstance(result, dict) and result.get("success"):
+                await self.invalidate_cache(agent_name)
+            return result
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return self._agent_error(e)
+
+    async def stream_update_container_image(self, agent_name: str, container_id: str) -> AsyncIterator[Dict[str, Any]]:
+        """Stream an image update (pull + recreate) for a container on an agent.
+
+        Yields ``output`` / ``done`` / ``error`` events (see :meth:`_parse_sse_event`).
+        """
+        async for evt in self._stream_request(agent_name, "POST", f"/agent/containers/{container_id}/update-image"):
+            yield evt
 
     async def update_container_image(self, agent_name: str, container_id: str) -> Dict[str, Any]:
-        """Pull the latest image and recreate a container on an agent."""
-        try:
-            return await self._request(
-                agent_name, "POST", f"/agent/containers/{container_id}/update-image",
-                timeout=300,
-            )
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        """Pull the latest image and recreate a container on an agent (JSON result).
+
+        Consumes the streamed action and aggregates the output. Invalidates the
+        agent cache after a successful update so the UI shows the new state.
+        """
+        result = await self._consume_stream(agent_name, "POST", f"/agent/containers/{container_id}/update-image")
+        if result.get("success"):
+            await self.invalidate_cache(agent_name)
+        return result
 
     # ------------------------------------------------------------------
     # Stacks
@@ -374,18 +509,38 @@ class AgentManager:
         except Exception:
             return {"files": []}
 
-    async def save_stack_file(self, agent_name: str, stack_name: str, filename: str, content: str) -> bool:
-        """Write content to a file in a stack directory on an agent."""
+    async def save_stack_file(self, agent_name: str, stack_name: str, filename: str, content: str) -> Dict[str, Any]:
+        """Write content to a file in a stack directory on an agent.
+
+        Returns ``{"success": True}`` on success. On failure the dict carries
+        ``success: False`` and an ``error`` message. Transport-level failures
+        (agent unreachable, HTTP status) are tagged ``unreachable: True`` so
+        :func:`app.routes.api._check_agent_error` can tell them apart from a
+        *business* error returned by the agent (e.g. stack not found, invalid
+        filename), which keeps the real agent message visible in the UI.
+        """
         try:
-            await self._request(
+            data = await self._request(
                 agent_name, "PUT",
                 f"/agent/stacks/{stack_name}/files/{filename}",
                 content=content,
                 headers={"Content-Type": "text/plain"},
             )
-            return True
-        except Exception:
-            return False
+            if isinstance(data, dict) and not data.get("success", True):
+                return {"success": False, "error": data.get("error", "Unknown agent error")}
+            return {"success": True}
+        except httpx.HTTPStatusError as e:
+            # The agent answered with an HTTP error: surface its real message.
+            message = str(e)
+            try:
+                payload = e.response.json()
+                if isinstance(payload, dict) and payload.get("error"):
+                    message = str(payload["error"])
+            except Exception:
+                pass
+            return {"success": False, "error": message}
+        except Exception as e:
+            return self._agent_error(e)
 
     async def create_stack(
         self,
@@ -399,63 +554,115 @@ class AgentManager:
         if env is not None:
             body["env"] = env
         try:
-            return await self._request(agent_name, "POST", "/agent/stacks", json=body)
+            result = await self._request(agent_name, "POST", "/agent/stacks", json=body)
+            if isinstance(result, dict) and result.get("success"):
+                await self.invalidate_cache(agent_name)
+            return result
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return self._agent_error(e)
 
     async def delete_stack(self, agent_name: str, stack_name: str) -> Dict[str, Any]:
         """Delete a stack on an agent."""
         try:
-            return await self._request(
+            result = await self._request(
                 agent_name, "DELETE", f"/agent/stacks/{stack_name}"
             )
+            if isinstance(result, dict) and result.get("success"):
+                await self.invalidate_cache(agent_name)
+            return result
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return self._agent_error(e)
+
+    async def stream_deploy_stack(self, agent_name: str, stack_name: str) -> AsyncIterator[Dict[str, Any]]:
+        """Stream a stack deploy (down + up) on an agent."""
+        async for evt in self._stream_request(agent_name, "POST", f"/agent/stacks/{stack_name}/deploy"):
+            yield evt
 
     async def deploy_stack(self, agent_name: str, stack_name: str) -> Dict[str, Any]:
-        """Deploy (down + up) a stack on an agent."""
-        try:
-            return await self._request(
-                agent_name, "POST", f"/agent/stacks/{stack_name}/deploy", timeout=300
-            )
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        """Deploy (down + up) a stack on an agent (JSON result)."""
+        result = await self._consume_stream(agent_name, "POST", f"/agent/stacks/{stack_name}/deploy")
+        if result.get("success"):
+            await self.invalidate_cache(agent_name)
+        return result
+
+    async def stream_start_stack(self, agent_name: str, stack_name: str) -> AsyncIterator[Dict[str, Any]]:
+        """Stream a stack start (``docker compose up -d``) on an agent.
+
+        The agent runs ``up -d`` so the action starts existing containers AND
+        creates the missing ones (intended semantics of the "Démarrer" button).
+        """
+        async for evt in self._stream_request(agent_name, "POST", f"/agent/stacks/{stack_name}/start"):
+            yield evt
 
     async def start_stack(self, agent_name: str, stack_name: str) -> Dict[str, Any]:
-        """Start (compose up) a stack on an agent."""
-        try:
-            return await self._request(
-                agent_name, "POST", f"/agent/stacks/{stack_name}/start", timeout=300
-            )
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        """Start a stack (``docker compose up -d``) on an agent (JSON result)."""
+        result = await self._consume_stream(agent_name, "POST", f"/agent/stacks/{stack_name}/start")
+        if result.get("success"):
+            await self.invalidate_cache(agent_name)
+        return result
+
+    async def stream_stop_stack(self, agent_name: str, stack_name: str) -> AsyncIterator[Dict[str, Any]]:
+        """Stream a stack stop on an agent."""
+        async for evt in self._stream_request(agent_name, "POST", f"/agent/stacks/{stack_name}/stop"):
+            yield evt
 
     async def stop_stack(self, agent_name: str, stack_name: str) -> Dict[str, Any]:
-        """Stop (compose stop) a stack on an agent."""
-        try:
-            return await self._request(
-                agent_name, "POST", f"/agent/stacks/{stack_name}/stop", timeout=300
-            )
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        """Stop a stack on an agent (JSON result)."""
+        result = await self._consume_stream(agent_name, "POST", f"/agent/stacks/{stack_name}/stop")
+        if result.get("success"):
+            await self.invalidate_cache(agent_name)
+        return result
+
+    async def stream_restart_stack(self, agent_name: str, stack_name: str) -> AsyncIterator[Dict[str, Any]]:
+        """Stream a stack restart on an agent."""
+        async for evt in self._stream_request(agent_name, "POST", f"/agent/stacks/{stack_name}/restart"):
+            yield evt
 
     async def restart_stack(self, agent_name: str, stack_name: str) -> Dict[str, Any]:
-        """Restart (compose restart) a stack on an agent."""
-        try:
-            return await self._request(
-                agent_name, "POST", f"/agent/stacks/{stack_name}/restart", timeout=300
-            )
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        """Restart a stack on an agent (JSON result)."""
+        result = await self._consume_stream(agent_name, "POST", f"/agent/stacks/{stack_name}/restart")
+        if result.get("success"):
+            await self.invalidate_cache(agent_name)
+        return result
+
+    async def stream_update_stack(self, agent_name: str, stack_name: str) -> AsyncIterator[Dict[str, Any]]:
+        """Stream a stack update (pull + up -d) on an agent."""
+        async for evt in self._stream_request(agent_name, "POST", f"/agent/stacks/{stack_name}/update"):
+            yield evt
 
     async def update_stack(self, agent_name: str, stack_name: str) -> Dict[str, Any]:
-        """Update a stack (pull + up -d) on an agent."""
+        """Update a stack (pull + up -d) on an agent (JSON result)."""
+        result = await self._consume_stream(agent_name, "POST", f"/agent/stacks/{stack_name}/update")
+        if result.get("success"):
+            await self.invalidate_cache(agent_name)
+        return result
+
+    async def check_stack_update(self, agent_name: str, stack_name: str) -> Dict[str, Any]:
+        """Check if a stack has an image update available (no pull)."""
         try:
             return await self._request(
-                agent_name, "POST", f"/agent/stacks/{stack_name}/update", timeout=300
+                agent_name, "GET", f"/agent/stacks/{stack_name}/update-check", timeout=30
             )
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return {"update_available": False, "error": str(e)}
+
+    async def get_stack_logs(self, agent_name: str, stack_name: str, tail: int = 100) -> Dict[str, Any]:
+        """Return the last ``tail`` log lines for a stack on an agent.
+
+        The agent runs ``docker compose logs --tail=N`` (non-streamed) with a
+        fallback to per-container logs. Returns ``{"success": bool,
+        "output": str}``; transport errors are tagged ``unreachable``.
+        """
+        try:
+            data = await self._request(
+                agent_name, "GET", f"/agent/stacks/{stack_name}/logs",
+                params={"tail": tail}, timeout=30,
+            )
+            if isinstance(data, dict):
+                return data
+            return {"success": False, "error": "Unexpected agent response"}
+        except Exception as e:
+            return self._agent_error(e)
 
     async def import_stack(
         self,
@@ -479,11 +686,14 @@ class AgentManager:
         if dry_run:
             body["dry_run"] = True
         try:
-            return await self._request(
+            result = await self._request(
                 agent_name, "POST", "/agent/stacks/import", json=body, timeout=60
             )
+            if isinstance(result, dict) and result.get("success"):
+                await self.invalidate_cache(agent_name)
+            return result
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return self._agent_error(e)
 
     async def set_permissions(
         self,
@@ -500,7 +710,7 @@ class AgentManager:
                 json={"mode": mode},
             )
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return self._agent_error(e)
 
     # ------------------------------------------------------------------
     # Git history
@@ -575,6 +785,29 @@ class AgentManager:
             "ports": ports if isinstance(ports, list) else [],
             "timestamp": time.time(),
         }
+
+    async def invalidate_cache(self, agent_name: Optional[str] = None):
+        """Force invalidation of the cache after an action on an agent.
+
+        Removes the per-agent cache entry (or all of them when *agent_name* is
+        ``None``), invalidates the aggregate stale-while-revalidate cache and
+        rebuilds it immediately. A subsequent ``refreshStacks()`` / ``get_cached_*``
+        call therefore returns the new state instead of stale-while-revalidate
+        data.
+        """
+        if agent_name is not None:
+            self.cache.pop(agent_name, None)
+        else:
+            self.cache.clear()
+        # Invalidate the aggregate cache so the next read triggers a rebuild.
+        for entry in self._cache.values():
+            entry["data"] = None
+            entry["timestamp"] = 0
+            entry["pending"] = False
+        try:
+            await self._rebuild_aggregate_cache()
+        except Exception as e:
+            logger.warning("Cache rebuild after invalidation failed: %s", e)
 
     def _get_cached_containers(self, agent_name: str) -> List[Dict[str, Any]]:
         """Return cached containers for an agent, or an empty list."""

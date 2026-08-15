@@ -1,6 +1,5 @@
 fastapi>=0.115,<1.0
 uvicorn[standard]>=0.34,<1.0
-docker>=7.0,<8.0
 pyyaml>=6.0,<7.0
 python-jose[cryptography]>=3.3,<4.0
 passlib[bcrypt]>=1.7,<2.0

@@ -109,7 +109,7 @@
 </head>
 <body>
     <div class="popup-header">
-        <span class="popup-title">📋 Logs - {{ name or container }} ({{ agent }})</span>
+        <span class="popup-title">📋 Logs - {{ name or stack or container }} ({{ agent }})</span>
         <div class="popup-controls">
             <label style="color:#8b949e;font-size:12px;">Lignes:</label>
             <select class="popup-select" id="tail-select">
@@ -159,6 +159,7 @@
         const PopupLogs = {
             agent: "{{ agent }}",
             container: "{{ container }}",
+            stack: "{{ stack }}",
             paused: false,
             pollInterval: null,
             pollTimer: 3000,
@@ -243,7 +244,11 @@
                 const tail = document.getElementById("tail-select").value;
                 const agent = encodeURIComponent(this.agent);
                 const container = encodeURIComponent(this.container);
-                const url = `/api/containers/${container}/logs?agent=${agent}&tail=${tail}`;
+                const stack = encodeURIComponent(this.stack);
+                // Mode stack : /api/stacks/{stack}/logs — sinon logs container.
+                const url = stack
+                    ? `/api/stacks/${stack}/logs?agent=${agent}&tail=${tail}`
+                    : `/api/containers/${container}/logs?agent=${agent}&tail=${tail}`;
                 try {
                     const resp = await fetch(url, { credentials: "same-origin" });
                     if (resp.status === 401) {
@@ -251,6 +256,10 @@
                         return;
                     }
                     const data = await resp.json();
+                    if (!resp.ok) {
+                        this.setStatus("erreur: " + (data.detail || data.error || ("HTTP " + resp.status)));
+                        return;
+                    }
                     this.render(data.lines || []);
                     this.setStatus(this.paused ? "en pause" : `mis à jour ${new Date().toLocaleTimeString()}`);
                 } catch (e) {

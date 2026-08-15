@@ -1228,11 +1228,13 @@ async def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
             stack_name = arguments["stack_name"]
             filename = arguments["filename"]
             content = arguments["content"]
-            ok = await agent_manager.save_stack_file(
+            result = await agent_manager.save_stack_file(
                 agent_name, stack_name, filename, content
             )
-            if ok:
+            if isinstance(result, dict) and result.get("success"):
                 return f"Fichier '{filename}' du stack '{stack_name}' (agent '{agent_name}') mis à jour."
+            if isinstance(result, dict):
+                return f"[error] Échec de la mise à jour du fichier '{filename}' sur l'agent '{agent_name}': {result.get('error', 'erreur inconnue')}"
             return f"[error] Échec de la mise à jour du fichier '{filename}' sur l'agent '{agent_name}'."
 
         elif tool_name == "get_stack_files":

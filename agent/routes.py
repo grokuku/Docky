@@ -13,7 +13,7 @@ import threading
 from pathlib import Path
 
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, Query
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from agent import docker_manager
 from agent.auth import require_api_key, verify_api_key_ws
@@ -21,6 +21,70 @@ from agent.auth import require_api_key, verify_api_key_ws
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agent")
+
+
+# ---------------------------------------------------------------------------
+# Streaming (SSE) helpers
+# ---------------------------------------------------------------------------
+
+def _sse_response(event_iter):
+    """Wrap an async iterator of stream events into an SSE response.
+
+    Consumes events emitted by the docker_manager streaming generators
+    (``docker_manager.STREAM_EVENT_OUTPUT`` / ``STREAM_EVENT_RESULT``) and
+    re-emits them as ``text/event-stream`` frames:
+
+    - ``event: output`` / ``data: {"line": ...}`` for each output line;
+    - ``event: done`` / ``data: {"success": bool, "output": str}`` at the end;
+    - ``event: error`` / ``data: {"error": str}`` for hard failures.
+    """
+    async def _generate():
+        collected: list = []
+        try:
+            async for evt in event_iter:
+                if evt.get("type") == docker_manager.STREAM_EVENT_OUTPUT:
+                    line = evt.get("line", "")
+                    if line:
+                        collected.append(line)
+                    yield f"event: output\ndata: {json.dumps({'line': line}, ensure_ascii=False)}\n\n"
+                elif evt.get("type") == docker_manager.STREAM_EVENT_RESULT:
+                    success = bool(evt.get("success", True))
+                    if not success:
+                        error = evt.get("error") or "Commande échouée"
+                        yield (
+                            "event: done\ndata: "
+                            + json.dumps(
+                                {"success": False, "output": "\n".join(collected), "error": error},
+                                ensure_ascii=False,
+                            )
+                            + "\n\n"
+                        )
+                    else:
+                        yield (
+                            "event: done\ndata: "
+                            + json.dumps(
+                                {"success": True, "output": "\n".join(collected)},
+                                ensure_ascii=False,
+                            )
+                            + "\n\n"
+                        )
+                    return
+        except FileNotFoundError as e:
+            yield f"event: error\ndata: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            yield f"event: error\ndata: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -273,8 +337,20 @@ async def exec_one_shot(request: Request, container_id: str):
     if not command.strip():
         return JSONResponse(status_code=400, content={"error": "command is required"})
     try:
-        output = await asyncio.to_thread(docker_manager.exec_in_container, container_id, command, tty=False)
-        return {"success": True, "output": output}
+        result = await asyncio.to_thread(docker_manager.exec_in_container, container_id, command, tty=False)
+        success = bool(result.get("success", False))
+        output = result.get("output", "") or ""
+        exit_code = result.get("exit_code", -1)
+        if not success:
+            # Docker returned a non-zero exit code (or the container/daemon
+            # raised). The output may start with "[error]" on hard failures.
+            return {
+                "success": False,
+                "output": output,
+                "exit_code": exit_code,
+                "error": output.strip() or f"Command failed with exit code {exit_code}",
+            }
+        return {"success": True, "output": output, "exit_code": exit_code}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -340,15 +416,17 @@ async def update_container_route(request: Request, container_id: str):
 
 @router.post("/containers/{container_id}/update-image")
 async def update_container_image_route(request: Request, container_id: str):
-    """Pull the latest image for a container and recreate it.
+    """Pull the latest image for a container and recreate it (streamed).
 
     This is the dedicated "update available" action (the ⬆ button), distinct
     from ``POST /update`` which applies an edited spec (JSON body required).
+    Returns a ``text/event-stream`` response: pull/up progress lines followed
+    by a final ``done`` event.
     """
     auth_err = require_api_key(request)
     if auth_err:
         return auth_err
-    return await docker_manager.update_container_image(container_id)
+    return _sse_response(docker_manager.stream_update_container_image(container_id))
 
 
 # ---------------------------------------------------------------------------
@@ -476,11 +554,67 @@ async def delete_stack(request: Request, name: str):
 
 @router.post("/stacks/{name}/deploy")
 async def deploy_stack(request: Request, name: str):
+    """Deploy (down + up) a stack — streamed as SSE progress lines."""
+    auth_err = require_api_key(request)
+    if auth_err:
+        return auth_err
+    return _sse_response(docker_manager.stream_deploy_stack(name))
+
+
+@router.post("/stacks/{name}/start")
+async def start_stack(request: Request, name: str):
+    """Start a stack (``docker compose up -d``) — streamed as SSE progress lines.
+
+    ``up -d`` starts existing containers and creates the missing ones, so the
+    action also works for stacks that were never deployed or that went through
+    a ``down``. External stacks without a compose file fall back to ``start``.
+    """
+    auth_err = require_api_key(request)
+    if auth_err:
+        return auth_err
+    return _sse_response(docker_manager.stream_start_stack(name))
+
+
+@router.post("/stacks/{name}/stop")
+async def stop_stack(request: Request, name: str):
+    """Stop a stack — streamed as SSE progress lines."""
+    auth_err = require_api_key(request)
+    if auth_err:
+        return auth_err
+    return _sse_response(docker_manager.stream_stop_stack(name))
+
+
+@router.post("/stacks/{name}/restart")
+async def restart_stack(request: Request, name: str):
+    """Restart a stack — streamed as SSE progress lines."""
+    auth_err = require_api_key(request)
+    if auth_err:
+        return auth_err
+    return _sse_response(docker_manager.stream_restart_stack(name))
+
+
+@router.post("/stacks/{name}/update")
+async def update_stack(request: Request, name: str):
+    """Update a stack (pull + up -d) — streamed as SSE progress lines."""
+    auth_err = require_api_key(request)
+    if auth_err:
+        return auth_err
+    return _sse_response(docker_manager.stream_update_stack(name))
+
+
+@router.get("/stacks/{name}/logs")
+async def get_stack_logs(request: Request, name: str, tail: int = Query(100)):
+    """Return the last ``tail`` log lines for a stack (docker compose logs)."""
     auth_err = require_api_key(request)
     if auth_err:
         return auth_err
     try:
-        result = await docker_manager.deploy_stack(name)
+        result = await asyncio.to_thread(docker_manager.get_stack_logs, name, tail)
+        if isinstance(result, dict) and not result.get("success", True):
+            return JSONResponse(
+                status_code=404,
+                content={"error": result.get("error") or f"Stack '{name}' not found"},
+            )
         return result
     except FileNotFoundError:
         return JSONResponse(status_code=404, content={"error": "Stack not found"})
@@ -490,37 +624,14 @@ async def deploy_stack(request: Request, name: str):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-@router.post("/stacks/{name}/start")
-async def start_stack(request: Request, name: str):
-    auth_err = require_api_key(request)
-    if auth_err:
-        return auth_err
-    return await docker_manager.compose_start(name)
-
-
-@router.post("/stacks/{name}/stop")
-async def stop_stack(request: Request, name: str):
-    auth_err = require_api_key(request)
-    if auth_err:
-        return auth_err
-    return await docker_manager.compose_stop(name)
-
-
-@router.post("/stacks/{name}/restart")
-async def restart_stack(request: Request, name: str):
-    auth_err = require_api_key(request)
-    if auth_err:
-        return auth_err
-    return await docker_manager.compose_restart(name)
-
-
-@router.post("/stacks/{name}/update")
-async def update_stack(request: Request, name: str):
+@router.get("/stacks/{name}/update-check")
+async def stack_update_check(request: Request, name: str):
+    """Check whether any service image of a stack has an update available."""
     auth_err = require_api_key(request)
     if auth_err:
         return auth_err
     try:
-        result = await docker_manager.update_stack(name)
+        result = await asyncio.to_thread(docker_manager.check_stack_update, name)
         return result
     except FileNotFoundError:
         return JSONResponse(status_code=404, content={"error": "Stack not found"})
