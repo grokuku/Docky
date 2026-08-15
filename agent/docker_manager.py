@@ -1203,8 +1203,16 @@ async def stream_update_stack(name: str, idle_timeout: int = STREAM_IDLE_TIMEOUT
         else:
             yield evt
     # Step 2: up -d
+    up_result = None
     async for evt in _stream_compose_step(name, "up -d", label="── docker compose up -d ──", idle_timeout=idle_timeout):
+        if evt.get("type") == STREAM_EVENT_RESULT:
+            up_result = evt
         yield evt
+    # Pull + up -d réussis : les digests locaux viennent de changer, forcer un
+    # check frais (le cache TTL 300 s pourrait encore renvoyer les digests
+    # distants pré-pull et laisser le badge "update dispo" visible).
+    if up_result is not None and up_result.get("success"):
+        _invalidate_stack_update_cache(name)
 
 
 async def stream_deploy_stack(name: str, idle_timeout: int = STREAM_IDLE_TIMEOUT) -> AsyncIterator[Dict[str, Any]]:
@@ -1224,8 +1232,17 @@ async def stream_deploy_stack(name: str, idle_timeout: int = STREAM_IDLE_TIMEOUT
         else:
             yield evt
     # Step 2: up -d
+    up_result = None
     async for evt in _stream_compose_step(name, _compose_up_command(name), label="── docker compose up -d ──", idle_timeout=idle_timeout):
+        if evt.get("type") == STREAM_EVENT_RESULT:
+            up_result = evt
         yield evt
+    # Déploy réussi : les containers viennent d'être recréés à partir des
+    # images locales. Si une de ces images a changé entre-temps (pull manuel,
+    # update d'un container), le badge peut être faux ; invalider est trivial
+    # et sans risque (le prochain check relit simplement le registre).
+    if up_result is not None and up_result.get("success"):
+        _invalidate_stack_update_cache(name)
 
 
 async def compose_start(name: str) -> Dict[str, Any]:
@@ -1855,6 +1872,9 @@ async def _update_compose_container_image(
     if up_result.get("output"):
         output_parts.append(up_result["output"].strip())
     output_parts.append("Étapes exécutées: " + ", ".join(steps))
+    # Le digest local vient de changer : forcer un check frais (le cache TTL
+    # pourrait encore contenir les digests distants pré-pull).
+    _invalidate_update_check(image_name)
     return {"success": True, "output": "\n".join(output_parts)}
 
 
@@ -1996,6 +2016,9 @@ async def _stream_compose_container_update(
         }
         return
 
+    # Le digest local vient de changer : forcer un check frais (le cache TTL
+    # pourrait encore contenir les digests distants pré-pull).
+    _invalidate_update_check(image_name)
     yield {
         "type": STREAM_EVENT_RESULT,
         "success": True,
@@ -2050,7 +2073,12 @@ async def update_container_image(container_id: str) -> Dict[str, Any]:
     spec = _get_container_full_spec(container_id)
     if spec is None:
         return {"success": False, "error": "Container not found after pull"}
-    return await _recreate_container(c, container_id, spec, client, attrs)
+    result = await _recreate_container(c, container_id, spec, client, attrs)
+    if result.get("success"):
+        # Le digest local vient de changer : forcer un check frais (le cache
+        # TTL pourrait encore contenir les digests distants pré-pull).
+        _invalidate_update_check(image_name)
+    return result
 
 
 async def stream_update_container_image(
@@ -2157,6 +2185,9 @@ async def stream_update_container_image(
     if recreate_output:
         output_lines.append(recreate_output)
         yield {"type": STREAM_EVENT_OUTPUT, "line": recreate_output}
+    # Le digest local vient de changer : forcer un check frais (le cache TTL
+    # pourrait encore contenir les digests distants pré-pull).
+    _invalidate_update_check(image_name)
     yield {
         "type": STREAM_EVENT_RESULT,
         "success": True,
@@ -2187,6 +2218,11 @@ async def update_stack(name: str) -> Dict[str, Any]:
         output_parts.append("--- docker compose up -d ---\n" + up_result["output"])
     if up_result.get("error"):
         output_parts.append("--- docker compose up -d (stderr) ---\n" + up_result["error"])
+    if success:
+        # Les digests locaux viennent de changer : forcer un check frais (le
+        # cache TTL 300 s pourrait encore contenir les digests distants
+        # pré-pull et laisser le badge "update dispo" visible).
+        _invalidate_stack_update_cache(name)
     return {
         "success": success,
         "output": "\n".join(output_parts),
@@ -2706,6 +2742,12 @@ async def deploy_stack(name: str) -> Dict[str, Any]:
         output_parts.append("--- docker compose up -d ---\n" + up_result["output"])
     if up_result.get("error"):
         output_parts.append("--- docker compose up -d (stderr) ---\n" + up_result["error"])
+    if success:
+        # Le déploiement recrée les containers à partir des images locales. Si
+        # une de ces images a changé entre-temps (pull manuel, update d'un
+        # container), le badge peut être faux ; invalider est trivial et sans
+        # risque (le prochain check relit simplement le registre).
+        _invalidate_stack_update_cache(name)
     return {
         "success": success,
         "output": "\n".join(output_parts),
@@ -3219,16 +3261,95 @@ def _remote_manifest_digests(repository: str, tag: str) -> List[str]:
     return digests
 
 
-def _local_repo_digest(image) -> Optional[str]:
-    """Extract the ``sha256:...`` part from an image's ``RepoDigests``."""
+def _invalidate_update_check(image_ref: str) -> None:
+    """Drop the cached remote digests for ``image_ref``.
+
+    Called after a successful image update (pull + recreate).  The local
+    image digest has just changed, but the 300 s TTL cache may still hold
+    the *old* remote digests — captured before the manifest was refreshed
+    on the registry.  Keeping them would make the next ``check_image_update``
+    report ``update_available=True`` for an image that is actually up to
+    date, leaving the "update dispo" badge visible for up to the TTL.
+    """
+    if not image_ref:
+        return
+    repository, tag = _split_image_reference(image_ref)
+    _update_check_cache.pop((repository, tag), None)
+
+
+def _invalidate_stack_update_cache(stack_name: str) -> int:
+    """Invalidate the update-check cache for every registry image of a stack.
+
+    Called after a successful ``docker compose pull`` + ``up -d`` (or a
+    deploy): the local image digests have just changed, but the 300 s TTL
+    cache may still hold the *old* remote digests captured before the
+    manifests were refreshed on the registry. Keeping them would leave the
+    "update dispo" badge visible for up to the TTL, exactly like the
+    container bug this module already fixes via :func:`_invalidate_update_check`.
+
+    Images are extracted from the stack's compose file the same way
+    :func:`check_stack_update` reads it:
+
+    - each service ``image:`` entry is used as-is (plain ``image:`` or
+      ``build:`` + ``image:``);
+    - services built locally with no ``image:`` (``build:`` only) are
+      skipped — nothing is pulled from a registry, so their digest is
+      unchanged;
+    - ``${...}`` interpolated references are skipped because the stack
+      environment (env file / shell) cannot be resolved here.
+
+    Returns the number of cache keys invalidated.  When the compose file
+    cannot be resolved (external stack whose file is not locatable) per-image
+    invalidation is impossible and 0 is returned — the external stack badge
+    is then corrected by the natural 300 s TTL expiration.
+    """
+    services = _compose_project_services(stack_name)
+    if not services:
+        return 0
+    invalidated = 0
+    for service in services.values():
+        if not isinstance(service, dict):
+            continue
+        image = service.get("image")
+        if not isinstance(image, str) or not image.strip():
+            continue
+        image_name = image.strip()
+        if "${" in image_name:
+            continue
+        _invalidate_update_check(image_name)
+        invalidated += 1
+    return invalidated
+
+
+def _local_repo_digests(image) -> List[str]:
+    """Return the ``sha256:...`` digests from an image's ``RepoDigests``.
+
+    An image can carry several ``RepoDigests`` entries (one per registry
+    repo it was pulled from / retagged with, e.g. ``localhost:5000/repo@sha
+    256:...`` and ``repo@sha256:...``).  ``update_available`` must be false
+    as soon as ANY of them matches the remote manifest list, so callers test
+    against the whole list instead of a single arbitrary entry.
+    """
     try:
         digest_list = image.attrs.get("RepoDigests", []) or []
     except Exception:
-        return None
-    for digest in digest_list:
-        if digest and "@" in digest:
-            return digest.rsplit("@", 1)[-1]
-    return None
+        return []
+    digests: List[str] = []
+    seen = set()
+    for item in digest_list:
+        if not isinstance(item, str) or "@" not in item:
+            continue
+        digest = item.rsplit("@", 1)[-1]
+        if digest.startswith("sha256:") and digest not in seen:
+            seen.add(digest)
+            digests.append(digest)
+    return digests
+
+
+def _local_repo_digest(image) -> Optional[str]:
+    """Extract the first ``sha256:...`` part from an image's ``RepoDigests``."""
+    digests = _local_repo_digests(image)
+    return digests[0] if digests else None
 
 
 def _local_repo_digest_for_image(image_name: str) -> Optional[str]:
@@ -3277,8 +3398,8 @@ def check_image_update(container_id: str) -> Dict[str, Any]:
         }
 
     repository, tag = _split_image_reference(image_name)
-    local_digest = _local_repo_digest(image)
-    if not local_digest:
+    local_digests = _local_repo_digests(image)
+    if not local_digests:
         return {
             "update_available": False,
             "image": image_name,
@@ -3291,12 +3412,17 @@ def check_image_update(container_id: str) -> Dict[str, Any]:
 
     remote_digests = _remote_manifest_digests(repository, tag)
     remote_digest = remote_digests[0] if remote_digests else None
-    update_available = bool(remote_digest and local_digest not in remote_digests)
+    # ``update_available`` is false as soon as ANY local repo digest appears
+    # in the remote list (multi-arch lists and retagged images carry several).
+    update_available = bool(
+        remote_digest
+        and not any(local_digest in remote_digests for local_digest in local_digests)
+    )
 
     return {
         "update_available": update_available,
         "image": image_name,
-        "local_digest": local_digest,
+        "local_digest": local_digests[0],
         "remote_digest": remote_digest,
         "local_tag": tag or None,
         "remote_tag": tag or None,

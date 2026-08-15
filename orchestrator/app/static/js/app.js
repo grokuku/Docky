@@ -1568,7 +1568,16 @@ const DockyApp = {
             try {
                 const result = await this._streamAction(`/api/containers/${encodeURIComponent(id)}/${action}` + this.agentQuery(agent));
                 this._finishActivity(result.success, result.output);
-                if (result.success) this.showToast(`Container ${action} OK`, "success");
+                if (result.success) {
+                    this.showToast(`Container ${action} OK`, "success");
+                    // Après pull/recreate réussi, le digest local a changé : on
+                    // invalide le résultat "update dispo" en cache (anti-flicker)
+                    // puis on force un check immédiat. Le container recréé reçoit
+                    // un nouvel id — il sera re-checké au re-render de
+                    // refreshStacks(), et _pruneUpdateCache nettoiera l'ancien id.
+                    this._invalidateContainerUpdateCache(id);
+                    this.checkUpdate(id, agent);
+                }
                 else this.showToast(`Échec ${action} container`, "error");
             } catch(e) {
                 this._finishActivity(false, e.message);
@@ -1642,6 +1651,21 @@ const DockyApp = {
         for (const k of Object.keys(this._updateCheckCache)) {
             if (k.charAt(0) === 'c' && !activeContainers.has(k)) delete this._updateCheckCache[k];
             else if (k.charAt(0) === 's' && !activeStacks.has(k)) delete this._updateCheckCache[k];
+        }
+    },
+
+    // Invalide l'entrée de cache d'update d'un container (et l'éventuel check
+    // en vol pour cet id). Après un update-image réussi, le digest local a
+    // changé : un résultat "update dispo" en cache est obsolète et ne doit pas
+    // resservir de badge au prochain rendu. Le compteur global est recalculé
+    // depuis le cache (source de vérité anti-flicker).
+    _invalidateContainerUpdateCache(containerId) {
+        delete this._updateCheckCache[this._containerUpdateCacheKey(containerId)];
+        delete this._pendingFetches['update-' + containerId];
+        const newCount = this._countCachedUpdates();
+        if (newCount !== this._updateAvailableCount) {
+            this._updateAvailableCount = newCount;
+            this.updateStatsBar();
         }
     },
 
