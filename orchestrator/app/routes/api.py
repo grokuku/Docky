@@ -1241,20 +1241,20 @@ async def api_stack_logs(
 # ---------------------------------------------------------------------------
 
 @router.get("/stacks/{name}/files")
-async def api_list_stack_files(request: Request, name: str, agent: str = Query(...)):
+async def api_list_stack_files(request: Request, name: str, agent: str = Query(...), include_hidden: bool = Query(False)):
     username = _check_auth(request)
     if username is None:
         return _unauthorized()
     agent_name, err = _resolve_agent(agent)
     if err is not None:
         return err
-    files = await agent_manager.get_stack_files(agent_name, name)
+    files = await agent_manager.get_stack_files(agent_name, name, include_hidden=include_hidden)
     return {"files": files}
 
 
 @router.get("/stacks/{name}/files-with-content")
 async def api_list_stack_files_with_content(
-    request: Request, name: str, agent: str = Query(...)
+    request: Request, name: str, agent: str = Query(...), include_hidden: bool = Query(False)
 ):
     """List all files in a stack WITH their content in a single request.
 
@@ -1269,7 +1269,7 @@ async def api_list_stack_files_with_content(
     if err is not None:
         return err
     try:
-        result = await agent_manager.get_stack_files_with_content(agent_name, name)
+        result = await agent_manager.get_stack_files_with_content(agent_name, name, include_hidden=include_hidden)
         return result
     except Exception as e:
         logger.warning("files-with-content failed for %s/%s: %s", agent_name, name, e)

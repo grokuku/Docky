@@ -61,6 +61,23 @@
             font-size: 12px;
             font-family: inherit;
         }
+        .popup-filter {
+            background: #21262d;
+            color: #c9d1d9;
+            border: 1px solid #30363d;
+            border-radius: 4px;
+            padding: 4px 8px;
+            font-size: 12px;
+            font-family: inherit;
+            width: 170px;
+        }
+        .popup-filter::placeholder {
+            color: #8b949e;
+        }
+        .popup-filter:focus {
+            outline: none;
+            border-color: #4caf50;
+        }
         .popup-status {
             color: #8b949e;
             font-size: 11px;
@@ -111,6 +128,10 @@
     <div class="popup-header">
         <span class="popup-title">📋 Logs - {{ name or stack or container }} ({{ agent }})</span>
         <div class="popup-controls">
+            <input type="text" class="popup-filter" id="filter-input"
+                placeholder="Filtrer les logs…" autocomplete="off"
+                oninput="PopupLogs.setFilter(this.value)">
+            <span class="popup-status" id="filter-count"></span>
             <label style="color:#8b949e;font-size:12px;">Lignes:</label>
             <select class="popup-select" id="tail-select">
                 <option value="50">50</option>
@@ -165,6 +186,11 @@
             pollTimer: 3000,
             userScrolledUp: false,
             _scrollThreshold: 50,
+            // Filtre client (grep) : n'affecte QUE l'affichage. Les lignes brutes
+            // sont conservées dans ``lines`` pour pouvoir restaurer l'affichage
+            // complet dès que le filtre est vidé, sans re-fetch.
+            lines: [],
+            filterQuery: "",
 
             init() {
                 this.setupScrollDetection();
@@ -231,8 +257,90 @@
             },
 
             clearOutput() {
+                this.lines = [];
                 const out = document.getElementById("logs-output");
                 out.innerHTML = '<div class="log-empty">— Effacé (les logs reviendront au prochain refresh) —</div>';
+                this._updateFilterCount();
+            },
+
+            setFilter(value) {
+                this.filterQuery = (value || "").trim();
+                // Re-rendu du cache local uniquement (pas de re-fetch)
+                this._renderFiltered();
+                this._updateFilterCount();
+            },
+
+            _updateFilterCount() {
+                const el = document.getElementById("filter-count");
+                if (!el) return;
+                const total = this.lines.length;
+                if (!this.filterQuery) {
+                    el.textContent = total ? total + " lignes" : "";
+                    return;
+                }
+                const visible = this._filteredLines().length;
+                el.textContent = visible + "/" + total + " lignes";
+            },
+
+            // Retourne la liste des lignes (dans leur format brut) qui matchent
+            // le filtre courant. Insensible à la casse, substring sur le message
+            // ET sur le stream (stdout/stderr).
+            _filteredLines() {
+                const q = (this.filterQuery || "").toLowerCase();
+                if (!q) return this.lines;
+                return this.lines.filter(item => {
+                    let msg, stream;
+                    if (typeof item === "object" && item !== null) {
+                        msg = item.message || "";
+                        stream = item.stream || "stdout";
+                    } else {
+                        msg = String(item);
+                        stream = "stdout";
+                    }
+                    return msg.toLowerCase().includes(q) || stream.toLowerCase().includes(q);
+                });
+            },
+
+            _renderFiltered() {
+                const out = document.getElementById("logs-output");
+                if (!out) return;
+                const lines = this._filteredLines();
+
+                if (!lines || lines.length === 0) {
+                    if (this.filterQuery && this.lines.length > 0) {
+                        out.innerHTML = '<div class="log-empty">— Aucune ligne ne correspond au filtre —</div>';
+                    } else {
+                        out.innerHTML = '<div class="log-empty">— Aucun log —</div>';
+                    }
+                    return;
+                }
+
+                // Sauvegarder la position de scroll avant de remplacer
+                const prevScrollTop = out.scrollTop;
+                const prevScrollHeight = out.scrollHeight;
+
+                let html = "";
+                for (const item of lines) {
+                    // Support à la fois l'ancien format (string) et le nouveau (dict)
+                    let msg, stream;
+                    if (typeof item === "object" && item !== null) {
+                        msg = item.message || "";
+                        stream = item.stream || "stdout";
+                    } else {
+                        msg = String(item);
+                        stream = "stdout";
+                    }
+                    const lineClass = stream === "stderr" ? "log-line stderr" : "log-line";
+                    html += `<div class="${lineClass}">${formatLogLine(msg)}</div>`;
+                }
+                out.innerHTML = html;
+
+                // Gestion du scroll (identique à l'ancien render)
+                if (this.userScrolledUp) {
+                    out.scrollTop = prevScrollTop + (out.scrollHeight - prevScrollHeight);
+                } else {
+                    out.scrollTop = out.scrollHeight;
+                }
             },
 
             setStatus(msg) {
@@ -268,42 +376,9 @@
             },
 
             render(lines) {
-                const out = document.getElementById("logs-output");
-                if (!lines || lines.length === 0) {
-                    out.innerHTML = '<div class="log-empty">— Aucun log —</div>';
-                    return;
-                }
-
-                // Sauvegarder la position de scroll avant de remplacer
-                const prevScrollTop = out.scrollTop;
-                const prevScrollHeight = out.scrollHeight;
-
-                let html = "";
-                for (const item of lines) {
-                    // Support à la fois l'ancien format (string) et le nouveau (dict)
-                    let msg, stream;
-                    if (typeof item === "object" && item !== null) {
-                        // Nouveau format: {"message": "...", "stream": "stdout"}
-                        msg = item.message || "";
-                        stream = item.stream || "stdout";
-                    } else {
-                        // Ancien format: string simple
-                        msg = String(item);
-                        stream = "stdout";
-                    }
-                    const lineClass = stream === "stderr" ? "log-line stderr" : "log-line";
-                    html += `<div class="${lineClass}">${formatLogLine(msg)}</div>`;
-                }
-                out.innerHTML = html;
-
-                // Gestion du scroll
-                if (this.userScrolledUp) {
-                    // L'utilisateur a scrollé vers le haut : on conserve la position relative
-                    out.scrollTop = prevScrollTop + (out.scrollHeight - prevScrollHeight);
-                } else {
-                    // Première fois ou scroll en bas : on descend automatiquement
-                    out.scrollTop = out.scrollHeight;
-                }
+                this.lines = lines || [];
+                this._renderFiltered();
+                this._updateFilterCount();
             },
         };
 

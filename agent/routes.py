@@ -646,12 +646,12 @@ async def stack_update_check(request: Request, name: str):
 # ---------------------------------------------------------------------------
 
 @router.get("/stacks/{name}/files")
-async def list_stack_files(request: Request, name: str):
+async def list_stack_files(request: Request, name: str, include_hidden: bool = Query(False)):
     auth_err = require_api_key(request)
     if auth_err:
         return auth_err
     try:
-        files = docker_manager.get_stack_files(name)
+        files = docker_manager.get_stack_files(name, include_hidden=include_hidden)
         return {"files": files}
     except FileNotFoundError:
         return JSONResponse(status_code=404, content={"error": f"Stack '{name}' not found"})
@@ -678,7 +678,7 @@ async def get_stack_file(request: Request, name: str, filename: str):
 
 
 @router.get("/stacks/{stack_name}/files-with-content")
-async def list_stack_files_with_content(request: Request, stack_name: str):
+async def list_stack_files_with_content(request: Request, stack_name: str, include_hidden: bool = Query(False)):
     """List all files in a stack WITH their content in a single call.
 
     Returns a JSON object:
@@ -690,7 +690,7 @@ async def list_stack_files_with_content(request: Request, stack_name: str):
     if auth_error:
         return auth_error
     try:
-        files = await asyncio.to_thread(docker_manager.get_stack_files, stack_name)
+        files = await asyncio.to_thread(docker_manager.get_stack_files, stack_name, include_hidden)
         result = []
         for f in files:
             try:

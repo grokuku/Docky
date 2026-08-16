@@ -2303,6 +2303,7 @@ const DockyApp = {
     editorLoading: false,
     _editorLoadedKey: null,   // clé (name@agent) de la stack actuellement chargée dans l'éditeur
     _editorLoadToken: 0,      // token anti-race : incrémenté à chaque loadEditor, le dernier clic gagne
+    _showAllStackFiles: false, // toggle « afficher tous les fichiers » (par défaut : liste propre compose + .env)
     deployTargetStack: null,
     deleteTargetStack: null,
     permsTargetFile: null,
@@ -2426,7 +2427,12 @@ const DockyApp = {
 
         // --- Batch route: tries to fetch all files with content in one call ---
         const agentParam = this.agentQuery(agent);
-        const batchUrl = "/api/stacks/" + encodeURIComponent(name) + "/files-with-content" + agentParam;
+        // Liste blanche (compose + .env) par défaut ; le toggle « afficher tous
+        // les fichiers » demande la liste complète au serveur.
+        const includeQS = this._showAllStackFiles
+            ? (agentParam ? "&include_hidden=true" : "?include_hidden=true")
+            : "";
+        const batchUrl = "/api/stacks/" + encodeURIComponent(name) + "/files-with-content" + agentParam + includeQS;
 
         let batchOk = false;
         try {
@@ -2458,7 +2464,7 @@ const DockyApp = {
 
         // --- Fallback: legacy sequential load ---
         if (!batchOk) {
-            const filesData = await this.apiFetch("/api/stacks/" + encodeURIComponent(name) + "/files" + agentParam);
+            const filesData = await this.apiFetch("/api/stacks/" + encodeURIComponent(name) + "/files" + agentParam + includeQS);
             if (isStale()) return;
             if (!filesData || !filesData.files) {
                 this.renderEditorPlaceholder("Impossible de charger les fichiers de la stack.");
@@ -2580,6 +2586,10 @@ const DockyApp = {
         let toolbarHtml = '<div class="compose-toolbar">';
         toolbarHtml += '<button class="btn btn-success btn-sm" onclick="DockyApp.saveCurrentFile()"' + (mod ? '' : ' disabled') + '>' + this.icon('hard-drive') + ' Sauvegarder</button>';
         toolbarHtml += '<button class="btn btn-info btn-sm" onclick="DockyApp.saveAndDeploy()"' + (anyMod ? '' : ' disabled') + '>' + this.icon('rocket') + ' Sauvegarder & Déployer</button>';
+        // Créer un .env vide s'il n'existe pas encore dans la stack.
+        if (!this.stackFiles.some(f => f.name === ".env")) {
+            toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.createEnvFile()" title="Créer un fichier .env vide">' + this.icon('file-plus') + ' Créer .env</button>';
+        }
         toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.openHistory()" title="Historique">' + this.icon('clipboard-list') + '</button>';
         toolbarHtml += '<div class="spacer"></div>';
         toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.stackAction(\'' + _escapedName + '\', \'start\', \'' + _escapedAgent + '\')" title="Démarrer">' + this.icon('play') + '</button>';
@@ -2596,6 +2606,8 @@ const DockyApp = {
         }
         toolbarHtml += '<button class="btn btn-sm" onclick="DockyApp.openPermsModal()" title="Permissions du fichier">' + this.icon('lock') + '</button>';
         toolbarHtml += '<button class="btn btn-danger btn-sm" onclick="DockyApp.openDeleteStackModal(\''+ this.escapeHtml(this.selectedStack) +'\')" title="Supprimer la stack">' + this.icon('trash-2') + '</button>';
+        toolbarHtml += '<button class="btn btn-ghost btn-sm' + (this._showAllStackFiles ? ' active' : '') + '" onclick="DockyApp.toggleShowAllStackFiles()" title="Afficher/masquer les fichiers non éditables (compose + .env uniquement par défaut)">'
+            + this.icon('eye') + ' ' + (this._showAllStackFiles ? 'Fichiers éditables' : 'Afficher tous') + '</button>';
         toolbarHtml += '</div>';
 
         // Editor area
@@ -2788,6 +2800,92 @@ const DockyApp = {
         }
         this.updateModifiedIndicators();
         this.refreshStacks();
+    },
+
+    // -------------------------------------------------------
+    // .env (création) + toggle « afficher tous les fichiers »
+    // -------------------------------------------------------
+
+    async createEnvFile() {
+        if (!this.selectedStack) return;
+        // Extraire le nom de stack depuis la clé composite (name@agent)
+        const atIdx = this.selectedStack.indexOf('@');
+        const stackName = atIdx > 0 ? this.selectedStack.substring(0, atIdx) : this.selectedStack;
+        const agentParam = this.agentQuery(this.selectedStackAgent);
+        // Un .env vide via le mécanisme standard save_stack_file (PUT /files/.env)
+        const resp = await fetch("/api/stacks/" + encodeURIComponent(stackName) + "/files/.env" + agentParam, {
+            method: "PUT",
+            headers: { "Content-Type": "text/plain" },
+            body: "",
+            credentials: "same-origin",
+        });
+        if (resp.status === 401) { window.location.href = "/login"; return; }
+        if (resp.ok) {
+            this.showToast("Fichier .env créé", "success");
+            // Ajoute le fichier à la liste et ouvre l'édition, sans re-fetch global
+            // (pour ne pas perdre les modifications non sauvegardées des autres onglets).
+            if (!this.stackFiles.some(f => f.name === ".env")) {
+                this.stackFiles.push({ name: ".env", size: 0, is_dir: false });
+            }
+            this._setEditorFileContent(".env", "");
+            this.currentFile = ".env";
+            if (!this._composeEditMode) this.toggleComposeEdit();
+            this.renderEditor();
+        } else {
+            const data = await resp.json().catch(() => ({}));
+            this.showToast("Erreur création .env : " + (data.detail || data.error || resp.statusText), "error");
+        }
+    },
+
+    async toggleShowAllStackFiles() {
+        if (!this.selectedStack) return;
+        this._showAllStackFiles = !this._showAllStackFiles;
+        const atIdx = this.selectedStack.indexOf('@');
+        const stackName = atIdx > 0 ? this.selectedStack.substring(0, atIdx) : this.selectedStack;
+        const agentParam = this.agentQuery(this.selectedStackAgent);
+        const qs = this._showAllStackFiles ? "include_hidden=true" : "include_hidden=false";
+        const sep = agentParam ? "&" : "?";
+        const url = "/api/stacks/" + encodeURIComponent(stackName) + "/files" + agentParam + sep + qs;
+
+        const filesData = await this.apiFetch(url);
+        if (!filesData || !filesData.files) {
+            // Annuler la bascule en cas d'échec
+            this._showAllStackFiles = !this._showAllStackFiles;
+            this.showToast("Impossible de recharger la liste des fichiers", "error");
+            return;
+        }
+        this.stackFiles = filesData.files;
+
+        // Charger le contenu des fichiers nouvellement visibles (les fichiers déjà
+        // chargés — y compris les modifications non sauvegardées — sont conservés).
+        const loadedFiles = [];
+        for (const f of this.stackFiles) {
+            if (this.fileContents[f.name] !== undefined) {
+                // Déjà chargé (éventuellement modifié) : conservé tel quel.
+                loadedFiles.push(f);
+                continue;
+            }
+            const resp = await fetch("/api/stacks/" + encodeURIComponent(stackName) + "/files/" + encodeURIComponent(f.name) + agentParam, { credentials: "same-origin" });
+            if (resp.ok) {
+                const text = await resp.text();
+                this._setEditorFileContent(f.name, text);
+                loadedFiles.push(f);
+            } else {
+                // Fichier illisible (binaire, permission…) : on le SAUTE. On ne
+                // crée jamais de buffer vide éditable qui risquerait d'écraser le
+                // fichier avec un contenu vide à la sauvegarde.
+                console.warn("Fichier illisible, exclu de l'éditeur :", f.name);
+            }
+        }
+        this.stackFiles = loadedFiles;
+
+        // Si le fichier courant est masqué (retour à la liste éditables), basculer
+        // sur le premier fichier de la liste.
+        if (!this.stackFiles.some(f => f.name === this.currentFile)) {
+            this.selectFile(this.stackFiles.length ? this.stackFiles[0].name : null);
+        } else {
+            this.renderEditor();
+        }
     },
 
     // -------------------------------------------------------

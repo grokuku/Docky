@@ -480,11 +480,17 @@ class AgentManager:
             logger.error("get_stacks failed for agent '%s': %s", agent_name, exc)
             return []
 
-    async def get_stack_files(self, agent_name: str, stack_name: str) -> List[Dict[str, Any]]:
-        """List files in a stack directory on an agent."""
+    async def get_stack_files(self, agent_name: str, stack_name: str, include_hidden: bool = False) -> List[Dict[str, Any]]:
+        """List files in a stack directory on an agent.
+
+        By default only the *editable* files (Compose + ``.env``) are listed.
+        Pass ``include_hidden=True`` to get the complete directory listing
+        (frontend toggle « afficher tous les fichiers » / LLM tool).
+        """
         try:
             data = await self._request(
-                agent_name, "GET", f"/agent/stacks/{stack_name}/files"
+                agent_name, "GET", f"/agent/stacks/{stack_name}/files",
+                params={"include_hidden": str(include_hidden).lower()},
             )
             if isinstance(data, dict):
                 return data.get("files", [])
@@ -501,8 +507,11 @@ class AgentManager:
         except Exception:
             return None
 
-    async def get_stack_files_with_content(self, agent_name: str, stack_name: str) -> dict:
+    async def get_stack_files_with_content(self, agent_name: str, stack_name: str, include_hidden: bool = False) -> dict:
         """List all files in a stack WITH their content in a single call.
+
+        By default only the *editable* files (Compose + ``.env``) are returned.
+        Pass ``include_hidden=True`` for the complete listing.
 
         Returns a dict with a ``files`` key containing a list of
         ``{"filename": str, "content": str | None, "size": int}`` objects.
@@ -510,6 +519,7 @@ class AgentManager:
         try:
             data = await self._request(
                 agent_name, "GET", f"/agent/stacks/{stack_name}/files-with-content",
+                params={"include_hidden": str(include_hidden).lower()},
                 timeout=30,
             )
             if isinstance(data, dict):

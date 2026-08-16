@@ -2370,6 +2370,35 @@ async def system_prune() -> Dict[str, Any]:
 _STACK_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _SAFE_FILENAME_RE = re.compile(r"^[A-Za-z0-9.][A-Za-z0-9_.-]*$")
 
+# Liste blanche des fichiers éditables dans le panneau d'édition compose :
+# fichiers Docker Compose (et variantes de nommage) + le fichier .env.
+# Tout autre fichier présent dans le dossier de la stack (last_results.json,
+# *.md, *.log, …) est masqué de la liste par défaut. Le paramètre
+# ``include_hidden`` de :func:`get_stack_files` permet de récupérer la liste
+# complète (ex. pour le toggle « afficher tous les fichiers » ou pour l'outil
+# LLM ``get_stack_files`` qui veut conserver la vision complète du dossier).
+_EDITABLE_STACK_FILES = frozenset({
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "docker-compose.override.yml",
+    "docker-compose.override.yaml",
+    "compose.yml",
+    "compose.yaml",
+    "compose.override.yml",
+    "compose.override.yaml",
+    ".env",
+})
+
+
+def is_editable_stack_file(filename: str) -> bool:
+    """Return True if *filename* should be shown in the compose editor.
+
+    Only Docker Compose files (and common naming variants) plus ``.env`` are
+    considered editable from the UI. Generated/auxiliary files (last_results.json,
+    README.md, *.log, …) are hidden by default.
+    """
+    return filename in _EDITABLE_STACK_FILES
+
 
 def validate_stack_name(name: str) -> str:
     """Return the stack name if valid, raise ValueError otherwise."""
@@ -2425,8 +2454,13 @@ def safe_join(stack_name: str, filename: str) -> Path:
 _stack_file_path = safe_join
 
 
-def get_stack_files(stack_name: str) -> List[Dict[str, Any]]:
+def get_stack_files(stack_name: str, include_hidden: bool = False) -> List[Dict[str, Any]]:
     """List files in a stack directory (non-recursive, one level).
+
+    By default only the *editable* files (Docker Compose files + ``.env``) are
+    returned — the UI must not expose generated/auxiliary files such as
+    ``last_results.json``. Pass ``include_hidden=True`` to get the complete
+    list (used by the frontend toggle and the LLM ``get_stack_files`` tool).
 
     Returns a list of dicts with ``name``, ``size`` and ``is_dir``.
     """
@@ -2437,6 +2471,8 @@ def get_stack_files(stack_name: str) -> List[Dict[str, Any]]:
     result: List[Dict[str, Any]] = []
     for entry in sorted(base.iterdir(), key=lambda e: e.name):
         if entry.is_dir():
+            continue
+        if not include_hidden and not is_editable_stack_file(entry.name):
             continue
         result.append({
             "name": entry.name,

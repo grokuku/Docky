@@ -1212,7 +1212,9 @@ async def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
             agent_name = arguments.get("agent_name")
             stack_name = arguments.get("stack_name")
             try:
-                result = await agent_manager.get_stack_files(agent_name, stack_name)
+                # L'outil LLM garde la vision complète du dossier (l'UI filtre
+                # par défaut sur les fichiers éditables).
+                result = await agent_manager.get_stack_files(agent_name, stack_name, include_hidden=True)
                 return json.dumps({"files": result})
             except Exception as e:
                 return json.dumps({"error": str(e)})
