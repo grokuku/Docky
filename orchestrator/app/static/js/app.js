@@ -2322,6 +2322,33 @@ const DockyApp = {
         const agent = atIdx > 0 ? value.substring(atIdx + 1) : null;
 
         this.selectStackFromDashboard(name, agent);
+        // Quand la stack est choisie depuis le dropdown, on ramène le dashboard
+        // (liste / grille / table) sur l'élément de cette stack s'il n'était pas
+        // visible dans la zone scrollée.
+        this._scrollToStackInDashboard(name, agent);
+    },
+
+    // Fait défiler la vue dashboard jusqu'au groupe de la stack sélectionnée.
+    // Ne scroll QUE si un élément correspondant existe réellement dans le DOM
+    // (une vue liste/grille/table affichée) : si l'éditeur seul est affiché ou
+    // qu'aucune vue n'a rendu cette stack (ex. grille sans container), on ne
+    // force aucun défilement.
+    _scrollToStackInDashboard(name, agent) {
+        const targetKey = name + '@' + (agent || '');
+        const stackEls = document.querySelectorAll('.stack-card, .table-stack-group, .grid-container-card');
+        for (const el of stackEls) {
+            const elKey = (el.dataset.stack || '') + '@' + (el.dataset.agent || '');
+            if (elKey === targetKey) {
+                try {
+                    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } catch (e) {
+                    // scrollIntoView({behavior:'smooth'}) peut ne pas être
+                    // supporté sur tous les navigateurs : repli sans options.
+                    el.scrollIntoView();
+                }
+                return;
+            }
+        }
     },
 
     selectStackFromDashboard(name, agent) {
@@ -2569,7 +2596,12 @@ const DockyApp = {
         for (const f of this.stackFiles) {
             const active = f.name === this.currentFile ? " active" : "";
             const mod = this.isModified(f.name) ? " modified" : "";
-            tabsHtml += '<button class="tab-btn' + active + mod + '" onclick="DockyApp.selectFile(' + JSON.stringify(f.name) + ')">'
+            // Le nom de fichier est encodé en URL puis décodé dans selectFile :
+            // les guillemets / apostrophes du nom ne peuvent pas casser l'attribut
+            // onclick (JSON.stringify produisait des " qui terminaient l'attribut
+            // et rendait TOUS les onglets — dont .env — impossibles à cliquer).
+            const tabFileArg = encodeURIComponent(f.name).replace(/'/g, '%27');
+            tabsHtml += '<button class="tab-btn' + active + mod + '" onclick="DockyApp.selectFile(decodeURIComponent(\'' + tabFileArg + '\'))">'
                 + this.escapeHtml(f.name)
                 + '<span class="tab-modified-dot">●</span></button>';
         }

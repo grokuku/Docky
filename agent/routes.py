@@ -554,7 +554,12 @@ async def delete_stack(request: Request, name: str):
 
 @router.post("/stacks/{name}/deploy")
 async def deploy_stack(request: Request, name: str):
-    """Deploy (down + up) a stack — streamed as SSE progress lines."""
+    """Deploy (down + up --remove-orphans) a stack — streamed as SSE progress lines.
+
+    ``down`` (sans ``-v`` : volumes nommés conservés) puis ``up -d
+    --remove-orphans`` : un service retiré du compose est donc supprimé au
+    prochain déploiement.
+    """
     auth_err = require_api_key(request)
     if auth_err:
         return auth_err
@@ -563,11 +568,13 @@ async def deploy_stack(request: Request, name: str):
 
 @router.post("/stacks/{name}/start")
 async def start_stack(request: Request, name: str):
-    """Start a stack (``docker compose up -d``) — streamed as SSE progress lines.
+    """Start a stack (``docker compose up -d --remove-orphans``) — streamed as SSE progress lines.
 
     ``up -d`` starts existing containers and creates the missing ones, so the
     action also works for stacks that were never deployed or that went through
-    a ``down``. External stacks without a compose file fall back to ``start``.
+    a ``down``; ``--remove-orphans`` supprime les containers du projet qui ne
+    sont plus définis dans le compose. External stacks without a compose file
+    fall back to ``start``.
     """
     auth_err = require_api_key(request)
     if auth_err:
@@ -595,7 +602,11 @@ async def restart_stack(request: Request, name: str):
 
 @router.post("/stacks/{name}/update")
 async def update_stack(request: Request, name: str):
-    """Update a stack (pull + up -d) — streamed as SSE progress lines."""
+    """Update a stack (pull + up -d --remove-orphans) — streamed as SSE progress lines.
+
+    ``--remove-orphans`` supprime les containers devenus orphelins (un service
+    retiré du compose est donc supprimé au prochain update).
+    """
     auth_err = require_api_key(request)
     if auth_err:
         return auth_err

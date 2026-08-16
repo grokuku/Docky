@@ -1083,13 +1083,17 @@ async def _stream_command_step(
 def _compose_up_command(name: str) -> str:
     """Return the compose subcommand used to bring a stack up.
 
+    ``--remove-orphans`` garantit qu'un service retiré du compose (son
+    container n'étant plus défini dans le fichier) est supprimé au prochain
+    ``up`` / déploiement au lieu de rester en vie comme container orphelin.
+
     External stacks without a compose file fall back to ``start`` (which
     operates on the existing containers via ``--project-name``).
     """
     compose_file, _cwd = _resolve_stack_compose(name)
     if compose_file is None or not Path(compose_file).exists():
         return "start"
-    return "up -d"
+    return "up -d --remove-orphans"
 
 
 def _compose_down_command(name: str) -> str:
@@ -1162,14 +1166,15 @@ def _compose_service_update_plan(project: str, service: str) -> Dict[str, Any]:
 
 
 async def stream_start_stack(name: str, idle_timeout: int = STREAM_IDLE_TIMEOUT) -> AsyncIterator[Dict[str, Any]]:
-    """Stream ``docker compose up -d`` for a stack (the "Démarrer" action).
+    """Stream ``docker compose up -d --remove-orphans`` for a stack (the "Démarrer" action).
 
     ``up -d`` starts existing containers AND creates the missing ones (e.g.
     after a ``down`` or a first deploy), which is the intended semantics of a
-    "start" button. External stacks without a compose file fall back to
-    ``docker compose start`` (via :func:`_compose_up_command`).
+    "start" button; ``--remove-orphans`` supprime les containers du projet qui
+    ne sont plus dans le compose. External stacks without a compose file fall
+    back to ``docker compose start`` (via :func:`_compose_up_command`).
     """
-    async for evt in _stream_compose_step(name, _compose_up_command(name), label="── docker compose up -d ──", idle_timeout=idle_timeout):
+    async for evt in _stream_compose_step(name, _compose_up_command(name), label="── docker compose up -d --remove-orphans ──", idle_timeout=idle_timeout):
         yield evt
 
 
@@ -1188,6 +1193,9 @@ async def stream_restart_stack(name: str, idle_timeout: int = STREAM_IDLE_TIMEOU
 async def stream_update_stack(name: str, idle_timeout: int = STREAM_IDLE_TIMEOUT) -> AsyncIterator[Dict[str, Any]]:
     """Stream ``docker compose pull`` then ``docker compose up -d`` for a stack.
 
+    ``up -d --remove-orphans`` supprime les containers devenus orphelins (un
+    service retiré du compose est donc supprimé au prochain update).
+
     Raises :class:`FileNotFoundError` if the stack directory does not exist.
     """
     compose_file, _cwd = _resolve_stack_compose(name)
@@ -1202,9 +1210,9 @@ async def stream_update_stack(name: str, idle_timeout: int = STREAM_IDLE_TIMEOUT
             # pull succeeded: swallow the intermediate result event
         else:
             yield evt
-    # Step 2: up -d
+    # Step 2: up -d (--remove-orphans: un service retiré du compose est supprimé)
     up_result = None
-    async for evt in _stream_compose_step(name, "up -d", label="── docker compose up -d ──", idle_timeout=idle_timeout):
+    async for evt in _stream_compose_step(name, "up -d --remove-orphans", label="── docker compose up -d --remove-orphans ──", idle_timeout=idle_timeout):
         if evt.get("type") == STREAM_EVENT_RESULT:
             up_result = evt
         yield evt
@@ -1217,6 +1225,10 @@ async def stream_update_stack(name: str, idle_timeout: int = STREAM_IDLE_TIMEOUT
 
 async def stream_deploy_stack(name: str, idle_timeout: int = STREAM_IDLE_TIMEOUT) -> AsyncIterator[Dict[str, Any]]:
     """Stream ``docker compose down`` then ``docker compose up -d`` for a stack.
+
+    ``down`` (sans ``-v`` : les volumes nommés sont conservés) puis
+    ``up -d --remove-orphans`` : un service retiré du compose est donc
+    supprimé au prochain déploiement.
 
     Raises :class:`FileNotFoundError` if the stack directory does not exist.
     """
@@ -1231,9 +1243,9 @@ async def stream_deploy_stack(name: str, idle_timeout: int = STREAM_IDLE_TIMEOUT
                 return
         else:
             yield evt
-    # Step 2: up -d
+    # Step 2: up -d (--remove-orphans: un service retiré du compose est supprimé)
     up_result = None
-    async for evt in _stream_compose_step(name, _compose_up_command(name), label="── docker compose up -d ──", idle_timeout=idle_timeout):
+    async for evt in _stream_compose_step(name, _compose_up_command(name), label="── docker compose up -d --remove-orphans ──", idle_timeout=idle_timeout):
         if evt.get("type") == STREAM_EVENT_RESULT:
             up_result = evt
         yield evt
@@ -1255,19 +1267,23 @@ async def compose_start(name: str) -> Dict[str, Any]:
 
 
 async def compose_up(name: str) -> Dict[str, Any]:
-    """Run ``docker compose up -d`` for the given stack.
+    """Run ``docker compose up -d --remove-orphans`` for the given stack.
+
+    ``--remove-orphans`` supprime les containers du projet qui ne sont plus
+    définis dans le compose (un service retiré du fichier est donc supprimé
+    au prochain up / déploiement).
 
     For managed stacks (or external stacks with a known compose file),
-    this runs ``docker compose up -d``.  For external stacks whose
-    compose file cannot be located, it falls back to ``docker compose
-    --project-name {name} start`` which starts existing containers without
-    needing the compose file.
+    this runs ``docker compose up -d --remove-orphans``.  For external
+    stacks whose compose file cannot be located, it falls back to ``docker
+    compose --project-name {name} start`` which starts existing containers
+    without needing the compose file.
     """
     compose_file, _cwd = _resolve_stack_compose(name)
     if compose_file is None or not Path(compose_file).exists():
         # External stack: use 'start' instead of 'up -d'
         return await _run_compose(name, "start")
-    return await _run_compose(name, "up -d")
+    return await _run_compose(name, "up -d --remove-orphans")
 
 
 async def compose_down(name: str) -> Dict[str, Any]:
@@ -2200,6 +2216,9 @@ async def stream_update_container_image(
 async def update_stack(name: str) -> Dict[str, Any]:
     """Update a stack: ``docker compose pull`` then ``docker compose up -d``.
 
+    ``up -d --remove-orphans`` supprime les containers devenus orphelins
+    (un service retiré du compose est donc supprimé au prochain update).
+
     Returns a dict with ``success`` and ``output``.
     Raises ``FileNotFoundError`` if the stack directory does not exist.
     """
@@ -2207,7 +2226,7 @@ async def update_stack(name: str) -> Dict[str, Any]:
     if compose_file is None or not Path(compose_file).exists():
         raise FileNotFoundError(f"Stack '{name}' not found")
     pull_result = await _run_compose(name, "pull")
-    up_result = await _run_compose(name, "up -d")
+    up_result = await _run_compose(name, "up -d --remove-orphans")
     success = pull_result.get("success", False) and up_result.get("success", False)
     output_parts: list[str] = []
     if pull_result.get("output"):
@@ -2215,9 +2234,9 @@ async def update_stack(name: str) -> Dict[str, Any]:
     if pull_result.get("error"):
         output_parts.append("--- docker compose pull (stderr) ---\n" + pull_result["error"])
     if up_result.get("output"):
-        output_parts.append("--- docker compose up -d ---\n" + up_result["output"])
+        output_parts.append("--- docker compose up -d --remove-orphans ---\n" + up_result["output"])
     if up_result.get("error"):
-        output_parts.append("--- docker compose up -d (stderr) ---\n" + up_result["error"])
+        output_parts.append("--- docker compose up -d --remove-orphans (stderr) ---\n" + up_result["error"])
     if success:
         # Les digests locaux viennent de changer : forcer un check frais (le
         # cache TTL 300 s pourrait encore contenir les digests distants
@@ -2811,6 +2830,10 @@ def import_stack(source_path: str, stack_name: str = None, dry_run: bool = False
 async def deploy_stack(name: str) -> Dict[str, Any]:
     """Deploy a stack: ``docker compose down`` then ``docker compose up -d``.
 
+    ``down`` (sans ``-v`` : les volumes nommés sont conservés) puis
+    ``up -d --remove-orphans`` : un service retiré du compose est donc
+    supprimé au prochain déploiement.
+
     Returns a dict with ``success``, ``output`` and ``error``.
     Raises ``FileNotFoundError`` if the stack directory does not exist.
     """
@@ -2826,9 +2849,9 @@ async def deploy_stack(name: str) -> Dict[str, Any]:
     if down_result.get("error"):
         output_parts.append("--- docker compose down (stderr) ---\n" + down_result["error"])
     if up_result.get("output"):
-        output_parts.append("--- docker compose up -d ---\n" + up_result["output"])
+        output_parts.append("--- docker compose up -d --remove-orphans ---\n" + up_result["output"])
     if up_result.get("error"):
-        output_parts.append("--- docker compose up -d (stderr) ---\n" + up_result["error"])
+        output_parts.append("--- docker compose up -d --remove-orphans (stderr) ---\n" + up_result["error"])
     if success:
         # Le déploiement recrée les containers à partir des images locales. Si
         # une de ces images a changé entre-temps (pull manuel, update d'un

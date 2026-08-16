@@ -972,6 +972,8 @@ body {
     border-radius: var(--radius-sm);
     overflow: hidden;
     transition: border-color var(--transition);
+    /* Décale légèrement la cible de scroll sous l'en-tête du panel. */
+    scroll-margin-top: 12px;
 }
 
 .stack-card:hover {
@@ -2228,6 +2230,8 @@ body {
     background: var(--bg-secondary);
     border: 2px solid var(--border-color);
     border-radius: var(--radius-sm);
+    /* Cible de scroll (sélection d'une stack via le dropdown). */
+    scroll-margin-top: 12px;
     /* Hauteur auto (min-height fixé en JS via la taille de rangée) : la carte
        grandit avec son contenu au lieu de se faire écraser/chevauche par un
        overflow non géré. */
@@ -2292,6 +2296,8 @@ body {
     border-radius: var(--radius-md);
     overflow: hidden;
     transition: opacity 0.3s ease, filter 0.3s ease;
+    /* Cible de scroll (sélection d'une stack via le dropdown). */
+    scroll-margin-top: 12px;
 }
 
 .table-stack-header {

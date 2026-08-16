@@ -473,7 +473,7 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "start_stack",
-            "description": "Démarre un stack Docker Compose (docker compose up -d) sur un agent spécifique.",
+            "description": "Démarre un stack Docker Compose (docker compose up -d --remove-orphans, supprime les containers orphelins retirés du compose) sur un agent spécifique.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -677,7 +677,7 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "deploy_stack",
-            "description": "Déploie un stack (docker compose down puis up -d) sur un agent spécifique.",
+            "description": "Déploie un stack (docker compose down puis up -d --remove-orphans) sur un agent spécifique.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -846,7 +846,7 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "update_stack",
-            "description": "Met à jour une stack: docker compose pull (récupère les dernières images) puis docker compose up -d (redémarre avec les nouvelles images)",
+            "description": "Met à jour une stack: docker compose pull (récupère les dernières images) puis docker compose up -d --remove-orphans (redémarre avec les nouvelles images et supprime les containers retirés du compose)",
             "parameters": {
                 "type": "object",
                 "properties": {
