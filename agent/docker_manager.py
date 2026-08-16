@@ -2233,8 +2233,9 @@ def check_stack_update(stack_name: str) -> Dict[str, Any]:
     """Check whether any service image of a stack has an update available.
 
     Reads the stack compose file, inspects each service image via
-    ``docker manifest inspect`` (no pull) and compares it with the local
-    image digest.  Returns ``update_available`` plus per-service details.
+    ``docker manifest inspect --verbose`` plus the daemon's distribution
+    endpoint (no pull) and compares it with the local image digest.  Returns
+    ``update_available`` plus per-service details.
     """
     compose_file, _cwd = _resolve_stack_compose(stack_name)
     if compose_file is None or not Path(compose_file).exists():
@@ -2282,21 +2283,55 @@ def check_stack_update(stack_name: str) -> Dict[str, Any]:
 
         repository, tag = _split_image_reference(image_name)
         local_digests = _local_repo_digests_for_image(image_name)
-        remote_digests = _remote_manifest_digests(repository, tag)
+        remote_info = _remote_manifest_check(repository, tag)
+        remote_digests = remote_info.get("digests", [])
         remote_digest = remote_digests[0] if remote_digests else None
-        service_update = bool(
-            remote_digest
-            and local_digests
-            and not any(d in remote_digests for d in local_digests)
-        )
+
+        # Same logic as :func:`check_image_update`: false as soon as ANY local
+        # digest matches; the remote list merges index + child digests.  If the
+        # index digest is unavailable and nothing matches, prefer a false
+        # negative (classic store local digest may be the manifest-list index).
+        if not local_digests:
+            service_update = False
+            reason = "no_local_repo_digest"
+        elif any(d in remote_digests for d in local_digests):
+            service_update = False
+            reason = "digests_match"
+        elif not remote_digests:
+            service_update = False
+            reason = "no_remote_digests"
+        elif not remote_info.get("index_digest"):
+            service_update = False
+            reason = "remote_index_digest_unavailable"
+        elif not remote_info.get("child_digests"):
+            service_update = False
+            reason = "remote_child_digests_unavailable"
+        else:
+            service_update = True
+            reason = "digest_mismatch"
         any_update = any_update or service_update
 
         logger.info(
             "update-check stack=%s service=%s image=%s tag=%s local_digests=%s "
-            "remote_digests=%s update_available=%s",
+            "remote_digests=%s update_available=%s reason=%s",
             stack_name, service_name, image_name, tag or "", local_digests,
-            remote_digests, service_update,
+            remote_digests, service_update, reason,
         )
+
+        if service_update:
+            logger.warning(
+                "UPDATE_CHECK_STACK_RESULT stack=%s service=%s image=%s tag=%s "
+                "local_digests=%s remote_digests=%s remote_index_digest=%s "
+                "manifest_type=%s platforms=%s manifest_count=%s "
+                "update_available=true reason=%s",
+                stack_name, service_name, image_name, tag or "",
+                _short_digests(local_digests), _short_digests(remote_digests),
+                _short_digest(remote_info.get("index_digest")),
+                remote_info.get("media_type") or "unknown",
+                ",".join(remote_info.get("platforms") or []) or "unknown",
+                len(remote_info.get("child_digests") or []),
+                reason,
+            )
 
         result_services[service_name] = {
             "update_available": service_update,
@@ -3314,32 +3349,121 @@ def _extract_remote_digests(payload: Any) -> List[str]:
     walk(payload)
 
     # De-duplicate while preserving order.
+    return _dedupe_preserve_order(digests)
+
+
+def _dedupe_preserve_order(items: List[str]) -> List[str]:
+    """De-duplicate strings while preserving their first-seen order."""
     seen = set()
     unique: List[str] = []
-    for digest in digests:
-        if digest and digest not in seen:
-            seen.add(digest)
-            unique.append(digest)
+    for item in items:
+        if item and item not in seen:
+            seen.add(item)
+            unique.append(item)
     return unique
 
 
-def _remote_manifest_digests(repository: str, tag: str) -> List[str]:
-    """Return remote digests for ``repository:tag`` using a TTL cache.
+def _short_digest(digest: Any) -> Any:
+    """Truncate a ``sha256:...`` digest to ``sha256:`` + 12 hex chars."""
+    if not digest:
+        return digest
+    text = str(digest)
+    if text.startswith("sha256:"):
+        return "sha256:" + text[7:19]
+    return text[:19]
 
-    Uses ``docker manifest inspect --verbose`` (no image pull).  Returns an
-    empty list when the registry is unreachable or the image is not found;
-    update checks are deliberately non-blocking.
+
+def _short_digests(digests: List[str]) -> List[str]:
+    """Shorten a list of digests for readable logs (see :func:`_short_digest`)."""
+    return [_short_digest(d) for d in (digests or [])]
+
+
+def _remote_distribution_info(image_ref: str) -> Dict[str, Any]:
+    """Query the daemon's ``/distribution/{name}/json`` endpoint.
+
+    This performs the same registry lookup as ``docker manifest inspect`` and
+    reports the digest of the manifest the tag actually points to — the
+    top-level *index* digest for a multi-arch manifest list, or the image
+    manifest digest for a single-arch image.  ``docker manifest inspect
+    --verbose`` resolves a manifest list into its children and DROPS this
+    digest, so it has to be fetched separately (see :func:`_remote_manifest_check`).
+
+    For a digest-pinned reference (``name@sha256:...``) the pinned digest IS
+    the top-level digest and no daemon call is needed.
+
+    Returns a dict with ``digest``/``media_type``/``platforms`` keys (possibly
+    empty) when the endpoint is unavailable — never raises.
+    """
+    info: Dict[str, Any] = {}
+    if "@" in image_ref:
+        pinned = image_ref.rsplit("@", 1)[-1]
+        if pinned.startswith("sha256:"):
+            info["digest"] = pinned
+            return info
+    try:
+        client = get_docker_client()
+        data = client.api.inspect_distribution(image_ref)
+    except Exception as exc:  # noqa: BLE001 - diagnostics must never break the check
+        logger.warning(
+            "update-check distribution lookup failed image=%s error=%s",
+            image_ref, exc,
+        )
+        return info
+    if not isinstance(data, dict):
+        return info
+    descriptor = data.get("Descriptor")
+    if isinstance(descriptor, dict):
+        digest = descriptor.get("digest")
+        if isinstance(digest, str) and digest:
+            info["digest"] = digest
+        media_type = descriptor.get("mediaType")
+        if isinstance(media_type, str) and media_type:
+            info["media_type"] = media_type
+    platforms = data.get("Platforms")
+    if isinstance(platforms, list):
+        labels = []
+        for platform in platforms:
+            if isinstance(platform, dict):
+                labels.append(
+                    f"{platform.get('os') or '?'}/{platform.get('architecture') or '?'}"
+                )
+        if labels:
+            info["platforms"] = labels
+    return info
+
+
+def _remote_manifest_check(repository: str, tag: str) -> Dict[str, Any]:
+    """Return remote update-check data for ``repository:tag`` using a TTL cache.
+
+    Combines two independent sources so BOTH image-store behaviours match:
+
+    * ``docker manifest inspect --verbose`` (no image pull) yields the digest
+      of every *child* manifest of the tag — one per platform, plus any
+      cosign attestation manifests ghcr adds.  For a single-arch image the
+      list has exactly one element (the image manifest itself).
+    * The daemon's ``/distribution/{name}/json`` endpoint (:func:`_remote_distribution_info`)
+      yields the *top-level* (index) digest — the digest a classic Docker
+      image store records in ``RepoDigests`` for a multi-arch image.
+      ``--verbose`` never emits it (the docker CLI resolves a manifest list
+      into its children), so without it a multi-arch image on a classic store
+      would ALWAYS look like an update (local index digest never matching the
+      remote child digests).
+
+    Returns a dict with ``digests`` (index + children, de-duplicated),
+    ``index_digest``, ``child_digests``, ``media_type``, ``platforms`` and
+    ``error``.  ``digests`` is empty when the registry is unreachable or the
+    image is not found; update checks are deliberately non-blocking.
     """
     cache_key = _update_cache_key(repository, tag)
     now = time.time()
     cached = _update_check_cache.get(cache_key)
     if cached is not None and now - cached.get("ts", 0.0) < _UPDATE_CHECK_TTL:
-        return cached.get("digests", [])
+        return cached
 
     _clean_update_check_cache(now)
 
     ref = repository if not tag else f"{repository}:{tag}"
-    digests: List[str] = []
+    child_digests: List[str] = []
     error = None
     try:
         proc = subprocess.run(
@@ -3353,20 +3477,44 @@ def _remote_manifest_digests(repository: str, tag: str) -> List[str]:
                 payload = json.loads(proc.stdout)
             except json.JSONDecodeError:
                 payload = None
-            digests = _extract_remote_digests(payload)
-            if not digests:
+            child_digests = _extract_remote_digests(payload)
+            if not child_digests:
                 error = "No digest found in manifest inspect output"
         else:
             error = (proc.stderr or proc.stdout or "").strip()[:500]
     except (OSError, subprocess.SubprocessError) as exc:
         error = str(exc)
 
-    _update_check_cache[cache_key] = {
+    # Merge the top-level (index) digest in front of the verbose child
+    # digests so classic (index) and containerd (platform) stores both match.
+    distribution = _remote_distribution_info(ref)
+    index_digest = distribution.get("digest")
+    digests = _dedupe_preserve_order(
+        [d for d in (index_digest, *child_digests) if d]
+    )
+
+    info: Dict[str, Any] = {
         "ts": now,
         "digests": digests,
+        "index_digest": index_digest,
+        "child_digests": child_digests,
+        "media_type": distribution.get("media_type"),
+        "platforms": distribution.get("platforms", []),
         "error": error,
     }
-    return digests
+    _update_check_cache[cache_key] = info
+    return info
+
+
+def _remote_manifest_digests(repository: str, tag: str) -> List[str]:
+    """Return the remote digest list for ``repository:tag`` (TTL cached).
+
+    Thin wrapper over :func:`_remote_manifest_check` kept for callers that only
+    need the digest list.  Returns an empty list when the registry is
+    unreachable or the image is not found; update checks are deliberately
+    non-blocking.
+    """
+    return _remote_manifest_check(repository, tag).get("digests", [])
 
 
 def _invalidate_update_check(image_ref: str) -> None:
@@ -3469,10 +3617,20 @@ def _local_repo_digests_for_image(image_name: str) -> List[str]:
 def check_image_update(container_id: str) -> Dict[str, Any]:
     """Check if a newer image is available on the registry for a container.
 
-    Compares the local image digest with the remote registry digest obtained
-    via ``docker manifest inspect`` (no image pull).  Returns a dict with
-    ``update_available`` (bool), ``local_digest``, ``remote_digest``,
-    ``local_tag`` and ``remote_tag``.
+    Compares the local image digest with the remote registry digests obtained
+    without pulling any image:
+
+    * ``docker manifest inspect --verbose`` for the *child* digests (one per
+      platform of a manifest list, plus any attestation manifests);
+    * the daemon's ``/distribution/{name}/json`` endpoint for the *top-level*
+      (index) digest, which the docker CLI's verbose output drops.  This is
+      required because a classic Docker image store records the manifest-list
+      (index) digest in ``RepoDigests``, while the containerd image store
+      records the platform manifest digest — both must be matchable or a
+      multi-arch image would be reported as "update available" forever.
+
+    Returns a dict with ``update_available`` (bool), ``local_digest``,
+    ``remote_digest``, ``local_tag`` and ``remote_tag``.
 
     The image reference used for BOTH the remote lookup and the cache key is
     the container's ``Config.Image`` — the exact reference it was created
@@ -3534,24 +3692,69 @@ def check_image_update(container_id: str) -> Dict[str, Any]:
         }
 
     cache_before = _update_check_cache_info(repository, tag)
-    remote_digests = _remote_manifest_digests(repository, tag)
+    remote_info = _remote_manifest_check(repository, tag)
+    remote_digests = remote_info.get("digests", [])
     remote_digest = remote_digests[0] if remote_digests else None
+
     # ``update_available`` is false as soon as ANY local repo digest appears
-    # in the remote list (multi-arch lists and retagged images carry several).
-    update_available = bool(
-        remote_digest
-        and not any(local_digest in remote_digests for local_digest in local_digests)
+    # in the remote list.  The remote list merges the top-level (index) digest
+    # with the verbose child digests so BOTH image stores match: classic store
+    # (RepoDigests = manifest-list/index digest) and containerd store
+    # (RepoDigests = platform manifest digest).  Extra attestation digests are
+    # harmless — only a *missing* digest can produce a false positive.
+    matched = bool(local_digests) and any(
+        local_digest in remote_digests for local_digest in local_digests
     )
+    if matched:
+        update_available = False
+        reason = "digests_match"
+    elif not remote_digests:
+        update_available = False
+        reason = "no_remote_digests"
+    elif not remote_info.get("index_digest"):
+        # The top-level (index) digest could not be determined (e.g. the
+        # daemon's /distribution endpoint failed).  With a classic image store
+        # the local RepoDigest IS that index digest and would never appear in
+        # the verbose child list, so a mismatch is not proof of an update.
+        # Prefer a false negative over a permanent false positive.
+        update_available = False
+        reason = "remote_index_digest_unavailable"
+    elif not remote_info.get("child_digests"):
+        # The verbose child list is empty (unrecognised manifest format or
+        # failed extraction), so a containerd-store local platform digest
+        # cannot be confirmed either.  Again, prefer a false negative.
+        update_available = False
+        reason = "remote_child_digests_unavailable"
+    else:
+        update_available = True
+        reason = "digest_mismatch"
 
     # Diagnostic line: if the badge ever stays visible, this log tells us the
     # exact image/tag/digests that were compared and whether the remote list
     # came from cache (and how old) or from a fresh registry inspection.
     logger.info(
         "update-check container=%s image=%s tag=%s local_digests=%s "
-        "remote_digests=%s update_available=%s cache_before=%s",
+        "remote_digests=%s update_available=%s reason=%s cache_before=%s",
         container_id, image_name, tag or "", local_digests, remote_digests,
-        update_available, cache_before,
+        update_available, reason, cache_before,
     )
+
+    if update_available:
+        # Unmissable WARNING marker for the operator: greppable as
+        # ``UPDATE_CHECK_RESULT ... update_available=true`` with short digests.
+        logger.warning(
+            "UPDATE_CHECK_RESULT container=%s image=%s tag=%s "
+            "local_digests=%s remote_digests=%s remote_index_digest=%s "
+            "manifest_type=%s platforms=%s manifest_count=%s "
+            "update_available=true reason=%s cache_before=%s",
+            container_id, image_name, tag or "",
+            _short_digests(local_digests), _short_digests(remote_digests),
+            _short_digest(remote_info.get("index_digest")),
+            remote_info.get("media_type") or "unknown",
+            ",".join(remote_info.get("platforms") or []) or "unknown",
+            len(remote_info.get("child_digests") or []),
+            reason, cache_before,
+        )
 
     return {
         "update_available": update_available,
