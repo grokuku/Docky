@@ -148,31 +148,91 @@ async def get_container_logs(request: Request, container_id: str, tail: int = Qu
 
 
 @router.websocket("/containers/{container_id}/logs/stream")
-async def stream_container_logs(websocket: WebSocket, container_id: str):
+async def stream_container_logs(
+    websocket: WebSocket, container_id: str, tail: int = Query(100)
+):
     """WebSocket for streaming container logs in real-time.
 
-    Auth is via the ``api_key`` query parameter.
+    Auth is via the ``api_key`` query parameter.  ``tail`` controls how many
+    historical log lines are replayed on connect (``tail=0`` is follow-only).
     """
     if not await verify_api_key_ws(websocket):
         await websocket.close(code=4401)
         return
 
     await websocket.accept()
+
+    # La lecture du générateur docker (socket follow synchrone et bloquant) est
+    # déplacée dans un thread daemon relayant les frames vers une asyncio.Queue :
+    # sans cela la boucle ``for line in get_container_logs_stream(...)`` gèle
+    # l'event loop tant qu'aucune ligne n'arrive.
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue(maxsize=200)
+    stop = threading.Event()
+    holder: dict = {}
+
+    def _enqueue(item):
+        try:
+            queue.put_nowait(item)
+        except asyncio.QueueFull:
+            pass  # drop si le consommateur ne suit pas
+
+    def _send_sentinel():
+        while True:
+            try:
+                queue.put_nowait(None)
+                return
+            except asyncio.QueueFull:
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    continue
+
+    def _producer():
+        """Run in a daemon thread: relay docker log frames onto the WS queue."""
+        gen = None
+        try:
+            gen = docker_manager.get_container_logs_stream(container_id, tail=max(0, tail))
+            holder["gen"] = gen
+            for line in gen:
+                if stop.is_set():
+                    break
+                loop.call_soon_threadsafe(_enqueue, line)
+        except Exception as e:
+            logger.warning("Container log stream producer ended: %s", e)
+        finally:
+            # Toujours fermer le stream docker / socket follow.
+            if gen is not None:
+                try:
+                    gen.close()
+                except Exception:
+                    pass
+            loop.call_soon_threadsafe(_send_sentinel)
+
+    thread = threading.Thread(target=_producer, daemon=True)
+    thread.start()
+
     try:
-        for line in docker_manager.get_container_logs_stream(container_id, tail=100):
+        while True:
+            line = await queue.get()
+            if line is None:
+                break
             await websocket.send_text(line)
-            await asyncio.sleep(0.01)
     except WebSocketDisconnect:
         pass
-    except Exception as e:
+    finally:
+        # Stopper le producteur : relâche le socket follow bloquant.
+        stop.set()
+        gen = holder.get("gen")
+        if gen is not None:
+            try:
+                gen.close()
+            except Exception:
+                pass
         try:
-            await websocket.send_text(f"[error] {e}")
+            await websocket.close()
         except Exception:
             pass
-    try:
-        await websocket.close()
-    except Exception:
-        pass
 
 
 @router.websocket("/containers/{container_id}/exec")

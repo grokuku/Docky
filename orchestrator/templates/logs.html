@@ -4,6 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Logs - {{ name or container }} ({{ agent }})</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         html, body { height: 100%; }
@@ -122,12 +125,83 @@
             color: #c9d1d9;
             background: #30363d;
         }
+        /* Mode Terminal (squelette) */
+        #terminal-container {
+            flex: 1;
+            padding: 8px 0;
+            overflow: hidden;
+            display: none;
+        }
+        #terminal {
+            height: 100%;
+        }
+        .xterm-viewport {
+            background: #0d1117 !important;
+        }
+        /* Toggle segmenté Texte / Terminal */
+        .view-toggle {
+            display: flex;
+            align-items: center;
+            border: 1px solid #30363d;
+            border-radius: 4px;
+            overflow: hidden;
+            flex-shrink: 0;
+        }
+        .view-toggle button {
+            background: #21262d;
+            color: #8b949e;
+            border: none;
+            padding: 4px 10px;
+            cursor: pointer;
+            font-size: 12px;
+            font-family: inherit;
+        }
+        .view-toggle button + button {
+            border-left: 1px solid #30363d;
+        }
+        .view-toggle button:hover:not(.active) {
+            background: #2a2f36;
+            color: #c9d1d9;
+        }
+        .view-toggle button.active {
+            background: #30363d;
+            color: #4caf50;
+        }
+        /* Toast de copie (utilisé par le pipeline de copie, prochain morceau) */
+        .copy-toast {
+            position: fixed;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #21262d;
+            color: #c9d1d9;
+            border: 1px solid #30363d;
+            border-radius: 4px;
+            padding: 6px 14px;
+            font-size: 12px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.25s ease;
+            z-index: 1000;
+        }
+        .copy-toast.show {
+            opacity: 1;
+            pointer-events: auto;
+        }
     </style>
 </head>
 <body>
     <div class="popup-header">
         <span class="popup-title">📋 Logs - {{ name or stack or container }} ({{ agent }})</span>
         <div class="popup-controls">
+            <div class="view-toggle">
+                <button type="button" id="view-text-btn" class="active" onclick="PopupLogs.setViewMode('text')">📄 Texte</button>
+                <button type="button" id="view-term-btn" onclick="PopupLogs.setViewMode('terminal')">⌨ Terminal</button>
+            </div>
+            <button class="popup-btn" id="copy-btn" style="display:none" disabled onclick="PopupLogs._copyTerminal()">📋 Copier</button>
+            <button class="popup-btn" id="copy-sel-btn" onclick="PopupLogs._copyTextSelection()">📋 Copier sélection</button>
+            <button class="popup-btn" id="copy-all-btn" onclick="PopupLogs._copyTextAll()">📋 Tout copier</button>
             <input type="text" class="popup-filter" id="filter-input"
                 placeholder="Filtrer les logs…" autocomplete="off"
                 oninput="PopupLogs.setFilter(this.value)">
@@ -141,7 +215,7 @@
             </select>
             <button class="popup-btn" id="pause-btn" onclick="PopupLogs.togglePause()">⏸ Pause</button>
             <button class="popup-btn" onclick="PopupLogs.clearOutput()">🗑 Clear</button>
-            <button class="popup-btn" onclick="PopupLogs.fetchLogs()">🔄 Refresh</button>
+            <button class="popup-btn" onclick="PopupLogs.refresh()">🔄 Refresh</button>
             <span class="popup-status" id="status"></span>
         </div>
     </div>
@@ -151,6 +225,10 @@
     <div class="log-scroll-hint" id="scroll-hint" style="display:none" onclick="PopupLogs.scrollToBottom()">
         ⬇ Nouveaux logs en bas — cliquer pour descendre
     </div>
+    <div id="terminal-container">
+        <div id="terminal"></div>
+    </div>
+    <div id="copy-toast" class="copy-toast"></div>
 
     <script>
         // ── Helpers ──────────────────────────────────────────────
@@ -191,6 +269,23 @@
             // complet dès que le filtre est vidé, sans re-fetch.
             lines: [],
             filterQuery: "",
+            // ── Mode Terminal ─────────────────────────────────────
+            // Pipeline WS live : reconnexion automatique, file d'attente en
+            // pause. La dédup des doublons de POLLING (REST tail=2000) passe
+            // par un marqueur de continuation (_pollOverlap/polledFingerprints) ;
+            // le WS (tail=0, follow-only) ne rejoue jamais → pas de dédup.
+            viewMode: "text",
+            term: null,
+            fitAddon: null,
+            ws: null,
+            wsReconnectTimer: null,
+            wsPausedQueue: [],
+            polledFingerprints: [],
+            lineBuffer: "",
+            terminalPollTimer: null,
+            terminalInitDone: false,
+            copyHintShown: false,
+            _toastTimer: null,
 
             init() {
                 this.setupScrollDetection();
@@ -251,16 +346,59 @@
                 } else {
                     btn.textContent = "⏸ Pause";
                     btn.classList.remove("active");
-                    this.setStatus("auto-refresh");
-                    this.fetchLogs();
+                    if (this.viewMode === "terminal") {
+                        // Flush de la file WS accumulée pendant la pause.
+                        if (this.wsPausedQueue.length) {
+                            const queued = this.wsPausedQueue.splice(0, this.wsPausedQueue.length);
+                            for (const chunk of queued) this._appendTerminalRaw(chunk);
+                        }
+                        this.setStatus("auto-refresh");
+                    } else {
+                        this.setStatus("auto-refresh");
+                        this.fetchLogs();
+                    }
                 }
             },
 
             clearOutput() {
                 this.lines = [];
+                if (this.viewMode === "terminal") {
+                    // Reset visuel + marqueur de continuation à zéro (le
+                    // WS/polling continue).
+                    if (this.term) this.term.reset();
+                    this.polledFingerprints = [];
+                    this.lineBuffer = "";
+                    // Les chunks mis en file pendant une pause précèdent le Clear :
+                    // les vider pour ne pas les rejouer au Resume.
+                    this.wsPausedQueue = [];
+                    return;
+                }
                 const out = document.getElementById("logs-output");
                 out.innerHTML = '<div class="log-empty">— Effacé (les logs reviendront au prochain refresh) —</div>';
                 this._updateFilterCount();
+            },
+
+            // Rafraîchissement manuel.
+            // Texte : re-fetch via fetchLogs (comportement inchangé).
+            // Terminal : reset + re-fetch tail 2000 + ré-ouverture WS (tail=0).
+            async refresh() {
+                if (this.viewMode === "terminal") {
+                    if (this.term) this.term.reset();
+                    this.lines = [];
+                    this.polledFingerprints = [];
+                    this.lineBuffer = "";
+                    // Séquencer : attendre la fin du re-fetch REST (tail=2000) AVANT de
+                    // ré-ouvrir le WS (tail=0), sinon la course réinitialise le
+                    // marqueur de continuation pendant que le WS rejoue → désordre/doublons.
+                    await this._fetchTerminalLogs(true);
+                    if (this.container) {
+                        this._openLogsWS();
+                    } else {
+                        this._startTerminalPolling();
+                    }
+                    return;
+                }
+                this.fetchLogs();
             },
 
             setFilter(value) {
@@ -280,6 +418,467 @@
                 }
                 const visible = this._filteredLines().length;
                 el.textContent = visible + "/" + total + " lignes";
+            },
+
+            // ── Copie / Toast ─────────────────────────────────────
+
+            _showToast(msg, duration) {
+                const el = document.getElementById("copy-toast");
+                if (!el) return;
+                el.textContent = msg;
+                el.classList.add("show");
+                if (this._toastTimer) clearTimeout(this._toastTimer);
+                this._toastTimer = setTimeout(() => {
+                    el.classList.remove("show");
+                    this._toastTimer = null;
+                }, duration || 2600);
+            },
+
+            async _writeClipboard(text, okMsg) {
+                try {
+                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                        await navigator.clipboard.writeText(text);
+                    } else {
+                        // Fallback (contexte non sécurisé) : textarea temporaire + execCommand.
+                        const ta = document.createElement("textarea");
+                        ta.value = text;
+                        ta.style.position = "fixed";
+                        ta.style.opacity = "0";
+                        document.body.appendChild(ta);
+                        ta.select();
+                        document.execCommand("copy");
+                        document.body.removeChild(ta);
+                    }
+                    this._showToast(okMsg || "Copié");
+                } catch (e) {
+                    this._showToast("Copie impossible");
+                }
+            },
+
+            _copyTextSelection() {
+                const sel = window.getSelection ? window.getSelection().toString() : "";
+                this._writeClipboard(sel, `Copié (${sel.length} caractères)`);
+            },
+
+            _copyTextAll() {
+                const content = this._filteredLines()
+                    .map(l => (l && l.message) || l || "")
+                    .join("\n");
+                this._writeClipboard(content, `Copié (${content.length} caractères)`);
+            },
+
+            // ── Mode Terminal ─────────────────────────────────────
+
+            setViewMode(mode) {
+                this.viewMode = (mode === "terminal") ? "terminal" : "text";
+                const textBtn = document.getElementById("view-text-btn");
+                const termBtn = document.getElementById("view-term-btn");
+                if (textBtn) textBtn.classList.toggle("active", this.viewMode === "text");
+                if (termBtn) termBtn.classList.toggle("active", this.viewMode === "terminal");
+                const copyBtn = document.getElementById("copy-btn");
+                const copySelBtn = document.getElementById("copy-sel-btn");
+                const copyAllBtn = document.getElementById("copy-all-btn");
+                const isTerm = this.viewMode === "terminal";
+                if (copyBtn) copyBtn.style.display = isTerm ? "" : "none";
+                if (copySelBtn) copySelBtn.style.display = isTerm ? "none" : "";
+                if (copyAllBtn) copyAllBtn.style.display = isTerm ? "none" : "";
+                const container = document.getElementById("terminal-container");
+                const output = document.getElementById("logs-output");
+                const filterInput = document.getElementById("filter-input");
+                if (this.viewMode === "terminal") {
+                    // Le polling TEXTE écrase this.lines via fetchLogs/render toutes
+                    // les 3s → l'arrêter tant qu'on est en mode terminal.
+                    this.stopPolling();
+                    if (output) output.style.display = "none";
+                    if (container) container.style.display = "block";
+                    // Filtre grep : désactivé en mode terminal (texte uniquement).
+                    if (filterInput) {
+                        filterInput.disabled = true;
+                        filterInput.title = "Filtre en mode texte";
+                    }
+                    if (!this.terminalInitDone) this._initTerminal();
+                    if (this.term) {
+                        this.term.reset();
+                        // Re-feed de l'historique déjà chargé (dédup positionnelle à zéro) :
+                        // comptabilité via _feedTerminalLine + rendu explicite (un seul
+                        // endroit d'écriture pour ce re-rendu de l'historique).
+                        const history = this.lines;
+                        this.lines = [];
+                        this.polledFingerprints = [];
+                        for (const item of history) {
+                            let msg;
+                            if (typeof item === "object" && item !== null) {
+                                msg = item.message || "";
+                            } else {
+                                msg = String(item == null ? "" : item);
+                            }
+                            this._feedTerminalLine(item);
+                            this.term.write(msg + "\r\n");
+                        }
+                    }
+                    // Indice de copie au premier passage en mode terminal.
+                    this._showTerminalCopyHint();
+                    if (copyBtn) copyBtn.disabled = !(this.term && this.term.getSelection());
+                    if (this.container) {
+                        this._openLogsWS();
+                    } else {
+                        // Mode stack : pas de WS → suivi par polling REST.
+                        this._startTerminalPolling();
+                    }
+                } else {
+                    this._stopLogsWS();
+                    this._stopTerminalPolling();
+                    // Retour texte : relance le polling texte (interrompu en entrant
+                    // en mode terminal) et réapplique le filtre.
+                    this.startPolling();
+                    if (filterInput) {
+                        filterInput.disabled = false;
+                        filterInput.title = "";
+                    }
+                    if (container) container.style.display = "none";
+                    if (output) output.style.display = "";
+                    this._renderFiltered();
+                    this._updateFilterCount();
+                }
+            },
+
+            _initTerminal() {
+                const el = document.getElementById("terminal");
+                if (!el) return;
+                this.term = new Terminal({
+                    scrollback: 5000,
+                    fontSize: 13,
+                    fontFamily: "'Fira Code', 'JetBrains Mono', Consolas, monospace",
+                    theme: {
+                        background: "#0d1117",
+                        foreground: "#c9d1d9",
+                        cursor: "#c9d1d9",
+                        selectionBackground: "#30363d",
+                        black: "#484f58",
+                        red: "#ff7b72",
+                        green: "#3fb950",
+                        yellow: "#d29922",
+                        blue: "#58a6ff",
+                        magenta: "#bc8cff",
+                        cyan: "#39c5cf",
+                        white: "#b1bac4",
+                        brightBlack: "#6e7681",
+                        brightRed: "#ffa198",
+                        brightGreen: "#56d364",
+                        brightYellow: "#e3b341",
+                        brightBlue: "#79c0ff",
+                        brightMagenta: "#d2a8ff",
+                        brightCyan: "#56d4dd",
+                        brightWhite: "#f0f6fc",
+                    }
+                });
+                this.fitAddon = new FitAddon.FitAddon();
+                this.term.loadAddon(this.fitAddon);
+                this.term.open(el);
+                this.fitAddon.fit();
+
+                const container = document.getElementById("terminal-container");
+                if (container && typeof ResizeObserver !== "undefined") {
+                    this._termResizeObserver = new ResizeObserver(() => {
+                        if (this.fitAddon) this.fitAddon.fit();
+                    });
+                    this._termResizeObserver.observe(container);
+                }
+
+                // Sélection + copie (vue lecture seule).
+                this.term.onSelectionChange(() => {
+                    const btn = document.getElementById("copy-btn");
+                    if (btn) btn.disabled = !(this.term && this.term.getSelection());
+                });
+                this.term.attachCustomKeyEventHandler((ev) => {
+                    // Ctrl+Shift+C → toujours copier (sélection sinon buffer partagé).
+                    if (ev.ctrlKey && ev.shiftKey && (ev.key === "C" || ev.key === "c")) {
+                        this._copyTerminal();
+                        return false;
+                    }
+                    // Ctrl+C avec sélection → copier (le terminal est en lecture seule).
+                    if (ev.ctrlKey && (ev.key === "c" || ev.key === "C") && this.term && this.term.getSelection()) {
+                        this._copyTerminal();
+                        return false;
+                    }
+                    return true;
+                });
+                el.addEventListener("contextmenu", (e) => {
+                    e.preventDefault();
+                    this._copyTerminal();
+                });
+
+                this.terminalInitDone = true;
+            },
+
+            _showTerminalCopyHint() {
+                if (this.copyHintShown) return;
+                this.copyHintShown = true;
+                this._showToast("Sélectionner à la souris • Ctrl+Shift+C ou clic droit pour copier", 4000);
+            },
+
+            _copyTerminal() {
+                const sel = this.term ? this.term.getSelection() : "";
+                // Normaliser : this.lines est un mixte objets {message}/strings →
+                // un .join direct produirait "[object Object]" sur les objets.
+                const content = sel || (this.lines || []).map(l => (l && l.message) || l || "").join("\n");
+                this._writeClipboard(content, `Copié (${content.length} caractères)`);
+            },
+
+            // ── Pipeline WS Terminal ──────────────────────────────
+
+            // FNV-1a 32 bits après strip du timestamp docker
+            // (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s+/).
+            _hashLine(msg) {
+                const content = String(msg == null ? "" : msg);
+                const stripped = content.replace(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.\d+Z\s+/, "");
+                let hash = 0x811c9dc5; // FNV-1a offset basis (2166136261)
+                for (let i = 0; i < stripped.length; i++) {
+                    hash ^= stripped.charCodeAt(i);
+                    // Math.imul = vraie multiplication 32 bits (le produit double
+                    // hash * prime dépasse 2^53 → précision perdue sinon).
+                    hash = Math.imul(hash, 0x01000193) >>> 0; // FNV prime (16777619)
+                }
+                return hash >>> 0;
+            },
+
+            // Ligne complète : UNIQUEMENT la comptabilité (historique mode texte,
+            // cap 10000). Le rendu terminal est assuré par la source qui fournit
+            // la ligne : WS → _appendTerminalRaw écrit le brut, REST →
+            // _fetchTerminalLogs écrit message + '\r\n'. Un seul endroit d'écriture
+            // par source, jamais ici. La dédup des doublons du POLLING est faite
+            // AVANT, par _fetchTerminalLogs (marqueur de continuation) ; le WS
+            // (tail=0, follow-only) n'a pas de replay → aucune dédup ici.
+            _feedTerminalLine(rawLine) {
+                // On conserve la ligne BRUTE (avec timestamp) pour le mode texte.
+                this.lines.push(rawLine);
+                if (this.lines.length > 10000) {
+                    this.lines.splice(0, this.lines.length - 10000);
+                }
+            },
+
+            // Chunk brut reçu du WS : écriture immédiate + découpage en lignes.
+            _appendTerminalRaw(chunk) {
+                if (!chunk) return;
+                if (this.term) this.term.write(chunk);
+
+                this.lineBuffer += chunk;
+                let idx;
+                while ((idx = this.lineBuffer.indexOf("\n")) !== -1) {
+                    let line = this.lineBuffer.slice(0, idx);
+                    this.lineBuffer = this.lineBuffer.slice(idx + 1);
+                    // CRLF → strip du \r final
+                    if (line.endsWith("\r")) line = line.slice(0, -1);
+                    this._feedTerminalLine(line);
+                }
+            },
+
+            // Ouvre le WS vers le proxy orchestrateur (mode container uniquement).
+            _openLogsWS() {
+                if (!this.container) return; // mode stack : pas encore supporté
+                this._stopLogsWS();
+                this.lineBuffer = "";
+
+                const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+                const url = proto + "//" + window.location.host +
+                    "/api/containers/" + encodeURIComponent(this.container) +
+                    "/logs/stream?agent=" + encodeURIComponent(this.agent);
+                this._wsDisconnectNotified = false;
+                this._wsDecoder = this._wsDecoder || new TextDecoder();
+
+                const ws = new WebSocket(url);
+                ws.binaryType = "arraybuffer";
+                this.ws = ws;
+
+                ws.onopen = () => {
+                    if (this.ws !== ws) return;
+                    // Le WS est de nouveau là : on arrête le polling de secours.
+                    this._stopTerminalPolling();
+                    this.setStatus("terminal connecté");
+                    // 1er message client : tail=0 → follow-only (pas de replay).
+                    ws.send(JSON.stringify({ tail: 0 }));
+                };
+
+                ws.onmessage = (evt) => {
+                    if (this.ws !== ws) return;
+                    let raw;
+                    if (evt.data instanceof ArrayBuffer) {
+                        raw = this._wsDecoder.decode(evt.data);
+                    } else {
+                        raw = String(evt.data);
+                    }
+                    if (this.paused) {
+                        // En pause : on met en file (cap 5000), flush au resume.
+                        if (this.wsPausedQueue.length < 5000) {
+                            this.wsPausedQueue.push(raw);
+                        }
+                        return;
+                    }
+                    // Resume : on vide d'abord la file accumulée en pause.
+                    if (this.wsPausedQueue.length) {
+                        const queued = this.wsPausedQueue.splice(0, this.wsPausedQueue.length);
+                        for (const chunk of queued) this._appendTerminalRaw(chunk);
+                    }
+                    this._appendTerminalRaw(raw);
+                };
+
+                ws.onerror = () => {
+                    if (this.ws !== ws) return;
+                    this._handleLogsDisconnect();
+                };
+
+                ws.onclose = (evt) => {
+                    if (this.ws !== ws) return;
+                    this.ws = null;
+                    // Fermeture normale (code 1000) → pas de reconnexion.
+                    if (!evt || evt.code !== 1000) {
+                        this._handleLogsDisconnect();
+                    }
+                };
+            },
+
+            // Déconnexion anormale : message terminal + reconnexion dans 3s.
+            _handleLogsDisconnect() {
+                if (this._wsDisconnectNotified) return;
+                this._wsDisconnectNotified = true;
+                if (this.term) {
+                    this.term.write("\r\n\x1b[31mConnexion perdue\x1b[0m\r\n");
+                }
+                this.setStatus("terminal déconnecté — reconnexion…");
+                if (this.wsReconnectTimer) clearTimeout(this.wsReconnectTimer);
+                this.wsReconnectTimer = setTimeout(() => {
+                    this.wsReconnectTimer = null;
+                    if (this.viewMode !== "terminal") return;
+                    this._openLogsWS();
+                    // Filet de sécurité : si le WS ne revient pas, le polling REST
+                    // prend le relais (stoppé dès qu'un onopen réussit).
+                    this._startTerminalPolling();
+                }, 3000);
+            },
+
+            // Ferme proprement le WS (code 1000) et annule toute reconnexion.
+            _stopLogsWS() {
+                if (this.wsReconnectTimer) {
+                    clearTimeout(this.wsReconnectTimer);
+                    this.wsReconnectTimer = null;
+                }
+                if (this.ws) {
+                    const ws = this.ws;
+                    this.ws = null;
+                    try { ws.close(1000); } catch (e) { /* ignore */ }
+                }
+            },
+
+            // ── Polling terminal (stacks + secours container) ─────
+            // Fetch REST tail=2000 toutes les 3s. Utilisé pour le mode stack
+            // (pas de WS) et comme filet quand le WS container est indisponible.
+            _startTerminalPolling() {
+                if (this.terminalPollTimer) return; // ne pas dupliquer
+                this.terminalPollTimer = setTimeout(() => {
+                    this.terminalPollTimer = null;
+                    this._fetchTerminalLogs();
+                    // Relance du cycle tant qu'on est en mode terminal.
+                    if (this.viewMode === "terminal") this._startTerminalPolling();
+                }, this.pollTimer);
+            },
+
+            _stopTerminalPolling() {
+                if (this.terminalPollTimer) {
+                    clearTimeout(this.terminalPollTimer);
+                    this.terminalPollTimer = null;
+                }
+            },
+
+            // Reprise du polling : longueur du plus long suffixe de l'historique
+            // déjà pollé (polledFingerprints) qui préfixe le batch courant.
+            // En matchant par SÉQUENCE plutôt que par une empreinte unique, on
+            // tolère les répétitions légitimes de lignes identiques (deux fois la
+            // même ligne dans un log) : un marqueur « première occurrence » seul
+            // ré-écrirait, à chaque poll, tout depuis la 1ère occurrence doublonnée.
+            _pollOverlap(batchFps) {
+                const hist = this.polledFingerprints;
+                const max = Math.min(hist.length, batchFps.length);
+                // Du chevauchement le plus long au plus court (le cas normal —
+                // fenêtre stable ou légèrement avancée — matche au premier essai).
+                for (let k = max; k >= 1; k--) {
+                    let ok = true;
+                    for (let j = 0; j < k; j++) {
+                        if (hist[hist.length - k + j] !== batchFps[j]) {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    if (ok) return k;
+                }
+                return 0;
+            },
+
+            // Fetch REST tail=2000 → re-feed terminal. Dédup par marqueur de
+            // continuation : on ne feed que ce qui vient APRÈS la reprise dans le
+            // batch (jamais de ré-écriture des lignes déjà affichées). En pause ou
+            // hors mode terminal, on ne récupère rien (sauf force=true pour le
+            // refresh manuel).
+            async _fetchTerminalLogs(force) {
+                if (!force && (this.paused || this.viewMode !== "terminal")) return;
+                const agent = encodeURIComponent(this.agent);
+                const url = this.stack
+                    ? `/api/stacks/${encodeURIComponent(this.stack)}/logs?agent=${agent}&tail=2000`
+                    : `/api/containers/${encodeURIComponent(this.container)}/logs?agent=${agent}&tail=2000`;
+                try {
+                    const resp = await fetch(url, { credentials: "same-origin" });
+                    if (resp.status === 401) {
+                        window.location.href = "/login";
+                        return;
+                    }
+                    const data = await resp.json();
+                    if (!resp.ok) {
+                        this.setStatus("erreur: " + (data.detail || data.error || ("HTTP " + resp.status)));
+                        return;
+                    }
+                    if (this.paused || this.viewMode !== "terminal") return;
+                    const items = data.lines || [];
+                    // Message texte de chaque ligne (REST = objets {message, stream})
+                    // + empreintes du batch (même hachage FNV-1a que _hashLine).
+                    const msgs = items.map(item => {
+                        if (typeof item === "object" && item !== null) {
+                            return item.message || "";
+                        }
+                        return String(item == null ? "" : item);
+                    });
+                    const batchFps = msgs.map(m => this._hashLine(m));
+                    // Le batch est une fenêtre glissante du log : on reprend là où
+                    // le polling s'était arrêté (plus long suffixe de l'historique
+                    // qui préfixe ce batch). Pas de marqueur → log roté/truncaté →
+                    // on feed tout le batch (contenu nouveau).
+                    const start = this.polledFingerprints.length
+                        ? this._pollOverlap(batchFps)
+                        : 0;
+                    // Aucun chevauchement alors que l'historique n'est pas vide
+                    // → log roté/truncaté : on repart d'un historique propre (la
+                    // fenêtre suivante sera continue, sans vestige de l'ancien log).
+                    if (start === 0 && this.polledFingerprints.length > 0) {
+                        this.polledFingerprints = [];
+                    }
+                    // Marqueur en dernière position (batch identique au précédent)
+                    // → rien de nouveau, on ne ré-écrit rien.
+                    if (start >= items.length) return;
+                    // Rendu explicite (message + '\r\n') : un seul endroit d'écriture
+                    // pour cette source (le préfixe « service | » est dans le message).
+                    const fed = [];
+                    for (let i = start; i < items.length; i++) {
+                        this._feedTerminalLine(items[i]);
+                        if (this.term) this.term.write(msgs[i] + "\r\n");
+                        fed.push(batchFps[i]);
+                    }
+                    // Historique du marqueur borné à la taille du tail (2000) :
+                    // suffisant pour couvrir un décalage complet de fenêtre.
+                    this.polledFingerprints.push(...fed);
+                    if (this.polledFingerprints.length > 2000) {
+                        this.polledFingerprints.splice(0, this.polledFingerprints.length - 2000);
+                    }
+                } catch (e) {
+                    // Erreurs de polling silencieuses (le filet reste actif).
+                }
             },
 
             // Retourne la liste des lignes (dans leur format brut) qui matchent
@@ -384,7 +983,11 @@
 
         document.addEventListener("DOMContentLoaded", () => PopupLogs.init());
         // Cleanup on close
-        window.addEventListener("beforeunload", () => PopupLogs.stopPolling());
+        window.addEventListener("beforeunload", () => {
+            PopupLogs._stopLogsWS();
+            PopupLogs._stopTerminalPolling();
+            PopupLogs.stopPolling();
+        });
     </script>
 </body>
 </html>

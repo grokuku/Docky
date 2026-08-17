@@ -872,6 +872,129 @@ async def api_container_logs(
     return {"lines": lines}
 
 
+@router.websocket("/containers/{container_id}/logs/stream")
+async def ws_container_logs_stream(websocket: WebSocket, container_id: str):
+    """WebSocket for streaming container logs in real-time (terminal mode).
+
+    Proxies the client WebSocket to the target agent's
+    ``/agent/containers/{id}/logs/stream`` endpoint.  The agent's API key is
+    injected server-side and never exposed to the browser.  The client may
+    send a first JSON message ``{"tail": N}`` to request historical log
+    lines; otherwise (or on timeout) it is follow-only (tail=0).
+    """
+    # Auth
+    username = _check_auth_ws(websocket)
+    if username is None:
+        await websocket.close(code=4401)
+        return
+
+    # Get agent param
+    agent = websocket.query_params.get("agent", "")
+    if not agent:
+        await websocket.close(code=4400)
+        return
+
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        await websocket.close(code=4403)
+        return
+
+    # Get agent URL and API key
+    agent_info = agent_manager.agents.get(agent_name)
+    if not agent_info:
+        await websocket.close(code=4404)
+        return
+
+    agent_url = agent_info.get("url", "").rstrip("/")
+    agent_api_key = agent_info.get("api_key", "")
+
+    # Build target WS URL
+    ws_proto = "wss" if agent_url.startswith("https") else "ws"
+    agent_path = agent_url.split("://", 1)[1] if "://" in agent_url else agent_url
+    target_url = f"{ws_proto}://{agent_path}/agent/containers/{urllib.parse.quote(container_id, safe='')}/logs/stream"
+    if agent_api_key:
+        target_url += f"?api_key={urllib.parse.quote(agent_api_key, safe='')}"
+
+    # Accept the client WebSocket
+    await websocket.accept()
+
+    # Read the optional first client message to learn the desired tail.
+    tail = 0
+    try:
+        first = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
+        try:
+            data = json.loads(first)
+            if isinstance(data, dict) and "tail" in data:
+                # Borne basse ET haute : pas de DoS via tail=10^9.
+                tail = min(max(0, int(data["tail"])), 5000)
+        except (ValueError, TypeError):
+            pass
+    except Exception:
+        pass
+    # Toujours transmettre tail (même 0) : sinon le défaut agent Query(100)
+    # rejoue 100 lignes → doublons côté terminal.
+    # Séparateur conditionnel : si agent_api_key est vide, l'URL n'a pas de
+    # "?" (un "&tail=0" produirait une URL malformée).
+    target_url += f"{'?' if '?' not in target_url else '&'}tail={tail}"
+
+    try:
+        import websockets as ws_lib
+        async with ws_lib.connect(target_url) as agent_ws:
+            async def client_to_agent():
+                try:
+                    while True:
+                        msg = await websocket.receive()
+                        if msg["type"] == "websocket.disconnect":
+                            break
+                        if msg.get("bytes") is not None:
+                            await agent_ws.send(msg["bytes"])
+                        elif msg.get("text") is not None:
+                            await agent_ws.send(msg["text"])
+                except WebSocketDisconnect:
+                    pass
+                except Exception as e:
+                    logger.debug("client_to_agent relay ended: %s", e)
+
+            async def agent_to_client():
+                try:
+                    async for msg in agent_ws:
+                        if isinstance(msg, bytes):
+                            await websocket.send_bytes(msg)
+                        else:
+                            await websocket.send_text(msg)
+                except Exception as e:
+                    logger.debug("agent_to_client relay ended: %s", e)
+
+            # Use FIRST_COMPLETED so that when either side closes,
+            # we cancel the other and exit cleanly.
+            tasks = [
+                asyncio.create_task(client_to_agent()),
+                asyncio.create_task(agent_to_client()),
+            ]
+            done, pending = await asyncio.wait(
+                tasks, return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+    except WebSocketDisconnect:
+        logger.debug("WS logs/stream client disconnected")
+    except Exception as e:
+        logger.warning("WS logs/stream proxy error: %s", e)
+        try:
+            await websocket.send_text(json.dumps({"error": str(e)}))
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
 @router.websocket("/events")
 async def ws_events(websocket: WebSocket):
     """Stream events to frontends. Frontend sends heartbeat as text."""

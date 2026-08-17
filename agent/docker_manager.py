@@ -389,7 +389,10 @@ def get_container_logs_stream(container_id: str, tail: int = 0):
         stream = c.logs(stdout=True, stderr=True, stream=True, follow=True, tail=tail)
         for chunk in stream:
             if isinstance(chunk, bytes):
-                yield chunk.decode("utf-8", errors="replace").rstrip("\n")
+                # Conserver le '\n' : le proxy WS le relaie tel quel et le
+                # terminal a besoin des fins de ligne pour découper les frames
+                # (rstrip("\n") cassait la détection de lignes côté client).
+                yield chunk.decode("utf-8", errors="replace")
             else:
                 yield str(chunk)
     except (NotFound, DockerException, APIError):
