@@ -2932,6 +2932,26 @@ const DockyApp = {
         document.getElementById("new-stack-name").value = "";
         document.getElementById("new-stack-compose").value = this.DEFAULT_COMPOSE_TEMPLATE;
         document.getElementById("new-stack-env").value = "";
+
+        // Peupler le sélecteur d'agent cible
+        const agentSelect = document.getElementById("new-stack-agent");
+        if (agentSelect) {
+            agentSelect.innerHTML = '<option value="">-- Choisir un agent --</option>';
+            for (const agent of this.agentsList) {
+                const aName = agent.name || agent;
+                const opt = document.createElement("option");
+                opt.value = aName;
+                opt.textContent = aName + (agent.status === "online" ? " 🟢" : " 🔴");
+                agentSelect.appendChild(opt);
+            }
+            // Valeur par défaut : l'agent de la stack en cours d'édition, sinon le premier agent
+            let defaultAgent = this.selectedStackAgent;
+            if (!defaultAgent || !this.agentsList.some(a => (a.name || a) === defaultAgent)) {
+                defaultAgent = this.agentsList.length ? (this.agentsList[0].name || this.agentsList[0]) : "";
+            }
+            agentSelect.value = defaultAgent;
+        }
+
         setTimeout(() => document.getElementById("new-stack-name").focus(), 50);
     },
 
@@ -3199,11 +3219,17 @@ const DockyApp = {
         const name = document.getElementById("new-stack-name").value.trim();
         const compose = document.getElementById("new-stack-compose").value;
         const env = document.getElementById("new-stack-env").value;
+        const agentSelect = document.getElementById("new-stack-agent");
+        const agent = agentSelect ? agentSelect.value : null;
         if (!name) {
             this.showToast("Le nom est requis", "error");
             return;
         }
-        const agentParam = this.agentQuery(this.selectedStackAgent);
+        if (!agent) {
+            this.showToast("Sélectionne un agent cible", "error");
+            return;
+        }
+        const agentParam = this.agentQuery(agent);
         const resp = await fetch("/api/stacks" + agentParam, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -3215,7 +3241,7 @@ const DockyApp = {
             this.closeNewStackModal();
             this.showToast("Stack créée : " + name, "success");
             await this.refreshStacks();
-            this.loadEditor(name, this.selectedStackAgent, true);
+            this.loadEditor(name, agent, true);
         } else {
             const data = await resp.json().catch(() => ({}));
             this.showToast("Erreur création : " + (data.detail || resp.statusText), "error");
