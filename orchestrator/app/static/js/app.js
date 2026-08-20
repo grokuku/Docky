@@ -74,7 +74,10 @@ const DockyApp = {
     // -------------------------------------------------------
 
     async apiFetch(url, options = {}) {
-        try {
+        const method = (options.method || "GET").toUpperCase();
+        const isSafeMethod = method === "GET" || method === "HEAD" || method === "OPTIONS";
+
+        const doFetch = async () => {
             const resp = await fetch(url, {
                 ...options,
                 headers: { ...(options.headers || {}) },
@@ -85,7 +88,28 @@ const DockyApp = {
                 return null;
             }
             return await resp.json();
+        };
+
+        try {
+            return await doFetch();
         } catch (e) {
+            // Retry unique, uniquement pour les méthodes sûres (GET/HEAD/OPTIONS),
+            // et seulement sur une erreur réseau (TypeError), jamais sur AbortError
+            // ni sur une réponse HTTP d'erreur (4xx/5xx).
+            const isNetworkError = e instanceof TypeError && e.name !== "AbortError";
+            if (isSafeMethod && isNetworkError) {
+                console.warn("apiFetch: network error on " + method + ", retrying once in 500ms:", e.message);
+                await new Promise(resolve => setTimeout(resolve, 500));
+                try {
+                    const data = await doFetch();
+                    console.warn("apiFetch: retry succeeded");
+                    return data;
+                } catch (e2) {
+                    console.error("API error (after retry):", e2);
+                    this.showToast("Erreur réseau: " + e2.message, "error");
+                    return null;
+                }
+            }
             console.error("API error:", e);
             this.showToast("Erreur réseau: " + e.message, "error");
             return null;
