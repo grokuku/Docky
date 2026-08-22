@@ -1,0 +1,42 @@
+# Docky - Configuration globale (EXEMPLE — à copier vers data/settings.yaml)
+#
+# ⚠️  NE JAMAIS committer le vrai data/settings.yaml (il est ignoré par git).
+#
+# ⚠️  jwt_secret : REMPLACEZ IMPÉRATIVEMENT "CHANGE_ME" par une valeur
+#     aléatoire unique avant tout dépôt en production, sinon quiconque peut
+#     forger des JWT valides :
+#       python -c "import os; print(os.urandom(32).hex())"
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+llm:
+  endpoint: ""       # URL de l'API compatible OpenAI (ex: http://localhost:11434/v1 pour Ollama)
+  api_key: ""        # Laisser vide si aucun auth requis
+  model: ""          # Nom du modèle (ex: llama3.1, deepseek-chat, etc.)
+
+firecrawl:
+  endpoint: ""        # URL de l'API compatible Firecrawl/WebClaw (vide = https://api.firecrawl.dev/v1)
+  api_key: ""
+
+security:
+  jwt_secret: "CHANGE_ME"   # OBLIGATOIRE : remplacer par un secret aléatoire
+  jwt_algorithm: "HS256"
+  jwt_expire_minutes: 1440  # 24h
+  # Anti brute-force sur POST /login
+  rate_limit:
+    enabled: true
+    max_attempts: 5
+    window_seconds: 300
+    trust_proxy: false
+  # Protection CSRF double-submit cookie (défense en profondeur,
+  # cf. docs/csrf-protection.md). Laisser activé sauf besoin exceptionnel.
+  csrf:
+    enabled: true
+    # secure_cookie: true   # optionnel : force l'attribut Secure du cookie
+                            # csrf_token derrière un proxy TLS sans X-Forwarded-Proto
+
+agents:
+  - name: "Serveur Local"
+    url: "http://localhost:8080"
+    api_key: ""             # Clé partagée avec l'agent (cf. data/api_keys.yaml)

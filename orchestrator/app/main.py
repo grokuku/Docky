@@ -9,15 +9,19 @@ from fastapi.templating import Jinja2Templates
 
 from app.config import ensure_config_files, get_base_dir, load_settings
 from app.auth.router import router as auth_router
+from app.auth.csrf import CSRFMiddleware
 from app.routes.dashboard import router as dashboard_router
 from app.routes.api import router as api_router
 from app.agent_manager.client import agent_manager
+from app.version import get_version
 
 # ---------------------------------------------------------------------------#
 # App setup
 # ---------------------------------------------------------------------------#
 
-app = FastAPI(title="Docky", version="0.1.0")
+# Version résolue depuis version.txt (source de vérité du dépôt) — voir
+# app/version.py et docs/versioning-unification.md.
+app = FastAPI(title="Docky", version=get_version())
 
 base_dir = get_base_dir()
 
@@ -31,6 +35,13 @@ templates = Jinja2Templates(directory=str(base_dir / "templates"))
 app.include_router(auth_router)
 app.include_router(dashboard_router)
 app.include_router(api_router)
+
+# CSRF (double-submit cookie, défense en profondeur — voir
+# docs/csrf-protection.md). Middleware ASGI pur : les scopes WebSocket et les
+# réponses en streaming (SSE) traversent sans buffering. La vérification est
+# relue tardivement à chaque requête (security.csrf.enabled) et court-circuitée
+# par la variable d'environnement de test DOCKY_DISABLE_CSRF_FOR_TESTS.
+app.add_middleware(CSRFMiddleware)
 
 
 # ---------------------------------------------------------------------------#

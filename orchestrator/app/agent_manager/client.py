@@ -1,37 +1,41 @@
-"""Agent manager for the Docky orchestrator.
+"""Agent manager for the Docky orchestrator (façade).
 
-Communicates with remote Docky Agent services over HTTP, replacing the
-direct Docker SDK access that was previously provided by
-``app.docker_manager.client``.
+This module is the **façade** of the ``app.agent_manager`` sub-package. It
+keeps the ``AgentManager`` HTTP/streaming layer and re-exports the cohesive
+sub-modules so existing imports (routes, LLM, tests) keep working unchanged:
 
-Each agent is declared in ``settings.yaml`` under the ``agents`` key:
+- ``app.agent_manager.paths`` — ``translate_path`` (path mappings).
+- ``app.agent_manager.cache`` — cache persistence + per-agent and aggregate
+  stale-while-revalidate caches (``_load_cache``, ``_save_cache``,
+  ``refresh_cache``, ``invalidate_cache``, ``_rebuild_aggregate_cache``,
+  ``get_cached_*``, ``refresh_all_caches``...).
+- ``app.agent_manager.events`` — event-driven refresh (``start_background_refresh``,
+  ``_connect_agent_events``, ``_handle_agent_event``, ``_incremental_refresh``).
 
-.. code-block:: yaml
-
-    agents:
-      - name: "Serveur Principal"
-        url: "http://192.168.1.10:8080"
-        api_key: "agent-api-key-1"
-
-All network calls are performed asynchronously with ``httpx``.
+The extracted methods are assigned back onto ``AgentManager`` in this façade.
+The singleton ``agent_manager = AgentManager()`` stays here so the instance is
+unique across ``app.routes.api``, ``app.llm.client`` and ``app.main``.
 """
 
 import asyncio
 import json
 import logging
-import os
 import time
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 import httpx
 
 from app.config import get_data_dir, load_settings
+from app.agent_manager import cache as _cache
+from app.agent_manager import events as _events
+from app.agent_manager import paths as _paths
 
 logger = logging.getLogger(__name__)
 
 # Per-agent cache entries older than this many seconds are refreshed from the
-# network when rebuilding the aggregate cache.
-_AGENT_CACHE_TTL = 60.0
+# network when rebuilding the aggregate cache (kept re-exported here for
+# backward-compatible namespace).
+_AGENT_CACHE_TTL = _cache._AGENT_CACHE_TTL
 
 # Timeout profile for streamed (SSE) agent requests.
 #
@@ -60,6 +64,9 @@ class AgentManager:
         self._bg_task = None
         self._ws_tasks: Dict[str, asyncio.Task] = {}
         self._event_debounce_timers: Dict[str, asyncio.Task] = {}
+        # Broadcast callback injected by app.routes.api (breaks the latent
+        # app.agent_manager.client <-> app.routes.api import cycle).
+        self.broadcast_agent_event = None
         self._load_agents()
 
     # ------------------------------------------------------------------
@@ -67,15 +74,40 @@ class AgentManager:
     # ------------------------------------------------------------------
 
     def _load_agents(self):
-        """Load agents from ``settings.yaml``."""
+        """Load agents from ``settings.yaml``.
+
+        Each agent may carry optional TLS policy keys:
+
+        - ``tls_verify`` (bool, default ``True``): whether to verify the
+          agent's TLS certificate on HTTPS/WSS connections. NEVER defaults to
+          ``False``. If explicitly set to ``False`` a clear ``WARNING`` is
+          logged.
+        - ``ca_cert`` (str path, optional): a custom CA bundle / certificate
+          to trust instead of the system store.
+        """
         settings = load_settings()
         agents = settings.get("agents", [])
         for agent in agents:
+            tls_verify = agent.get("tls_verify", True)
+            if isinstance(tls_verify, str):
+                tls_verify = tls_verify.strip().lower() in ("1", "true", "yes", "on")
+            tls_verify = bool(tls_verify)
+            ca_cert = agent.get("ca_cert") or None
+            if not tls_verify:
+                logger.warning(
+                    "Agent '%s': TLS certificate verification is DISABLED "
+                    "(tls_verify=false). The connection can be intercepted "
+                    "(MITM). Prefer HTTPS with a trusted certificate, a "
+                    "private network, or a VPN instead.",
+                    agent["name"],
+                )
             self.agents[agent["name"]] = {
                 "url": agent["url"],
                 "api_key": agent["api_key"],
                 "status": "unknown",
                 "last_check": 0,
+                "tls_verify": tls_verify,
+                "ca_cert": ca_cert,
             }
 
     def reload(self):
@@ -97,59 +129,17 @@ class AgentManager:
         ]
 
     # ------------------------------------------------------------------
-    # Cache persistence
+    # Cache persistence (extracted to app.agent_manager.cache)
     # ------------------------------------------------------------------
 
-    def _load_cache(self):
-        """Load cache from disk if available."""
-        try:
-            if os.path.exists(self._cache_path):
-                with open(self._cache_path) as f:
-                    saved = json.load(f)
-                    if isinstance(saved, dict):
-                        self._cache = saved
-        except Exception:
-            self._cache = {
-                "containers": {"data": None, "timestamp": 0, "pending": False},
-                "stacks": {"data": None, "timestamp": 0, "pending": False},
-                "ports": {"data": None, "timestamp": 0, "pending": False},
-            }
-
-    def _save_cache(self):
-        """Persist cache to disk."""
-        try:
-            os.makedirs(os.path.dirname(self._cache_path), exist_ok=True)
-            with open(self._cache_path, "w") as f:
-                json.dump(self._cache, f, default=str)
-        except Exception:
-            pass
+    _load_cache = _cache._load_cache
+    _save_cache = _cache._save_cache
 
     # ------------------------------------------------------------------
     # Path mappings
     # ------------------------------------------------------------------
 
-    def translate_path(self, agent_name: str, host_path: str) -> str:
-        """Translate a host path to the agent's local path using path mappings.
-
-        Each agent can declare a list of ``path_mappings`` in ``settings.yaml``.
-        The longest matching host prefix is replaced by the corresponding
-        local path. If no mapping matches, the original path is returned.
-        """
-        settings = load_settings()
-        agents = settings.get("agents", []) or []
-        for agent in agents:
-            if agent.get("name") == agent_name:
-                mappings = agent.get("path_mappings", []) or []
-                # Sort by host length descending (longest match first)
-                for mapping in sorted(
-                    mappings, key=lambda m: len(m.get("host", "") or ""), reverse=True
-                ):
-                    host = mapping.get("host", "") or ""
-                    local = mapping.get("local", "") or ""
-                    if host and host_path.startswith(host):
-                        return host_path.replace(host, local, 1)
-                break
-        return host_path  # No mapping found, return as-is
+    translate_path = _paths.translate_path
 
     # ------------------------------------------------------------------
     # Health checks
@@ -161,7 +151,7 @@ class AgentManager:
             return False
         agent = self.agents[name]
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
+            async with httpx.AsyncClient(timeout=5, **self._agent_tls_options(agent)) as client:
                 resp = await client.get(f"{agent['url']}/agent/health")
                 if resp.status_code == 200:
                     agent["status"] = "online"
@@ -178,6 +168,57 @@ class AgentManager:
         tasks = [self.ping_agent(name) for name in self.agents]
         if tasks:
             await asyncio.gather(*tasks)
+
+    # ------------------------------------------------------------------
+    # TLS helpers
+    # ------------------------------------------------------------------
+
+    def _agent_tls_options(self, agent: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the ``httpx`` ``verify`` kwargs for an agent's TLS policy.
+
+        ``verify`` is NEVER ``False`` unless the agent explicitly opted out via
+        ``tls_verify: false`` (warned at load time). If a ``ca_cert`` is
+        configured it is used as the CA bundle path.
+        """
+        if agent.get("ca_cert"):
+            return {"verify": agent["ca_cert"]}
+        return {"verify": bool(agent.get("tls_verify", True))}
+
+    def _agent_ws_ssl(self, agent: Dict[str, Any]):
+        """Return an ``ssl.SSLContext`` for WebSocket/WSS connections.
+
+        Returns ``None`` when no custom CA / verification override is needed,
+        in which case ``websockets`` performs its default (secure) TLS
+        verification.
+        """
+        import ssl
+
+        ca_cert = agent.get("ca_cert")
+        tls_verify = bool(agent.get("tls_verify", True))
+        if not ca_cert and tls_verify:
+            return None
+        ctx = ssl.create_default_context(cafile=ca_cert) if ca_cert else ssl.create_default_context()
+        if not tls_verify:
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        return ctx
+
+    def _agent_ws_connect_kwargs(self, agent: Dict[str, Any]) -> Dict[str, Any]:
+        """Build ``websockets.connect(...)`` kwargs for an agent connection.
+
+        Centralises:
+        - the API key as ``Authorization: Bearer <key>`` (NEVER in the URL /
+          query string, so it cannot leak into proxy or access logs), and
+        - the TLS policy (custom CA / explicit verification opt-out).
+        """
+        kwargs: Dict[str, Any] = {}
+        api_key = agent.get("api_key", "")
+        if api_key:
+            kwargs["additional_headers"] = {"Authorization": f"Bearer {api_key}"}
+        ssl = self._agent_ws_ssl(agent)
+        if ssl is not None:
+            kwargs["ssl"] = ssl
+        return kwargs
 
     # ------------------------------------------------------------------
     # Low-level request helper
@@ -197,7 +238,7 @@ class AgentManager:
         url = f"{agent['url']}{path}"
         headers = kwargs.pop("headers", {})
         headers["Authorization"] = f"Bearer {agent['api_key']}"
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, **self._agent_tls_options(agent)) as client:
             resp = await client.request(method, url, headers=headers, **kwargs)
             resp.raise_for_status()
             content_type = resp.headers.get("content-type", "")
@@ -254,7 +295,7 @@ class AgentManager:
         headers["Authorization"] = f"Bearer {agent['api_key']}"
         headers["Accept"] = "text/event-stream"
         timeout = kwargs.pop("timeout", STREAM_TIMEOUT)
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=timeout, **self._agent_tls_options(agent)) as client:
             async with client.stream(method, url, headers=headers, **kwargs) as resp:
                 if resp.status_code != 200:
                     body = (await resp.aread()).decode("utf-8", errors="replace")
@@ -346,7 +387,8 @@ class AgentManager:
             return await self._request(
                 agent_name, "GET", f"/agent/containers/{container_id}"
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning("get_container failed for agent '%s', container '%s': %s", agent_name, container_id, exc)
             return None
 
     async def get_container_stats(self, agent_name: str, container_id: str) -> Dict[str, Any]:
@@ -355,7 +397,8 @@ class AgentManager:
             return await self._request(
                 agent_name, "GET", f"/agent/containers/{container_id}/stats"
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning("get_container_stats failed for agent '%s', container '%s': %s", agent_name, container_id, exc)
             return {}
 
     async def get_container_logs(self, agent_name: str, container_id: str, tail: int = 100) -> List[Dict]:
@@ -368,7 +411,8 @@ class AgentManager:
             if isinstance(data, dict):
                 return data.get("lines", [])
             return []
-        except Exception:
+        except Exception as exc:
+            logger.warning("get_container_logs failed for agent '%s', container '%s': %s", agent_name, container_id, exc)
             return []
 
     async def exec_container(self, agent_name: str, container_id: str, command: str) -> Dict[str, Any]:
@@ -380,6 +424,7 @@ class AgentManager:
                 json={"command": command},
             )
         except Exception as e:
+            logger.error("exec_container failed for agent '%s', container '%s': %s", agent_name, container_id, e)
             return {"success": False, "error": str(e)}
 
     async def start_container(self, agent_name: str, container_id: str) -> bool:
@@ -403,7 +448,8 @@ class AgentManager:
             if isinstance(data, dict):
                 return data.get("success", False)
             return True
-        except Exception:
+        except Exception as exc:
+            logger.error("stop_container failed for agent '%s', container '%s': %s", agent_name, container_id, exc)
             return False
 
     async def restart_container(self, agent_name: str, container_id: str) -> bool:
@@ -415,7 +461,8 @@ class AgentManager:
             if isinstance(data, dict):
                 return data.get("success", False)
             return True
-        except Exception:
+        except Exception as exc:
+            logger.error("restart_container failed for agent '%s', container '%s': %s", agent_name, container_id, exc)
             return False
 
     async def check_update(self, agent_name: str, container_id: str) -> Dict[str, Any]:
@@ -424,7 +471,8 @@ class AgentManager:
             return await self._request(
                 agent_name, "GET", f"/agent/containers/{container_id}/update-check"
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning("check_update failed for agent '%s', container '%s': %s", agent_name, container_id, exc)
             return {"update_available": False, "error": "Agent unreachable"}
 
     async def get_container_edit_spec(self, agent_name: str, container_id: str) -> Optional[Dict]:
@@ -433,7 +481,8 @@ class AgentManager:
             return await self._request(
                 agent_name, "GET", f"/agent/containers/{container_id}/edit-spec"
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning("get_container_edit_spec failed for agent '%s', container '%s': %s", agent_name, container_id, exc)
             return None
 
     async def update_container(self, agent_name: str, container_id: str, spec: Dict) -> Dict:
@@ -495,7 +544,8 @@ class AgentManager:
             if isinstance(data, dict):
                 return data.get("files", [])
             return []
-        except Exception:
+        except Exception as exc:
+            logger.warning("get_stack_files failed for agent '%s', stack '%s': %s", agent_name, stack_name, exc)
             return []
 
     async def get_stack_file(self, agent_name: str, stack_name: str, filename: str) -> Optional[str]:
@@ -504,7 +554,8 @@ class AgentManager:
             return await self._request(
                 agent_name, "GET", f"/agent/stacks/{stack_name}/files/{filename}"
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning("get_stack_file failed for agent '%s', stack '%s', file '%s': %s", agent_name, stack_name, filename, exc)
             return None
 
     async def get_stack_files_with_content(self, agent_name: str, stack_name: str, include_hidden: bool = False) -> dict:
@@ -525,7 +576,8 @@ class AgentManager:
             if isinstance(data, dict):
                 return data
             return {"files": []}
-        except Exception:
+        except Exception as exc:
+            logger.warning("get_stack_files_with_content failed for agent '%s', stack '%s': %s", agent_name, stack_name, exc)
             return {"files": []}
 
     async def save_stack_file(self, agent_name: str, stack_name: str, filename: str, content: str) -> Dict[str, Any]:
@@ -663,6 +715,7 @@ class AgentManager:
                 agent_name, "GET", f"/agent/stacks/{stack_name}/update-check", timeout=30
             )
         except Exception as e:
+            logger.warning("check_stack_update failed for agent '%s', stack '%s': %s", agent_name, stack_name, e)
             return {"update_available": False, "error": str(e)}
 
     async def get_stack_logs(self, agent_name: str, stack_name: str, tail: int = 100) -> Dict[str, Any]:
@@ -739,14 +792,16 @@ class AgentManager:
         """Return the git history (commits) for a stack."""
         try:
             return await self._request(agent_name, "GET", f"/agent/stacks/{stack_name}/history")
-        except Exception:
+        except Exception as exc:
+            logger.warning("get_stack_history failed for agent '%s', stack '%s': %s", agent_name, stack_name, exc)
             return []
 
     async def get_stack_version(self, agent_name: str, stack_name: str, hash: str) -> dict:
         """Return the content of a specific git version for a stack."""
         try:
             return await self._request(agent_name, "GET", f"/agent/stacks/{stack_name}/history/{hash}")
-        except Exception:
+        except Exception as exc:
+            logger.warning("get_stack_version failed for agent '%s', stack '%s': %s", agent_name, stack_name, exc)
             return None
 
     async def restore_stack_version(self, agent_name: str, stack_name: str, hash: str) -> dict:
@@ -754,6 +809,7 @@ class AgentManager:
         try:
             return await self._request(agent_name, "POST", f"/agent/stacks/{stack_name}/history/restore/{hash}")
         except Exception as e:
+            logger.error("restore_stack_version failed for agent '%s', stack '%s': %s", agent_name, stack_name, e)
             return {"success": False, "error": str(e)}
 
     async def update_git_history_settings(self, agent_name: str, settings: Dict[str, Any]) -> Dict[str, Any]:
@@ -763,6 +819,7 @@ class AgentManager:
                 agent_name, "PUT", "/agent/settings/git-history", json=settings
             )
         except Exception as e:
+            logger.error("update_git_history_settings failed for agent '%s': %s", agent_name, e)
             return {"success": False, "error": str(e)}
 
     # ------------------------------------------------------------------
@@ -784,375 +841,36 @@ class AgentManager:
                 agent_name, "POST", "/agent/system/prune", timeout=120
             )
         except Exception as e:
+            logger.error("clean_agent failed for agent '%s': %s", agent_name, e)
             return {"success": False, "error": str(e)}
 
     # ------------------------------------------------------------------
-    # Per-agent cache management
+    # Per-agent + aggregate cache (extracted to app.agent_manager.cache)
     # ------------------------------------------------------------------
 
-    async def refresh_cache(self, agent_name: str):
-        """Fetch containers, stacks and ports for an agent and cache them."""
-        containers, stacks, ports = await asyncio.gather(
-            self.get_containers(agent_name),
-            self.get_stacks(agent_name),
-            self.get_ports(agent_name),
-            return_exceptions=True,
-        )
-        self.cache[agent_name] = {
-            "containers": containers if isinstance(containers, list) else [],
-            "stacks": stacks if isinstance(stacks, list) else [],
-            "ports": ports if isinstance(ports, list) else [],
-            "timestamp": time.time(),
-        }
-
-    async def invalidate_cache(self, agent_name: Optional[str] = None):
-        """Force invalidation of the cache after an action on an agent.
-
-        Removes the per-agent cache entry (or all of them when *agent_name* is
-        ``None``), invalidates the aggregate stale-while-revalidate cache and
-        rebuilds it immediately. A subsequent ``refreshStacks()`` / ``get_cached_*``
-        call therefore returns the new state instead of stale-while-revalidate
-        data.
-        """
-        if agent_name is not None:
-            self.cache.pop(agent_name, None)
-        else:
-            self.cache.clear()
-        # Invalidate the aggregate cache so the next read triggers a rebuild.
-        for entry in self._cache.values():
-            entry["data"] = None
-            entry["timestamp"] = 0
-            entry["pending"] = False
-        try:
-            await self._rebuild_aggregate_cache()
-        except Exception as e:
-            logger.warning("Cache rebuild after invalidation failed: %s", e)
-
-    def _get_cached_containers(self, agent_name: str) -> List[Dict[str, Any]]:
-        """Return cached containers for an agent, or an empty list."""
-        return self.cache.get(agent_name, {}).get("containers", [])
-
-    def _get_cached_stacks(self, agent_name: str) -> List[Dict[str, Any]]:
-        """Return cached stacks for an agent, or an empty list."""
-        return self.cache.get(agent_name, {}).get("stacks", [])
-
-    def _get_cached_ports(self, agent_name: str) -> List[Dict[str, Any]]:
-        """Return cached ports for an agent, or an empty list."""
-        return self.cache.get(agent_name, {}).get("ports", [])
+    refresh_cache = _cache.refresh_cache
+    invalidate_cache = _cache.invalidate_cache
+    _get_cached_containers = _cache._get_cached_containers
+    _get_cached_stacks = _cache._get_cached_stacks
+    _get_cached_ports = _cache._get_cached_ports
+    _get_cached_or_refresh = _cache._get_cached_or_refresh
+    _refresh_cache_entry = _cache._refresh_cache_entry
 
     # ------------------------------------------------------------------
-    # Aggregate stale-while-revalidate cache (for "all" views)
+    # Event-driven refresh (extracted to app.agent_manager.events)
     # ------------------------------------------------------------------
 
-    def _get_cached_or_refresh(self, key: str, fetch_func) -> Optional[List[Dict[str, Any]]]:
-        """Stale-while-revalidate: retourne le cache immédiatement, refresh en arrière-plan.
+    start_background_refresh = _events.start_background_refresh
+    _connect_agent_events = _events._connect_agent_events
+    _handle_agent_event = _events._handle_agent_event
+    _incremental_refresh = _events._incremental_refresh
 
-        Returns cached data (even if stale) or None if no cache exists yet.
-        When stale data is returned, a background refresh is triggered.
-        """
-        cache = self._cache[key]
-        now = time.time()
-
-        # Cache frais (< 5s) → retour immédiat
-        if cache["data"] is not None and now - cache["timestamp"] < 5:
-            return cache["data"]
-
-        # Cache périmé mais existant → retourne le cache + refresh en arrière-plan
-        if cache["data"] is not None and not cache["pending"]:
-            cache["pending"] = True
-            loop = asyncio.get_event_loop()
-            if loop and loop.is_running():
-                asyncio.ensure_future(self._refresh_cache_entry(key, fetch_func))
-            return cache["data"]
-
-        # Pas de cache du tout → retourne None (le caller fera un fetch direct)
-        return None
-
-    async def _refresh_cache_entry(self, key: str, fetch_func):
-        """Rafraîchit une entrée du cache en arrière-plan."""
-        try:
-            data = await fetch_func()
-            self._cache[key]["data"] = data
-            self._cache[key]["timestamp"] = time.time()
-        except Exception as e:
-            logger.error("Cache refresh failed for %s: %s", key, e)
-        finally:
-            self._cache[key]["pending"] = False
-
-    async def start_background_refresh(self):
-        """Event-driven refresh: full startup + WS events + sanity check."""
-        logger.info("Starting event-driven refresh (no more 5s polling)")
-
-        # 1. Full initial refresh
-        await self.refresh_all_caches()
-
-        # 2. Connect to each agent's event stream
-        for name in self.agents:
-            task = asyncio.create_task(self._connect_agent_events(name))
-            self._ws_tasks[name] = task
-
-        # 3. Sanity check every 10min
-        async def _sanity_loop():
-            while True:
-                await asyncio.sleep(600)
-                for name in list(self.agents.keys()):
-                    if self.agents.get(name, {}).get("status") == "online":
-                        try:
-                            await self._incremental_refresh(name)
-                        except Exception:
-                            pass
-        asyncio.create_task(_sanity_loop())
-
-        # 4. Filet de sécurité: refresh périodique toutes les 60s
-        async def _periodic_refresh():
-            while True:
-                await asyncio.sleep(60)
-                try:
-                    await self.refresh_all_caches()
-                except Exception as e:
-                    logger.warning("Periodic refresh failed: %s", e)
-
-        asyncio.create_task(_periodic_refresh())
-
-    # ------------------------------------------------------------------
-    # Event-driven refresh (WebSocket events from agents)
-    # ------------------------------------------------------------------
-
-    async def _connect_agent_events(self, agent_name: str):
-        """Connect WebSocket to agent's /agent/events with auto-reconnect."""
-        while True:
-            try:
-                agent = self.agents.get(agent_name)
-                if not agent:
-                    await asyncio.sleep(10)
-                    continue
-
-                agent_url = agent.get("url", "").rstrip("/")
-                api_key = agent.get("api_key", "")
-
-                # Convert http → ws, https → wss
-                ws_url = agent_url.replace("http://", "ws://").replace("https://", "wss://")
-                ws_url += f"/agent/events?api_key={api_key}"
-
-                import websockets as ws_lib
-                async with ws_lib.connect(ws_url) as ws:
-                    logger.info("Connected to agent '%s' events", agent_name)
-                    if agent_name in self.agents:
-                        self.agents[agent_name]["status"] = "online"
-
-                    async for event in ws:
-                        await self._handle_agent_event(agent_name, event)
-
-            except asyncio.CancelledError:
-                break
-            except Exception as exc:
-                logger.debug("Agent '%s' events disconnected: %s", agent_name, exc)
-                if agent_name in self.agents:
-                    self.agents[agent_name]["status"] = "offline"
-                await asyncio.sleep(5)
-
-    async def _handle_agent_event(self, agent_name: str, raw):
-        """Process a single Docker event from an agent."""
-        if isinstance(raw, (bytes, str)):
-            try:
-                import json
-                raw = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
-            except Exception:
-                return
-
-        if not isinstance(raw, dict):
-            return
-
-        action = raw.get("Action", "")
-        event_type = raw.get("Type", "")
-
-        relevant_actions = {"start", "stop", "die", "kill", "pause", "unpause",
-                            "restart", "create", "destroy", "rename"}
-
-        if action in relevant_actions and event_type == "container":
-            # Debounce: cancel previous timer for this agent
-            if agent_name in self._event_debounce_timers:
-                self._event_debounce_timers[agent_name].cancel()
-
-            current_task: asyncio.Task | None = None
-
-            async def _debounced():
-                try:
-                    await asyncio.sleep(2)
-                    await self._incremental_refresh(agent_name)
-                finally:
-                    # Only remove the entry if it still belongs to this task.
-                    # A new event may have already replaced it with a fresh task.
-                    if self._event_debounce_timers.get(agent_name) is current_task:
-                        self._event_debounce_timers.pop(agent_name, None)
-
-            current_task = asyncio.create_task(_debounced())
-            self._event_debounce_timers[agent_name] = current_task
-
-            # Broadcast aux frontends
-            try:
-                from app.routes import api as api_routes
-                for ws in list(api_routes._events_clients):
-                    try:
-                        await ws.send_json({"type": "docky_event", "agent": agent_name, "action": action})
-                    except Exception:
-                        pass
-            except ImportError:
-                pass
-
-    async def _incremental_refresh(self, agent_name: str):
-        """Refresh a single agent's data and rebuild aggregate caches."""
-        try:
-            await self.refresh_cache(agent_name)
-            await self._rebuild_aggregate_cache()
-        except Exception as e:
-            logger.warning("Incremental refresh failed for '%s': %s", agent_name, e)
-
-    async def _rebuild_aggregate_cache(self):
-        """Rebuild aggregate cache from per-agent caches when possible.
-
-        Falling back to the network only for agents whose cache is missing or
-        stale avoids an extra N+1 request burst after every incremental refresh.
-        """
-        all_containers = []
-        all_stacks = []
-        all_ports = []
-
-        for name in self.agents:
-            cached = self.cache.get(name)
-            if cached and (time.time() - cached.get("timestamp", 0)) < _AGENT_CACHE_TTL:
-                c = cached.get("containers", [])
-                s = cached.get("stacks", [])
-                p = cached.get("ports", [])
-            else:
-                c, s, p = await asyncio.gather(
-                    self.get_containers(name),
-                    self.get_stacks(name),
-                    self.get_ports(name),
-                    return_exceptions=True,
-                )
-                c = c if isinstance(c, list) else []
-                s = s if isinstance(s, list) else []
-                p = p if isinstance(p, list) else []
-
-            for container in c:
-                if isinstance(container, dict):
-                    container["agent_name"] = name
-                    all_containers.append(container)
-
-            for stack in s:
-                if isinstance(stack, dict):
-                    stack["agent_name"] = name
-                    all_stacks.append(stack)
-
-            for port in p:
-                if isinstance(port, dict):
-                    port["agent_name"] = name
-                    all_ports.append(port)
-
-        self._cache["containers"]["data"] = all_containers
-        self._cache["containers"]["timestamp"] = time.time()
-        self._cache["stacks"]["data"] = all_stacks
-        self._cache["stacks"]["timestamp"] = time.time()
-        self._cache["ports"]["data"] = all_ports
-        self._cache["ports"]["timestamp"] = time.time()
-        self._save_cache()
-
-    async def ensure_cache(self, key: str) -> Optional[List[Dict[str, Any]]]:
-        """Attend que le cache soit rempli s'il est vide (premier appel)."""
-        cache = self._cache[key]
-        if cache["data"] is not None:
-            return cache["data"]
-
-        if not cache["pending"]:
-            if key == "containers":
-                coro = self.get_all_containers()
-            elif key == "stacks":
-                coro = self.get_all_stacks()
-            elif key == "ports":
-                coro = self.get_all_ports()
-            else:
-                return None
-
-            cache["pending"] = True
-            try:
-                data = await coro
-                cache["data"] = data
-                cache["timestamp"] = time.time()
-                return data
-            finally:
-                cache["pending"] = False
-
-        # Si déjà en refresh mais pas de données, le caller attendra un retry
-        return None
-
-    async def get_cached_containers(self) -> Optional[List[Dict[str, Any]]]:
-        """Retourne les containers de tous les agents (cachés si possible).
-
-        Utilise le stale-while-revalidate: retourne les données périmées
-        immédiatement et rafraîchit en arrière-plan.
-        """
-        data = self._get_cached_or_refresh("containers", self.get_all_containers)
-        if data is not None:
-            return data
-        # Cache vide (premier appel) → fetch direct et attend
-        return await self.ensure_cache("containers")
-
-    async def get_cached_stacks(self) -> Optional[List[Dict[str, Any]]]:
-        """Retourne les stacks de tous les agents (cachées si possible)."""
-        data = self._get_cached_or_refresh("stacks", self.get_all_stacks)
-        if data is not None:
-            return data
-        return await self.ensure_cache("stacks")
-
-    async def get_cached_ports(self) -> Optional[List[Dict[str, Any]]]:
-        """Retourne les ports de tous les agents (cachés si possible)."""
-        data = self._get_cached_or_refresh("ports", self.get_all_ports)
-        if data is not None:
-            return data
-        return await self.ensure_cache("ports")
-
-    async def refresh_all_caches(self):
-        """Refresh per-agent caches and populate the aggregate cache.
-
-        Called periodically by ``start_background_refresh`` or on demand.
-        Each category is fetched independently so a single failure does not
-        block the others.
-        """
-        # 1) Refresh per-agent caches (existing behaviour)
-        names = [
-            name
-            for name, info in self.agents.items()
-            if info["status"] in ("online", "unknown")
-        ]
-        tasks = [self.refresh_cache(name) for name in names]
-        if tasks:
-            await asyncio.gather(*tasks)
-
-        # 2) Populate the aggregate cache
-        try:
-            containers = await self.get_all_containers()
-            self._cache["containers"]["data"] = containers
-            self._cache["containers"]["timestamp"] = time.time()
-        except Exception as e:
-            logger.warning("refresh_all_caches containers failed: %s", e)
-
-        try:
-            stacks = await self.get_all_stacks()
-            self._cache["stacks"]["data"] = stacks
-            self._cache["stacks"]["timestamp"] = time.time()
-        except Exception as e:
-            logger.warning("refresh_all_caches stacks failed: %s", e)
-
-        try:
-            ports = await self.get_all_ports()
-            self._cache["ports"]["data"] = ports
-            self._cache["ports"]["timestamp"] = time.time()
-        except Exception as e:
-            logger.warning("refresh_all_caches ports failed: %s", e)
-
-        # 3) Persist cache to disk
-        self._save_cache()
+    _rebuild_aggregate_cache = _cache._rebuild_aggregate_cache
+    ensure_cache = _cache.ensure_cache
+    get_cached_containers = _cache.get_cached_containers
+    get_cached_stacks = _cache.get_cached_stacks
+    get_cached_ports = _cache.get_cached_ports
+    refresh_all_caches = _cache.refresh_all_caches
 
     # ------------------------------------------------------------------
     # Global views (aggregate across all agents)

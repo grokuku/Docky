@@ -1,0 +1,19 @@
+# Docky - Utilisateurs (EXEMPLE — à copier vers data/users.yaml)
+#
+# ⚠️  NE JAMAIS committer le vrai data/users.yaml (il est ignoré par git).
+#
+# Le mot de passe est stocké hashé en bcrypt. Pour générer un hash :
+#   python -c "import bcrypt; print(bcrypt.hashpw(b'ton_password', bcrypt.gensalt(12)).decode())"
+#
+# ⚠️  Le `password_hash` ci-dessous est un PLACEHOLDER NON FONCTIONNEL :
+#     ce n'est le hash d'AUCUN mot de passe ; l'application refusera toute
+#     connexion tant que vous ne l'aurez pas remplacé par un vrai hash.
+#
+# NB : au premier démarrage, si users.yaml n'existe pas, Docky crée un
+# compte admin/docky123 avec `must_change_password: true` — ce mot de passe
+# public doit alors être changé immédiatement via la page /change-password
+# (voir docs/password-rotation.md).
+users:
+  - username: "admin"
+    password_hash: "$2b$12$CHANGEMOIhashPLACEHOLDERaucunMotDePasseNeCorrespondAA"  # PLACEHOLDER INVALIDE
+    must_change_password: false

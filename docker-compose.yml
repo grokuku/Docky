@@ -1,6 +1,11 @@
 # Docky - Exemple de déploiement complet (Orchestrateur + Agent)
 # Copiez .env.example en .env et modifiez les valeurs avant de lancer.
 # Usage: docker compose up -d
+#
+# Sécurité de la liaison Orchestrateur ↔ Agent : voir docs/tls-deployment.md.
+# Les agents sont déclarés dans ./data/settings.yaml (url, api_key,
+# tls_verify, ca_cert). En production, préférez un réseau privé/VPN ou un
+# reverse proxy TLS devant l'agent plutôt que d'exposer le port 8080.
 
 services:
   docky:

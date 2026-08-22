@@ -390,6 +390,14 @@
     <!-- Toast -->
     <div id="toast" class="toast hidden"></div>
 
+    <!-- Docky JS : façade (app.js) puis modules (scripts classiques synchrones,
+         exécutés dans l'ordre, AVANT DOMContentLoaded -> window.DockyApp complet). -->
     <script src="/static/js/app.js"></script>
+    <script src="/static/js/api.js"></script>
+    <script src="/static/js/events.js"></script>
+    <script src="/static/js/dashboard.js"></script>
+    <script src="/static/js/editor.js"></script>
+    <script src="/static/js/chat.js"></script>
+    <script src="/static/js/modals.js"></script>
 </body>
 </html>

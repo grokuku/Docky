@@ -10,13 +10,13 @@ import logging
 import re
 import socket
 import threading
-from pathlib import Path
 
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from agent import docker_manager
 from agent.auth import require_api_key, verify_api_key_ws
+from agent.version import get_version
 
 logger = logging.getLogger(__name__)
 
@@ -95,15 +95,10 @@ def _sse_response(event_iter):
 async def health():
     """Lightweight health-check endpoint for the orchestrator to ping.
 
-    Returns status, version (from version.txt), and hostname.
+    Returns status, version (resolved by ``agent.version.get_version``:
+    ``DOCKY_VERSION`` env → ``version.txt`` → ``"0.0.0"``), and hostname.
     """
-    version_path = Path(__file__).parent.parent / 'version.txt'
-    version = "unknown"
-    try:
-        version = version_path.read_text().strip()
-    except Exception:
-        pass
-    return {"status": "ok", "version": version, "name": socket.gethostname()}
+    return {"status": "ok", "version": get_version(), "name": socket.gethostname()}
 
 
 # ---------------------------------------------------------------------------
@@ -767,7 +762,11 @@ async def list_stack_files_with_content(request: Request, stack_name: str, inclu
             try:
                 content = await asyncio.to_thread(docker_manager.get_stack_file, stack_name, f["name"])
                 result.append({"filename": f["name"], "content": content, "size": f.get("size", 0)})
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "Could not read content of file '%s' in stack '%s': %s",
+                    f["name"], stack_name, exc,
+                )
                 result.append({"filename": f["name"], "content": None, "size": f.get("size", 0)})
         return {"files": result}
     except FileNotFoundError:

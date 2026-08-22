@@ -1,0 +1,10 @@
+[tool.pytest.ini_options]
+# NB: le sous-package agent/docker/ masquerait le SDK docker (site-packages)
+# si le dossier ``agent`` était un chemin sys.path direct. On résout donc
+# agent/orchestrator via la racine du dépôt (``.``) pour que ``import docker``
+# continue de viser le SDK docker-py et que ``import agent.docker.*`` vise nos
+# sous-modules.
+pythonpath = ["orchestrator", "."]
+testpaths = ["orchestrator/tests", "agent/tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"

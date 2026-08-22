@@ -1,0 +1,10 @@
+# Docky - Clés API pour agents externes (EXEMPLE — à copier vers data/api_keys.yaml)
+#
+# ⚠️  NE JAMAIS committer le vrai data/api_keys.yaml (il est ignoré par git).
+#
+# Structure: clé API -> { ip_whitelist: [list of IPs], description: string }
+api_keys: {}
+#  Exemple d'entrée (clé fictive) :
+#  "votre-cle-api-secrete":
+#    ip_whitelist: ["127.0.0.1"]
+#    description: "Agent local"

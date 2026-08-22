@@ -12,13 +12,20 @@
             <h1 class="login-title">Docky 🐳</h1>
             <p class="login-subtitle">Gestion de stacks Docker Compose</p>
 
-            {% if error %}
+            {% if error == "csrf" %}
+            <div class="login-error">
+                Session expirée ou requête invalide. Rechargez la page puis réessayez.
+            </div>
+            {% elif error %}
             <div class="login-error">
                 Identifiants incorrects. Réessayez.
             </div>
             {% endif %}
 
             <form method="POST" action="/login" class="login-form">
+                {# Protection CSRF double-submit : valeur miroir du cookie
+                   csrf_token, vérifiée côté serveur (docs/csrf-protection.md) #}
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token or '' }}">
                 <div class="form-group">
                     <label for="username">Nom d'utilisateur</label>
                     <input type="text" id="username" name="username" required

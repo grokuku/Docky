@@ -3,8 +3,12 @@
 from fastapi import FastAPI
 
 from agent.routes import router as agent_router
+from agent.version import get_version
 
-app = FastAPI(title="Docky Agent", version="1.0.0")
+
+# Version résolue depuis version.txt (source de vérité du dépôt) — voir
+# agent/version.py et docs/versioning-unification.md.
+app = FastAPI(title="Docky Agent", version=get_version())
 app.include_router(agent_router)
 
 

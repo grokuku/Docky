@@ -43,9 +43,10 @@ def require_api_key(request: Request):
 async def verify_api_key_ws(websocket) -> bool:
     """Return ``True`` if the WebSocket connection carries a valid API key.
 
-    The key can be supplied via the ``api_key`` query parameter or the
-    ``Authorization: Bearer <key>`` header (query param is preferred for
-    browser WebSocket clients).
+    The key is supplied via the ``Authorization: Bearer <key>`` header
+    (the preferred channel used by the orchestrator since it never leaks
+    into URLs/logs). The ``api_key`` query parameter is still accepted as a
+    **compatibility fallback** for older/deployed agents and browser clients.
     """
     api_key = get_api_key()
     if not api_key:

@@ -1,7 +1,7 @@
 # Docky — Roadmap
 
 > **Dernière mise à jour :** 2026-08-15
-> **Version courante :** 0.0.3 (source de vérité : `version.txt` — voir « Versioning »)
+> **Version courante :** 0.0.4 (source de vérité : `version.txt` — voir « Versioning »)
 
 ## 🎯 Vision
 
@@ -482,7 +482,7 @@ Le champ `@category` est conservé comme **simple métadonnée descriptive** : l
 ├── docker-compose.yml      # Exemple: orchestrateur + agent ensemble
 ├── .env.example            # Template de configuration
 ├── .gitignore
-├── version.txt             # 0.0.3
+├── version.txt             # 0.0.4
 └── roadmap.md
 ```
 
@@ -490,9 +490,10 @@ Le champ `@category` est conservé comme **simple métadonnée descriptive** : l
 
 ## 🔖 Versioning
 
-- **Source de vérité** : `version.txt` (racine du dépôt) — actuellement **0.0.3**. Les Dockerfiles embarquent la version via `ARG VERSION` (label `version` + fichier `/app/version.txt` écrit dans l'image).
-- **Orchestrateur** : `orchestrator/app/main.py` déclare `FastAPI(version="0.1.0")` — valeur **cosmétique/décorative**, indépendante de `version.txt` (visible uniquement dans le schéma OpenAPI, pas dans l'UI). ⚠️ À réconcilier avec `version.txt` (0.0.3) ou à supprimer.
-- **Agent** : la version est lue depuis le `version.txt` embarqué dans l'image et exposée par `/agent/health`.
+- **Source de vérité** : `version.txt` (racine du dépôt) — actuellement **0.0.4**. Les Dockerfiles embarquent la version via `ARG VERSION` (label `version` + fichier `/app/version.txt` écrit dans l'image, sans suffixe commit).
+- **Résolution runtime** (orchestrateur et agent, helpers `app/version.py` et `agent/version.py`) : env `DOCKY_VERSION` → fichier `version.txt` → défaut sûr `"0.0.0"`. Jamais de version codée en dur divergente.
+- **Orchestrateur** : `FastAPI(version=…)` et `/api/version` exposent la version résolue (= `version.txt`).
+- **Agent** : `FastAPI(version=…)` et `/agent/health` exposent la même version résolue.
 - **UI** : le dashboard affiche la version (`version-badge`) et alerte en cas de désynchronisation orchestrateur/agents (`/api/version-check`, badge « Mismatch »).
 
 ---
@@ -511,7 +512,7 @@ Le champ `@category` est conservé comme **simple métadonnée descriptive** : l
 
 ### Backlog sécurité
 - **Forçage du changement du mot de passe admin par défaut** (`docky123` au premier login) — non implémenté
-- **Rate limiting** sur `/login` (anti brute-force) — non implémenté
+- **Rate limiting** sur `/login` (anti brute-force) — ✅ implémenté (fenêtre glissante en mémoire, 429 + Retry-After, config `security.rate_limit` — voir `docs/rate-limiting.md`)
 - **CSRF** sur les routes sensibles (actions POST/PUT/DELETE) — non implémenté
 - **HTTPS** : géré en externe par le reverse proxy (déjà en place)
 - **TLS orchestrateur ↔ agent** : chiffrement de la communication (actuellement en clair, clé API en header `Authorization: Bearer`) — non implémenté
@@ -662,7 +663,7 @@ Le champ `@category` est conservé comme **simple métadonnée descriptive** : l
 - [ ] **Tests automatisés** : aucun test n'existe aujourd'hui (orchestrateur + agent) — priorité
 - [ ] **Découpage des fichiers monolithiques** : `orchestrator/app/routes/api.py` (~1800 lignes), `orchestrator/app/llm/client.py` (~1600 lignes), `orchestrator/app/static/js/app.js` (~3700 lignes)
 - [ ] **Forçage du changement du mot de passe admin par défaut** (`docky123`)
-- [ ] **Rate limiting** sur `/login`
+- [x] **Rate limiting** sur `/login` (voir `docs/rate-limiting.md`)
 - [ ] **CSRF** sur les routes sensibles
 - [ ] **TLS orchestrateur ↔ agent**
 - [ ] **Pur event-driven** : suppression du refresh polling de 60s (et du polling UI) — actuellement conservés volontairement en filet de sécurité

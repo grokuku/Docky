@@ -8,6 +8,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.config import get_base_dir
 from app.auth.router import COOKIE_NAME
+from app.auth.csrf import generate_csrf_token, set_csrf_cookie
 from app.auth.jwt_utils import verify_token
 
 router = APIRouter()
@@ -22,17 +23,28 @@ def _is_authenticated(request: Request) -> Optional[str]:
     return verify_token(token)
 
 
+def _render_page(request: Request, template_name: str, context: dict):
+    """Render a protected HTML page with CSRF material (double-submit).
+
+    Every HTML page render generates a fresh ``csrf_token``, embeds it in the
+    template context AND sets it as a non-httpOnly cookie so the frontend JS
+    can mirror it into the ``X-CSRF-Token`` header (see app.auth.csrf and
+    docs/csrf-protection.md).
+    """
+    csrf_token = generate_csrf_token()
+    context["csrf_token"] = csrf_token
+    response = templates.TemplateResponse(request, template_name, context)
+    set_csrf_cookie(request, response, csrf_token)
+    return response
+
+
 @router.get("/dashboard")
 async def dashboard(request: Request):
     """Show the dashboard page, or redirect to login if not authenticated."""
     username = _is_authenticated(request)
     if username is None:
         return RedirectResponse(url="/login", status_code=303)
-    return templates.TemplateResponse(
-        request,
-        "dashboard.html",
-        {"username": username},
-    )
+    return _render_page(request, "dashboard.html", {"username": username})
 
 
 @router.get("/popup/logs")
@@ -41,7 +53,7 @@ async def popup_logs(request: Request, agent: str = "", container: str = "", nam
     username = _is_authenticated(request)
     if username is None:
         return RedirectResponse(url="/login", status_code=303)
-    return templates.TemplateResponse(
+    return _render_page(
         request,
         "logs.html",
         {"username": username, "agent": agent, "container": container, "name": name, "stack": stack},
@@ -54,7 +66,7 @@ async def popup_console(request: Request, agent: str = "", container: str = "", 
     username = _is_authenticated(request)
     if username is None:
         return RedirectResponse(url="/login", status_code=303)
-    return templates.TemplateResponse(
+    return _render_page(
         request,
         "console.html",
         {"username": username, "agent": agent, "container": container, "name": name},
@@ -67,8 +79,4 @@ async def settings_page(request: Request):
     username = _is_authenticated(request)
     if username is None:
         return RedirectResponse(url="/login", status_code=303)
-    return templates.TemplateResponse(
-        request,
-        "settings.html",
-        {"username": username},
-    )
+    return _render_page(request, "settings.html", {"username": username})

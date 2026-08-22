@@ -125,6 +125,18 @@ def ensure_config_files():
                 "jwt_secret": os.urandom(32).hex(),
                 "jwt_algorithm": "HS256",
                 "jwt_expire_minutes": 1440,
+                # Anti brute-force sur POST /login (voir app/auth/rate_limit.py)
+                "rate_limit": {
+                    "enabled": True,
+                    "max_attempts": 5,
+                    "window_seconds": 300,
+                    "trust_proxy": False,
+                },
+                # CSRF double-submit cookie (voir app/auth/csrf.py et
+                # docs/csrf-protection.md)
+                "csrf": {
+                    "enabled": True,
+                },
             },
             "agents": [],
         }
@@ -139,7 +151,14 @@ def ensure_config_files():
         default_hash = bcrypt.hashpw(b"docky123", bcrypt.gensalt()).decode()
         default_users = {
             "users": [
-                {"username": "admin", "password_hash": default_hash},
+                {
+                    "username": "admin",
+                    "password_hash": default_hash,
+                    # Force la rotation du mot de passe par défaut à la
+                    # première connexion (voir app/auth/password_policy.py
+                    # et docs/password-rotation.md).
+                    "must_change_password": True,
+                },
             ],
         }
         with open(users_path, "w", encoding="utf-8") as f:
