@@ -204,8 +204,13 @@ Object.assign(window.DockyApp, {
     // Stacks
     // -------------------------------------------------------
 
-    async refreshStacks() {
+    async refreshStacks(force = false) {
         // Toujours fetch avec ?agent=all (filtrage côté frontend)
+        // ``force=true`` (édition de container) contourne le garde-fou
+        // ``_lastGridKey`` : après un update la config (image, ports, env…)
+        // change, et il faut ABSOLUMENT re-rendre la vue courante même si la
+        // sérialisation des données fraîches coïncide par hasard avec la
+        // précédente.
         const [stacksResp, containersResp] = await Promise.all([
             this.apiFetch("/api/stacks?agent=all"),
             fetch('/api/containers?agent=all', { credentials: "same-origin" })
@@ -232,9 +237,9 @@ Object.assign(window.DockyApp, {
         }
         this._allContainersCache = containersData;
 
-        // Skip re-render if nothing changed
+        // Skip re-render if nothing changed (sauf si un refresh forcé est demandé)
         const gridKey = JSON.stringify(stacksResp) + '|' + JSON.stringify(this._allContainersCache);
-        if (this._lastGridKey === gridKey) return;
+        if (!force && this._lastGridKey === gridKey) return;
         this._lastGridKey = gridKey;
 
         this.renderCurrentView();
@@ -312,6 +317,7 @@ Object.assign(window.DockyApp, {
                 ? ''
                 : '<button class="icon-btn btn-start" title="Démarrer" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'start\', \'' + escapedAgent + '\')">' + this.icon('play') + '</button>'
                   + '<button class="icon-btn btn-stop" title="Arrêter" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'stop\', \'' + escapedAgent + '\')">' + this.icon('square') + '</button>'
+                  + '<button class="icon-btn btn-down" title="Down (stop + supprime containers/réseau, volumes conservés)" onclick="DockyApp.confirmStackDown(\'' + this.escapeHtml(stack.name) + '\', \'' + escapedAgent + '\')">' + this.icon('power') + '</button>'
                   + '<button class="icon-btn btn-restart" title="Redémarrer" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'restart\', \'' + escapedAgent + '\')">' + this.icon('refresh-cw') + '</button>'
                   + '<button class="icon-btn" title="Update" onclick="DockyApp.stackAction(\'' + this.escapeHtml(stack.name) + '\', \'update\', \'' + escapedAgent + '\')">' + this.icon('arrow-up') + '</button>'
                   + '<button class="icon-btn btn-logs" title="Logs" onclick="DockyApp.openStackLogs(\'' + this.escapeHtml(stack.name) + '\', \'' + escapedAgent + '\')">' + this.icon('clipboard-list') + '</button>';
@@ -1166,6 +1172,7 @@ Object.assign(window.DockyApp, {
             html += '<div class="stack-context-actions">';
             html += '<button class="btn btn-sm btn-success" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'start\', \'' + escapedAgent + '\')">' + this.icon('play') + ' Démarrer</button>';
             html += '<button class="btn btn-sm btn-danger" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'stop\', \'' + escapedAgent + '\')">' + this.icon('square') + ' Arrêter</button>';
+            html += '<button class="btn btn-sm btn-danger" onclick="DockyApp.confirmStackDown(\'' + escapedName + '\', \'' + escapedAgent + '\')">' + this.icon('power') + ' Down</button>';
             html += '<button class="btn btn-sm btn-warning" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'restart\', \'' + escapedAgent + '\')">' + this.icon('refresh-cw') + ' Redémarrer</button>';
             html += '<button class="btn btn-sm btn-info" onclick="DockyApp.stackAction(\'' + escapedName + '\', \'update\', \'' + escapedAgent + '\')">' + this.icon('arrow-up') + ' Update</button>';
             html += '<button class="btn btn-sm" onclick="DockyApp.openStackLogs(\'' + escapedName + '\', \'' + escapedAgent + '\')">' + this.icon('clipboard-list') + ' Logs</button>';
@@ -1415,7 +1422,7 @@ Object.assign(window.DockyApp, {
 
     async stackAction(name, action, agent) {
         const agt = agent || null;
-        const labels = {start: 'Démarrer', stop: 'Arrêter', restart: 'Redémarrer', update: 'Mettre à jour', deploy: 'Déployer'};
+        const labels = {start: 'Démarrer', stop: 'Arrêter', restart: 'Redémarrer', update: 'Mettre à jour', deploy: 'Déployer', down: 'Down'};
         this._openActivity(`${labels[action] || action} — ${name}`);
         try {
             const result = await this._streamAction(`/api/stacks/${encodeURIComponent(name)}/${action}` + this.agentQuery(agt));
@@ -1427,6 +1434,34 @@ Object.assign(window.DockyApp, {
             this.showToast("Erreur: " + e.message, "error");
         }
         this.refreshStacks();
+    },
+
+    // Down = docker compose down (stop + suppression containers/réseau, volumes
+    // conservés). Destructif → confirmation avant de lancer l'action.
+    confirmStackDown(name, agent) {
+        this._downTarget = { name, agent: agent || null };
+        const modal = document.getElementById('stack-down-modal');
+        if (!modal) {
+            // Repli : confirmation native si le modal est absent.
+            if (window.confirm('Down de la stack « ' + name + ' » ?\n\nStop + suppression des containers et du réseau (volumes conservés).')) {
+                this.stackAction(name, 'down', agent);
+            }
+            return;
+        }
+        document.getElementById('stack-down-name').textContent = name;
+        modal.classList.remove('hidden');
+    },
+
+    closeStackDownModal() {
+        const modal = document.getElementById('stack-down-modal');
+        if (modal) modal.classList.add('hidden');
+        this._downTarget = null;
+    },
+
+    confirmStackDownAction() {
+        const t = this._downTarget;
+        this.closeStackDownModal();
+        if (t) this.stackAction(t.name, 'down', t.agent);
     },
 
     // -------------------------------------------------------

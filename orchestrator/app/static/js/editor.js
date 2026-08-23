@@ -331,7 +331,6 @@ Object.assign(window.DockyApp, {
 
         // Toolbar
         const mod = this.isModified(this.currentFile);
-        const anyMod = this.anyModified();
         const _parts = this.selectedStack.split('@');
         const _stackName = _parts[0];
         const _stackAgent = this.selectedStackAgent || '';
@@ -339,7 +338,11 @@ Object.assign(window.DockyApp, {
         const _escapedAgent = this.escapeHtml(_stackAgent);
         let toolbarHtml = '<div class="compose-toolbar">';
         toolbarHtml += '<button class="btn btn-success btn-sm" onclick="DockyApp.saveCurrentFile()"' + (mod ? '' : ' disabled') + '>' + this.icon('hard-drive') + ' Sauvegarder</button>';
-        toolbarHtml += '<button class="btn btn-info btn-sm" onclick="DockyApp.saveAndDeploy()"' + (anyMod ? '' : ' disabled') + '>' + this.icon('rocket') + ' Sauvegarder & Déployer</button>';
+        // « Sauvegarder & Déployer » est toujours actif : un déploiement reste
+        // utile même sans modification locale (recréer/reconfigurer la stack,
+        // appliquer un down antérieur…). Le flux PUT puis POST /deploy fonctionne
+        // dans tous les cas.
+        toolbarHtml += '<button class="btn btn-info btn-sm" onclick="DockyApp.saveAndDeploy()">' + this.icon('rocket') + ' Sauvegarder & Déployer</button>';
         // Créer un .env vide s'il n'existe pas encore dans la stack.
         if (!this.stackFiles.some(f => f.name === ".env")) {
             toolbarHtml += '<button class="btn btn-ghost btn-sm" onclick="DockyApp.createEnvFile()" title="Créer un fichier .env vide">' + this.icon('file-plus') + ' Créer .env</button>';
@@ -464,7 +467,7 @@ Object.assign(window.DockyApp, {
         const saveBtn = document.querySelector(".compose-toolbar .btn-success");
         if (saveBtn) saveBtn.disabled = !this.isModified(this.currentFile);
         const deployBtn = document.querySelector(".compose-toolbar .btn-info");
-        if (deployBtn) deployBtn.disabled = !this.anyModified();
+        // « Sauvegarder & Déployer » reste toujours cliquable (aucune désactivation).
         // Status bar
         const statusDot = document.querySelector(".compose-status .status-dot");
         const statusText = document.querySelector(".compose-status span:nth-child(2)");

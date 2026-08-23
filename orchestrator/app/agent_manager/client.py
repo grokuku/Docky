@@ -677,6 +677,18 @@ class AgentManager:
         async for evt in self._stream_request(agent_name, "POST", f"/agent/stacks/{stack_name}/stop"):
             yield evt
 
+    async def stream_down_stack(self, agent_name: str, stack_name: str) -> AsyncIterator[Dict[str, Any]]:
+        """Stream a stack down (``docker compose down``, stop + remove containers/network, volumes kept) on an agent."""
+        async for evt in self._stream_request(agent_name, "POST", f"/agent/stacks/{stack_name}/down"):
+            yield evt
+
+    async def down_stack(self, agent_name: str, stack_name: str) -> Dict[str, Any]:
+        """Take a stack down (``docker compose down``) on an agent (JSON result)."""
+        result = await self._consume_stream(agent_name, "POST", f"/agent/stacks/{stack_name}/down")
+        if result.get("success"):
+            await self.invalidate_cache(agent_name)
+        return result
+
     async def stop_stack(self, agent_name: str, stack_name: str) -> Dict[str, Any]:
         """Stop a stack on an agent (JSON result)."""
         result = await self._consume_stream(agent_name, "POST", f"/agent/stacks/{stack_name}/stop")

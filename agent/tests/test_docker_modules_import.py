@@ -40,7 +40,8 @@ RE_EXPORTS = {
         "StreamCommandError", "_run_compose", "_run_command_stream", "_stream_compose",
         "_stream_compose_step", "_stream_command_step", "_compose_up_command",
         "_compose_down_command", "stream_start_stack", "stream_stop_stack",
-        "stream_restart_stack", "stream_update_stack", "stream_deploy_stack",
+        "stream_down_stack", "stream_restart_stack", "stream_update_stack",
+        "stream_deploy_stack",
     ],
     "agent.docker.git_history": [
         "_git_init", "_git_save", "_get_git_history", "_get_git_version",

@@ -609,11 +609,11 @@ async def delete_stack(request: Request, name: str):
 
 @router.post("/stacks/{name}/deploy")
 async def deploy_stack(request: Request, name: str):
-    """Deploy (down + up --remove-orphans) a stack — streamed as SSE progress lines.
+    """Deploy a stack (``docker compose up -d --remove-orphans``) — streamed as SSE progress lines.
 
-    ``down`` (sans ``-v`` : volumes nommés conservés) puis ``up -d
-    --remove-orphans`` : un service retiré du compose est donc supprimé au
-    prochain déploiement.
+    ``up -d --remove-orphans`` crée / met à jour les containers en place sans
+    détruire la stack au préalable ; un service retiré du compose est supprimé
+    au prochain déploiement.
     """
     auth_err = require_api_key(request)
     if auth_err:
@@ -644,6 +644,15 @@ async def stop_stack(request: Request, name: str):
     if auth_err:
         return auth_err
     return _sse_response(docker_manager.stream_stop_stack(name))
+
+
+@router.post("/stacks/{name}/down")
+async def down_stack(request: Request, name: str):
+    """Take a stack down (``docker compose down``, stop + remove containers/network, volumes kept) — streamed as SSE progress lines."""
+    auth_err = require_api_key(request)
+    if auth_err:
+        return auth_err
+    return _sse_response(docker_manager.stream_down_stack(name))
 
 
 @router.post("/stacks/{name}/restart")

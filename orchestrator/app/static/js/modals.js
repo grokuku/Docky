@@ -388,7 +388,12 @@ Object.assign(window.DockyApp, {
             
             this.showToast("✓ Container mis à jour", "success");
             this.closeContainerEdit();
-            await this.refreshStacks();
+            // Refresh forcé : le compose vient d'être modifié et recréé ; la
+            // vue (grid / tableau / cartes de stack) doit refléter la nouvelle
+            // config (image, ports, env…) même si le JSON serialisé coincidait
+            // avec le dernier rendu (garde-fou ``_lastGridKey`` de
+            // refreshStacks).
+            await this.refreshStacks(true);
         } catch(e) {
             this.showToast("Erreur : " + e.message, "error");
         }

@@ -264,6 +264,24 @@
         </div>
     </div>
 
+    <!-- Down confirm modal -->
+    <div id="stack-down-modal" class="modal hidden">
+        <div class="modal-content modal-small">
+            <div class="modal-header">
+                <h3>⏻ Down de la stack</h3>
+                <button class="btn btn-ghost btn-sm" onclick="DockyApp.closeStackDownModal()">✕</button>
+            </div>
+            <div class="modal-body modal-body-pad">
+                <p>Es-tu sûr de vouloir faire un <strong>down</strong> de la stack <strong id="stack-down-name"></strong> ?</p>
+                <p class="form-hint danger-text">⚠ Arrête et supprime les containers et le réseau. Les volumes nommés sont conservés.</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" onclick="DockyApp.closeStackDownModal()">Annuler</button>
+                <button class="btn btn-danger" onclick="DockyApp.confirmStackDownAction()">Confirmer le down</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Permissions modal -->
     <div id="perms-modal" class="modal hidden">
         <div class="modal-content modal-small">

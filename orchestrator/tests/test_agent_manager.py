@@ -429,6 +429,59 @@ async def test_invalidate_cache_clears_and_rebuilds(fresh_agent_manager):
     assert manager._cache["containers"]["data"] == [{"name": "new", "agent_name": "Test Agent"}]
 
 
+async def test_update_container_invalidates_cache_on_success(respx_mock, fresh_agent_manager):
+    """Le flux d'édition de container (update_container) invalide le cache après
+    un succès : un refresh UI subséquent doit donc refléter la nouvelle config.
+    (Contrat côté orchestrateur ; voir docs/container-edit-refresh-backup.md.)"""
+    import time
+
+    manager = fresh_agent_manager
+    respx_mock.post("http://agent:8080/agent/containers/abc/update").mock(
+        return_value=httpx.Response(200, json={"success": True, "output": "ok"})
+    )
+    # Cache stale pré-existant (configs ancienne).
+    manager.cache["Test Agent"] = {
+        "containers": [{"id": "abc", "image": "old"}],
+        "stacks": [],
+        "ports": [],
+        "timestamp": time.time(),
+    }
+    manager._cache["containers"] = {
+        "data": [{"id": "abc", "image": "old", "agent_name": "Test Agent"}],
+        "timestamp": time.time(),
+        "pending": False,
+    }
+    # Après invalidation, le rebuild reflète la nouvelle config.
+    manager.get_containers = AsyncMock(return_value=[{"id": "abc", "image": "new"}])
+    manager.get_stacks = AsyncMock(return_value=[])
+    manager.get_ports = AsyncMock(return_value=[])
+
+    result = await manager.update_container("Test Agent", "abc", {"image": "new"})
+    assert result == {"success": True, "output": "ok"}
+
+    cached = await manager.get_cached_containers()
+    assert cached == [{"id": "abc", "image": "new", "agent_name": "Test Agent"}]
+
+
+async def test_update_container_failure_keeps_cache(respx_mock, fresh_agent_manager):
+    """Sur échec, le cache n'est PAS invalidé."""
+    import time
+
+    manager = fresh_agent_manager
+    respx_mock.post("http://agent:8080/agent/containers/abc/update").mock(
+        return_value=httpx.Response(200, json={"success": False, "error": "boom"})
+    )
+    manager._cache["containers"] = {
+        "data": [{"id": "abc", "image": "old", "agent_name": "Test Agent"}],
+        "timestamp": time.time(),
+        "pending": False,
+    }
+
+    result = await manager.update_container("Test Agent", "abc", {"image": "new"})
+    assert result == {"success": False, "error": "boom"}
+    assert manager._cache["containers"]["data"] == [{"id": "abc", "image": "old", "agent_name": "Test Agent"}]
+
+
 # ---------------------------------------------------------------------------
 # _load_cache / _save_cache
 # ---------------------------------------------------------------------------

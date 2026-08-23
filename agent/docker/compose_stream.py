@@ -366,6 +366,18 @@ async def stream_stop_stack(name: str, idle_timeout: int = STREAM_IDLE_TIMEOUT) 
         yield evt
 
 
+async def stream_down_stack(name: str, idle_timeout: int = STREAM_IDLE_TIMEOUT) -> AsyncIterator[Dict[str, Any]]:
+    """Stream ``docker compose down`` for a stack (stop + remove containers/network).
+
+    ``down`` (sans ``-v`` : les volumes nommés sont conservés) arrête puis
+    supprime les containers et le réseau du projet — utile pour repartir d'un
+    état propre avant un prochain déploiement. External stacks without a
+    compose file fall back to ``stop`` (via :func:`_compose_down_command`).
+    """
+    async for evt in _stream_compose_step(name, _compose_down_command(name), label="── docker compose down ──", idle_timeout=idle_timeout):
+        yield evt
+
+
 async def stream_restart_stack(name: str, idle_timeout: int = STREAM_IDLE_TIMEOUT) -> AsyncIterator[Dict[str, Any]]:
     """Stream ``docker compose restart`` for a stack."""
     async for evt in _stream_compose_step(name, "restart", label="── docker compose restart ──", idle_timeout=idle_timeout):
@@ -406,35 +418,33 @@ async def stream_update_stack(name: str, idle_timeout: int = STREAM_IDLE_TIMEOUT
 
 
 async def stream_deploy_stack(name: str, idle_timeout: int = STREAM_IDLE_TIMEOUT) -> AsyncIterator[Dict[str, Any]]:
-    """Stream ``docker compose down`` then ``docker compose up -d`` for a stack.
+    """Stream ``docker compose up -d --remove-orphans`` for a stack (deploy).
 
-    ``down`` (sans ``-v`` : les volumes nommés sont conservés) puis
-    ``up -d --remove-orphans`` : un service retiré du compose est donc
-    supprimé au prochain déploiement.
+    Unlike a full re-create (``down`` + ``up``), a deploy is now a plain
+    ``up -d --remove-orphans``: containers are created / updated in place
+    without destroying the running stack first. ``--remove-orphans`` supprime
+    les containers du projet qui ne sont plus définis dans le compose (un
+    service retiré du fichier est donc supprimé au prochain déploiement).
+
+    External stacks without a compose file fall back to ``start`` (via
+    :func:`_compose_up_command`). To fully destroy a stack (stop + remove
+    containers/network, volumes kept) use :func:`stream_down_stack` instead.
 
     Raises :class:`FileNotFoundError` if the stack directory does not exist.
     """
     compose_file, _cwd = _dm()._resolve_stack_compose(name)
     if compose_file is None or not Path(compose_file).exists():
         raise FileNotFoundError(f"Stack '{name}' not found")
-    # Step 1: down (a failing down is fatal)
-    async for evt in _stream_compose_step(name, _compose_down_command(name), label="── docker compose down ──", idle_timeout=idle_timeout):
-        if evt.get("type") == STREAM_EVENT_RESULT:
-            if not evt.get("success"):
-                yield evt
-                return
-        else:
-            yield evt
-    # Step 2: up -d (--remove-orphans: un service retiré du compose est supprimé)
+    # up -d (--remove-orphans: un service retiré du compose est supprimé)
     up_result = None
     async for evt in _stream_compose_step(name, _compose_up_command(name), label="── docker compose up -d --remove-orphans ──", idle_timeout=idle_timeout):
         if evt.get("type") == STREAM_EVENT_RESULT:
             up_result = evt
         yield evt
-    # Déploy réussi : les containers viennent d'être recréés à partir des
-    # images locales. Si une de ces images a changé entre-temps (pull manuel,
-    # update d'un container), le badge peut être faux ; invalider est trivial
-    # et sans risque (le prochain check relit simplement le registre).
+    # Déploiement réussi : les containers viennent d'être (re)créés à partir
+    # des images locales. Si une de ces images a changé entre-temps (pull
+    # manuel, update d'un container), le badge peut être faux ; invalider est
+    # trivial et sans risque (le prochain check relit simplement le registre).
     if up_result is not None and up_result.get("success"):
         _dm()._invalidate_stack_update_cache(name)
 

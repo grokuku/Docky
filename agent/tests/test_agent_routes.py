@@ -144,6 +144,7 @@ def test_get_ports(agent_client, api_key_header, monkeypatch):
         ("/agent/stacks/myapp/restart", "stream_restart_stack"),
         ("/agent/stacks/myapp/update", "stream_update_stack"),
         ("/agent/stacks/myapp/deploy", "stream_deploy_stack"),
+        ("/agent/stacks/myapp/down", "stream_down_stack"),
     ],
 )
 def test_stack_sse_actions(agent_client, api_key_header, monkeypatch, path, stream_name):
@@ -167,6 +168,7 @@ def test_stack_sse_actions(agent_client, api_key_header, monkeypatch, path, stre
         "/agent/stacks/myapp/restart",
         "/agent/stacks/myapp/update",
         "/agent/stacks/myapp/deploy",
+        "/agent/stacks/myapp/down",
     ],
 )
 def test_stack_sse_actions_require_auth(agent_client, path):

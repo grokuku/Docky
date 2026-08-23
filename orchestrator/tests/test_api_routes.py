@@ -413,6 +413,25 @@ def test_sse_stack_stop(auth_client, mock_agent_manager):
     assert "event: output" in resp.text
 
 
+def test_sse_stack_down(auth_client, mock_agent_manager):
+    from unittest.mock import MagicMock
+
+    mock_agent_manager.stream_down_stack = MagicMock(return_value=_sse_stream())
+    resp = auth_client.post("/api/stacks/web/down", params={"agent": "Test Agent"})
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    assert "event: output" in resp.text
+    assert "event: done" in resp.text
+    assert '"success": true' in resp.text
+    # The on_success callback invalidates the agent cache.
+    mock_agent_manager.invalidate_cache.assert_awaited_once_with("Test Agent")
+
+
+def test_sse_stack_down_unauthorized(orchestrator_client):
+    resp = orchestrator_client.post("/api/stacks/web/down", params={"agent": "Test Agent"})
+    assert resp.status_code == 401
+
+
 def test_sse_stack_error_event(auth_client, mock_agent_manager):
     from unittest.mock import MagicMock
 

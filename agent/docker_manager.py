@@ -56,6 +56,7 @@ from agent.docker.compose_stream import (
     _stream_compose,
     _stream_compose_step,
     stream_deploy_stack,
+    stream_down_stack,
     stream_restart_stack,
     stream_start_stack,
     stream_stop_stack,
@@ -1155,6 +1156,13 @@ async def _update_compose_container(project: str, container_id: str, spec: Dict,
             f.write(header + "\n")
         yaml.dump(compose, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
+    # Sauvegarde git de l'état de la stack (historique), cohérente avec
+    # save_stack_file / create_stack / import_stack : chaque édition de
+    # container qui modifie le compose crée un commit de backup de la stack.
+    # ``_git_save`` initialise le dépôt si besoin et applique la rétention.
+    from datetime import datetime
+    _git_save(project, f"Édition container {service_name} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
     # Redeploy
     await compose_up(project)
 
@@ -2168,11 +2176,13 @@ async def delete_stack(name: str) -> Dict[str, Any]:
 
 
 async def deploy_stack(name: str) -> Dict[str, Any]:
-    """Deploy a stack: ``docker compose down`` then ``docker compose up -d``.
+    """Deploy a stack: ``docker compose up -d --remove-orphans``.
 
-    ``down`` (sans ``-v`` : les volumes nommés sont conservés) puis
-    ``up -d --remove-orphans`` : un service retiré du compose est donc
-    supprimé au prochain déploiement.
+    A deploy is now a plain ``up -d --remove-orphans`` (aligned on
+    :func:`stream_deploy_stack`): containers are created / updated in place
+    without destroying the running stack first. ``--remove-orphans`` supprime
+    les containers du projet qui ne sont plus définis dans le compose (un
+    service retiré du fichier est donc supprimé au prochain déploiement).
 
     Returns a dict with ``success``, ``output`` and ``error``.
     Raises ``FileNotFoundError`` if the stack directory does not exist.
@@ -2180,14 +2190,9 @@ async def deploy_stack(name: str) -> Dict[str, Any]:
     compose_file, _cwd = _resolve_stack_compose(name)
     if compose_file is None or not Path(compose_file).exists():
         raise FileNotFoundError(f"Stack '{name}' not found")
-    down_result = await compose_down(name)
     up_result = await compose_up(name)
     success = up_result.get("success", False)
     output_parts = []
-    if down_result.get("output"):
-        output_parts.append("--- docker compose down ---\n" + down_result["output"])
-    if down_result.get("error"):
-        output_parts.append("--- docker compose down (stderr) ---\n" + down_result["error"])
     if up_result.get("output"):
         output_parts.append("--- docker compose up -d --remove-orphans ---\n" + up_result["output"])
     if up_result.get("error"):

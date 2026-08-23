@@ -105,6 +105,18 @@ async def api_stack_stop(request: Request, name: str, agent: str = Query(...)):
     return _sse_action_response(agent_name, _api().agent_manager.stream_stop_stack(agent_name, name))
 
 
+@router.post("/stacks/{name}/down")
+async def api_stack_down(request: Request, name: str, agent: str = Query(...)):
+    """Take a stack down (``docker compose down``, stop + remove containers/network, volumes kept) — streamed as SSE progress lines."""
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    return _sse_action_response(agent_name, _api().agent_manager.stream_down_stack(agent_name, name))
+
+
 @router.post("/stacks/{name}/restart")
 async def api_stack_restart(request: Request, name: str, agent: str = Query(...)):
     """Restart a stack — streamed as SSE progress lines."""

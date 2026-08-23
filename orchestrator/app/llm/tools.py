@@ -292,7 +292,7 @@ TOOLS: List[Dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "deploy_stack",
-            "description": "Déploie un stack (docker compose down puis up -d --remove-orphans) sur un agent spécifique.",
+            "description": "Déploie un stack (docker compose up -d --remove-orphans, sans down préalable) sur un agent spécifique.",
             "parameters": {
                 "type": "object",
                 "properties": {
