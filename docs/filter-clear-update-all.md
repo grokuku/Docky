@@ -88,18 +88,43 @@ Bouton `#update-all-btn` inséré dans `topbar-right` (à côté de « Ports »)
    `checkUpdate(id, agent)` (anti-flicker). À la fin : résumé
    (succès/échecs), toast, puis `refreshStacks()`.
 
+### Exclusion de containers (✕) — v0.0.5
+Chaque ligne de la liste de la modale `#update-all-modal` affiche désormais un
+petit bouton **✕** à droite.
+
+- **Clic sur ✕** : `DockyApp.excludeFromUpdateAll(index)` retire le container
+  de `_updateAllList` (source de vérité) puis re-rend la modale via
+  `_renderUpdateAllModal()`. C'est une exclusion **définitive pour cette passe**
+  (pas de restauration). `confirmUpdateAll()` n'itère plus que sur les
+  containers restants → le compteur `[i/N]` reflète le N réel (N = nombre de
+  containers restants après exclusions).
+- **État « vide »** : si tous les containers sont exclus, la modale affiche un
+  message clair (« Aucun container à mettre à jour ») et le bouton « Mettre à
+  jour » (`#update-all-confirm-btn`) est désactivé (`disabled`).
+
+### Fichiers
+- `orchestrator/templates/dashboard.html` — id `update-all-confirm-btn` sur le
+  bouton « Mettre à jour ».
+- `orchestrator/app/static/js/dashboard.js` — `_renderUpdateAllModal()` gère
+  l'état vide + rend un bouton ✕ par ligne ; nouvelle méthode
+  `excludeFromUpdateAll(index)`.
+- `orchestrator/app/static/css/style.css` — styles `.update-all-item`,
+  `.update-all-remove` (hover rouge) et `#update-all-confirm-btn:disabled`.
+
 ### Choix séquentiel vs parallèle
 **Séquentiel**, documenté : un pull + recreate à la fois. Plus sûr pour les
+
 dépendances entre containers d'une même stack, et lisible dans les logs. Un
 parallèle limité serait possible mais ajouterait de la complexité sans gain
 robuste ici.
 
 ### Fichiers
 - `orchestrator/templates/dashboard.html` — bouton `#update-all-btn`, modale
-  `#update-all-modal`.
+  `#update-all-modal` (bouton « Mettre à jour » identifié `#update-all-confirm-btn`).
 - `orchestrator/app/static/js/dashboard.js` — `updateAllContainers()`,
   `_collectContainersWithUpdate()`, `_renderUpdateAllModal()`,
-  `closeUpdateAllModal()`, `confirmUpdateAll()`. Optimisation « Update all » :
+  `excludeFromUpdateAll()`, `closeUpdateAllModal()`, `confirmUpdateAll()`.
+  Optimisation « Update all » :
   ajout de `_UPDATE_CACHE_TTL_MS` (30 s) et `_tagUpdateCache()` (horodatage du
   cache), `checkUpdate`/`checkStackUpdate` taguent désormais leurs entrées, et
   `_collectContainersWithUpdate()` réutilise le cache frais au lieu de rescanner

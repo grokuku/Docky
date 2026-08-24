@@ -2032,15 +2032,40 @@ Object.assign(window.DockyApp, {
     _renderUpdateAllModal(list) {
         const body = document.getElementById('update-all-body');
         if (!body) return;
+        if (!list) list = [];
+        const confirmBtn = document.getElementById('update-all-confirm-btn');
+        // État « vide » : tous les containers ont été exclus → on neutralise
+        // le bouton « Mettre à jour » et on affiche un message clair.
+        if (list.length === 0) {
+            body.innerHTML = '<p style="margin:0 0 10px;color:var(--text-secondary);">Aucun container à mettre à jour.</p>'
+                + '<p class="form-hint">Tous les containers ont été exclus de cette passe. Cliquez sur Annuler pour fermer.</p>';
+            if (confirmBtn) confirmBtn.disabled = true;
+            return;
+        }
         let html = '<p style="margin:0 0 10px;color:var(--text-secondary);">' + list.length + ' container(s) à mettre à jour :</p>';
         html += '<ul class="update-all-list">';
-        for (const item of list) {
+        for (let i = 0; i < list.length; i++) {
+            const item = list[i];
             const agent = item.agent ? ' <span class="update-all-agent">(@' + this.escapeHtml(item.agent) + ')</span>' : '';
-            html += '<li>' + this.escapeHtml(item.name) + agent + '</li>';
+            html += '<li class="update-all-item"><span class="update-all-item-label">' + this.escapeHtml(item.name) + agent + '</span>'
+                + '<button class="update-all-remove" type="button" title="Exclure ce container de la mise à jour" onclick="DockyApp.excludeFromUpdateAll(' + i + ')">✕</button></li>';
         }
         html += '</ul>';
-        html += '<p class="form-hint">Les images seront tirées puis les containers recréés un par un. Les agents masqués sont ignorés.</p>';
+        html += '<p class="form-hint">Les images seront tirées puis les containers recréés un par un. Les agents masqués sont ignorés. Cliquez sur ✕ pour exclure un container de cette passe.</p>';
         body.innerHTML = html;
+        if (confirmBtn) confirmBtn.disabled = false;
+    },
+
+    // Exclusion d'un container de la passe « Update all » : on le retire de la
+    // liste à mettre à jour (source de vérité pour confirmUpdateAll) puis on
+    // re-rend la modale. Définitif pour cette passe, pas de restauration.
+    excludeFromUpdateAll(index) {
+        const list = this._updateAllList || [];
+        if (index < 0 || index >= list.length) return;
+        const removed = list.splice(index, 1)[0];
+        if (!removed) return;
+        this.showToast('Exclu : ' + removed.name + (removed.agent ? ' (@' + removed.agent + ')' : ''), 'info');
+        this._renderUpdateAllModal(list);
     },
 
     closeUpdateAllModal() {
