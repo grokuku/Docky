@@ -19,7 +19,10 @@
             </div>
         </div>
         <div class="topbar-dropdowns">
-            <input type="text" id="container-search" class="search-input" placeholder="Rechercher un container…" autocomplete="off" oninput="DockyApp.onSearchInput(this.value)">
+            <div class="search-box">
+                <input type="text" id="container-search" class="search-input" placeholder="Rechercher un container…" autocomplete="off" oninput="DockyApp.onSearchInput(this.value)">
+                <button type="button" id="container-search-clear" class="search-clear" title="Vider la recherche" aria-label="Effacer la recherche" onclick="DockyApp.clearSearch()">✕</button>
+            </div>
             <select id="sort-select" class="topbar-select" onchange="DockyApp.onSortChange()">
                 <option value="name-asc">Tri: A→Z</option>
                 <option value="name-desc">Tri: Z→A</option>
@@ -45,6 +48,7 @@
         </div>
         <div class="topbar-right">
             <span id="version-mismatch-badge" class="version-mismatch-badge hidden" onclick="DockyApp._openVersionMismatchModal()" style="cursor:pointer;" title="Versions désynchronisées — cliquer pour le détail">⚠ Mismatch</span>
+            <button class="btn btn-ghost btn-sm" id="update-all-btn" onclick="DockyApp.updateAllContainers()" title="Mettre à jour tous les containers ayant une mise à jour disponible">⬆ Update all</button>
             <button class="btn btn-ghost btn-sm" id="ports-btn" onclick="DockyApp.togglePorts()">🔌 Ports</button>
             <button id="chat-toggle" class="topbar-btn active" title="Afficher/Masquer le chat" onclick="DockyApp.toggleChat()"><i data-lucide="message-circle"></i></button>
             <span class="topbar-user">👤 {{ username }}</span>
@@ -401,6 +405,21 @@
             <div class="modal-body modal-body-pad" id="version-mismatch-body"></div>
             <div class="modal-footer">
                 <button class="btn btn-ghost" onclick="DockyApp.closeVersionMismatch()">Fermer</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Update all containers confirm modal -->
+    <div id="update-all-modal" class="modal hidden">
+        <div class="modal-content" style="width:90%;max-width:620px;max-height:75vh;">
+            <div class="modal-header">
+                <h3>⬆ Mettre à jour tous les containers</h3>
+                <button class="btn btn-ghost btn-sm" onclick="DockyApp.closeUpdateAllModal()">✕</button>
+            </div>
+            <div class="modal-body modal-body-pad" id="update-all-body" style="overflow-y:auto;"></div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" onclick="DockyApp.closeUpdateAllModal()">Annuler</button>
+                <button class="btn btn-warning" onclick="DockyApp.confirmUpdateAll()">Mettre à jour</button>
             </div>
         </div>
     </div>

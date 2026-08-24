@@ -1472,6 +1472,24 @@ Object.assign(window.DockyApp, {
 
     _stackUpdateCacheKey(stackName, agent) { return 's:' + stackName + '@' + (agent || ''); },
 
+    // Fraîcheur de l'état « update dispo » en cache : tant qu'une entrée a moins
+    // de _UPDATE_CACHE_TTL_MS, « Update all » la réutilise au lieu de relancer un
+    // update-check. Le refresh auto relance checkUpdate() toute les refreshTimer
+    // (5 s) quand autoRefresh est actif, donc une entrée est normalement < 30 s.
+    // 30 s reste raisonnable même si l'auto-refresh est désactivé (le scan du
+    // « Update all » se contenterait alors de rafraîchir les entrées périmées).
+    _UPDATE_CACHE_TTL_MS: 30000,
+
+    // Ajoute un timestamp de fraîcheur à un résultat d'update-check avant de le
+    // stocker dans _updateCheckCache. Utilisé par checkUpdate / checkStackUpdate
+    // et par le fallback de « Update all », pour que la fraîcheur du cache reste
+    // cohérente quel que soit le chemin d'écriture.
+    _tagUpdateCache(data) {
+        const obj = (data && typeof data === 'object') ? Object.assign({}, data) : {};
+        obj._checkedAt = Date.now();
+        return obj;
+    },
+
     // Classe CSS initiale d'un badge d'update d'après le cache : si un résultat
     // "update_available" est déjà connu, on rend le badge visible immédiatement
     // (aucun flicker au re-render, même avant la fin du prochain check async).
@@ -1563,7 +1581,9 @@ Object.assign(window.DockyApp, {
 
             // On met à jour le cache AVANT toute manipulation du DOM : c'est lui qui
             // pilote l'état initial des badges au prochain rendu (anti-flicker).
-            this._updateCheckCache[cacheKey] = data || { update_available: false };
+            // `_checkedAt` (timestamp) permet à « Update all » de juger de la fraîcheur
+            // de l'état affiché avant d'éventuellement relancer un check ciblé.
+            this._updateCheckCache[cacheKey] = this._tagUpdateCache(data || { update_available: false });
             // Le compteur global est recalculé depuis le cache : pas de retour à 0
             // pendant qu'un re-render est en cours (on ne réécrit le DOM que si la
             // valeur change réellement).
@@ -1617,7 +1637,7 @@ Object.assign(window.DockyApp, {
 
             // Cache mis à jour en premier : les badges seront rendus dans le bon état
             // dès le prochain rendu, sans disparition/reapparition.
-            this._updateCheckCache[cacheKey] = data || { update_available: false };
+            this._updateCheckCache[cacheKey] = this._tagUpdateCache(data || { update_available: false });
 
             if (renderToken !== this._updateCheckToken) return;
 
@@ -1883,6 +1903,7 @@ Object.assign(window.DockyApp, {
         try {
             localStorage.setItem('docky_container_search', this._searchQuery);
         } catch (e) { /* ignore */ }
+        this.updateSearchClearUI();
         if (this._searchDebounceTimer) clearTimeout(this._searchDebounceTimer);
         this._searchDebounceTimer = setTimeout(() => {
             if (this._allContainersCache && this._allContainersCache.length > 0) {
@@ -1890,6 +1911,183 @@ Object.assign(window.DockyApp, {
             }
             this.updateStatsBar();
         }, 150);
+    },
+
+    // Affiche/masque le bouton ✕ selon que la recherche est vide ou non.
+    updateSearchClearUI() {
+        const input = document.getElementById('container-search');
+        if (!input) return;
+        const box = input.closest('.search-box');
+        if (box) box.classList.toggle('has-value', !!this._searchQuery);
+    },
+
+    // Vide le champ de recherche et réapplique le filtre (état vide = tout afficher).
+    clearSearch() {
+        this._searchQuery = '';
+        try {
+            localStorage.setItem('docky_container_search', '');
+        } catch (e) { /* ignore */ }
+        const input = document.getElementById('container-search');
+        if (input) input.value = '';
+        this.updateSearchClearUI();
+        if (this._searchDebounceTimer) clearTimeout(this._searchDebounceTimer);
+        if (this._allContainersCache && this._allContainersCache.length > 0) {
+            this.renderCurrentView();
+        }
+        this.updateStatsBar();
+    },
+
+    // -------------------------------------------------------
+    // Update all containers
+    // -------------------------------------------------------
+
+    // Scanne tous les containers visibles (agents non cachés) via l'endpoint
+    // Collecte les containers avec une mise à jour disponible parmi ceux des
+    // agents non masqués. Réutilise l'état « update dispo » DÉJÀ calculé pour
+    // l'affichage (cache _updateCheckCache, source de vérité des badges) tant
+    // qu'il est frais (< _UPDATE_CACHE_TTL_MS) : on n'ajoute alors aucun appel
+    // réseau. On ne relance un update-check ciblé que pour les containers dont
+    // l'entrée est absente ou périmée (fallback), afin de ne jamais afficher un
+    // état faux à l'utilisateur.
+    async _collectContainersWithUpdate() {
+        const all = this._allContainersCache || [];
+        const containers = all.filter(c => !this._hiddenAgents.has(c.agent_name || ''));
+        if (containers.length === 0) return [];
+
+        const ttl = this._UPDATE_CACHE_TTL_MS || 30000;
+        const now = Date.now();
+        const freshList = [];
+        const staleRecheck = [];
+
+        // Phase 1 — réutilisation du cache d'update déjà affiché (fraîcheur).
+        for (const c of containers) {
+            const agent = c.agent_name || '';
+            const cached = this._updateCheckCache[this._containerUpdateCacheKey(c.id)];
+            const ts = (cached && cached._checkedAt) || 0;
+            if (cached && (now - ts) < ttl) {
+                if (cached.update_available === true) freshList.push({ id: c.id, name: c.name, agent });
+            } else {
+                staleRecheck.push({ c, agent });
+            }
+        }
+
+        // Phase 2 — fallback : ne rescanner QUE les entrées absentes/périmées.
+        if (staleRecheck.length > 0) {
+            const results = await Promise.all(staleRecheck.map(async ({ c, agent }) => {
+                try {
+                    const url = '/api/containers/' + encodeURIComponent(c.id) + '/update-check' + this.agentQuery(agent);
+                    const resp = await fetch(url, { credentials: 'same-origin' });
+                    if (resp.status === 401) { window.location.href = '/login'; return null; }
+                    if (resp.status !== 200) return null;
+                    let data = null;
+                    try { data = await resp.json(); } catch (e) { data = null; }
+                    if (data && typeof data === 'object') {
+                        // Maintient le cache d'affichage cohérent + fraîcheur taguée
+                        // (même chemin que checkUpdate, anti-incohérence de badge).
+                        this._updateCheckCache[this._containerUpdateCacheKey(c.id)] = this._tagUpdateCache(data);
+                    }
+                    return (data && data.update_available === true)
+                        ? { id: c.id, name: c.name, agent }
+                        : null;
+                } catch (e) {
+                    return null;
+                }
+            }));
+            freshList.push(...results.filter(Boolean));
+        }
+
+        return freshList;
+    },
+
+    // Point d'entrée du bouton « Update all » : scanne les updates dispo puis
+    // affiche une confirmation listant les (container, agent) concernés.
+    async updateAllContainers() {
+        const btn = document.getElementById('update-all-btn');
+        if (btn) btn.disabled = true;
+        try {
+            this.showToast('Recherche des mises à jour disponibles…', 'info');
+            const list = await this._collectContainersWithUpdate();
+            if (list.length === 0) {
+                this.showToast('Aucun container à mettre à jour', 'info');
+                return;
+            }
+            this._updateAllList = list;
+            this._renderUpdateAllModal(list);
+            const modal = document.getElementById('update-all-modal');
+            if (modal) {
+                modal.classList.remove('hidden');
+            } else {
+                // Repli : confirmation native si le modal est absent.
+                if (window.confirm('Mettre à jour ' + list.length + ' container(s) ?\n\n' + list.map(i => i.name + ' (@' + i.agent + ')').join('\n'))) {
+                    this.confirmUpdateAll();
+                }
+            }
+        } catch (e) {
+            this.showToast('Erreur lors de la recherche des mises à jour : ' + e.message, 'error');
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    },
+
+    _renderUpdateAllModal(list) {
+        const body = document.getElementById('update-all-body');
+        if (!body) return;
+        let html = '<p style="margin:0 0 10px;color:var(--text-secondary);">' + list.length + ' container(s) à mettre à jour :</p>';
+        html += '<ul class="update-all-list">';
+        for (const item of list) {
+            const agent = item.agent ? ' <span class="update-all-agent">(@' + this.escapeHtml(item.agent) + ')</span>' : '';
+            html += '<li>' + this.escapeHtml(item.name) + agent + '</li>';
+        }
+        html += '</ul>';
+        html += '<p class="form-hint">Les images seront tirées puis les containers recréés un par un. Les agents masqués sont ignorés.</p>';
+        body.innerHTML = html;
+    },
+
+    closeUpdateAllModal() {
+        const modal = document.getElementById('update-all-modal');
+        if (modal) modal.classList.add('hidden');
+        this._updateAllList = null;
+    },
+
+    // Lance la mise à jour séquentielle (un container après l'autre) via
+    // l'endpoint SSE /containers/{id}/update-image existant. La progression est
+    // affichée dans l'Activity Modal. Séquentiel : un pull + recreate à la fois,
+    // plus sûr pour les dépendances de stack et lisible dans les logs.
+    async confirmUpdateAll() {
+        const list = this._updateAllList || [];
+        this.closeUpdateAllModal();
+        if (list.length === 0) return;
+        this._openActivity('Update all containers');
+        let ok = 0, fail = 0;
+        for (let i = 0; i < list.length; i++) {
+            const item = list[i];
+            const label = item.name + (item.agent ? ' (@' + item.agent + ')' : '');
+            this._appendActivity('[' + (i + 1) + '/' + list.length + '] Mise à jour de ' + label + '…', 'info');
+            try {
+                const result = await this._streamAction('/api/containers/' + encodeURIComponent(item.id) + '/update-image' + this.agentQuery(item.agent));
+                if (result.success) {
+                    ok++;
+                    this._appendActivity('✓ ' + label + ' mis à jour', 'success');
+                    // Après pull/recreate, le digest local a changé : on invalide
+                    // le cache anti-flicker puis on re-check ce container.
+                    this._invalidateContainerUpdateCache(item.id);
+                    this.checkUpdate(item.id, item.agent);
+                } else {
+                    fail++;
+                    this._appendActivity('✗ ' + label + ' : échec', 'error');
+                }
+            } catch (e) {
+                fail++;
+                this._appendActivity('✗ ' + label + ' : ' + e.message, 'error');
+            }
+        }
+        this._finishActivity(fail === 0, ok + ' mis à jour, ' + fail + ' en échec');
+        if (fail === 0) {
+            this.showToast('Update all : ' + ok + ' container(s) mis à jour', 'success');
+        } else {
+            this.showToast('Update all : ' + ok + ' OK, ' + fail + ' échec(s)', 'warning');
+        }
+        this.refreshStacks();
     },
 
     _filterContainers(containers) {

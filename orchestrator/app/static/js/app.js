@@ -146,6 +146,7 @@ window.DockyApp = {
         if (groupSelect) groupSelect.value = this._groupMode;
         const searchInput = document.getElementById('container-search');
         if (searchInput) searchInput.value = this._searchQuery;
+        this.updateSearchClearUI();
 
         this.initResizers();
 
@@ -258,6 +259,14 @@ window.DockyApp = {
             });
         }
 
+        // Update-all modal backdrop click
+        const updateAllModal = document.getElementById("update-all-modal");
+        if (updateAllModal) {
+            updateAllModal.addEventListener("click", (e) => {
+                if (e.target === updateAllModal) this.closeUpdateAllModal();
+            });
+        }
+
         // Enter key shortcuts in modal inputs
         const newNameInput = document.getElementById("new-stack-name");
         if (newNameInput) {
@@ -290,6 +299,7 @@ window.DockyApp = {
                 this.closeContainerEdit();
                 this.closeActivity();
                 this.closeVersionMismatch();
+                this.closeUpdateAllModal();
                 this._onUnsavedCancel();
             }
         });

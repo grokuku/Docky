@@ -228,6 +228,68 @@ body {
     gap: 6px;
 }
 
+/* Wrapper du champ de recherche + bouton ✕ (vider le filtre) */
+.search-box {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+}
+
+.search-box .search-input {
+    padding-right: 28px;
+}
+
+.search-clear {
+    position: absolute;
+    right: 5px;
+    top: 50%;
+    transform: translateY(-50%);
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+    padding: 2px 4px;
+    border-radius: 4px;
+    display: none;
+}
+
+.search-clear:hover {
+    color: var(--text-primary);
+    background: var(--bg-tertiary, rgba(255, 255, 255, 0.08));
+}
+
+.search-box.has-value .search-clear {
+    display: block;
+}
+
+/* Liste des containers à mettre à jour (modal Update all) */
+.update-all-list {
+    list-style: none;
+    margin: 0 0 10px;
+    padding: 0;
+    max-height: 40vh;
+    overflow-y: auto;
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+}
+
+.update-all-list li {
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border-color);
+    font-size: 0.85rem;
+}
+
+.update-all-list li:last-child {
+    border-bottom: none;
+}
+
+.update-all-agent {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+}
+
 .search-input {
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
