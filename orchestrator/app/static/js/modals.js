@@ -42,6 +42,54 @@ Object.assign(window.DockyApp, {
         line.textContent = text;
         output.appendChild(line);
         output.scrollTop = output.scrollHeight;
+        return line;
+    },
+
+    _scrollActivity() {
+        const output = document.getElementById("activity-output");
+        if (output) output.scrollTop = output.scrollHeight;
+    },
+
+    // Retourne la dernière portion visible d'une ligne brute docker.
+    // docker pull réécrit sa progression à l'aide de retours chariot (\r) :
+    // chaque trame « écraserait » la précédente. On ne garde que la dernière
+    // trame non vide pour un rendu mono-ligne propre.
+    _cleanProgressLine(raw) {
+        const parts = String(raw).split("\r");
+        let last = "";
+        for (const part of parts) {
+            if (part.trim()) last = part.trimEnd();
+        }
+        return last.trim();
+    },
+
+    // Détecte une ligne de PROGRESSION éphémère (destinée à être réécrite en
+    // place par docker) : téléchargement/extraction/attente d'un pull. Les
+    // lignes « finales » utiles (Status:, Pull complete, Up-to-date, Digest:…)
+    // ne matchent volontairement pas et sont donc conservées à l'écran.
+    _isProgressLine(raw) {
+        const text = String(raw);
+        if (!text || !text.trim()) return false;
+        if (/Pulling fs layer|Downloading|Download complete|Extracting|Verifying Checksum|Waiting|Retrying|Already exists/i.test(text)) return true;
+        // Barre de progression pure (docker pull : "[=====>     ]" + % / tailles).
+        if (/\[[=>.\- ]*\]/.test(text) && (/\b\d+\s*%\b/.test(text) || /\b\d+(\.\d+)?\s*[KMG]?i?B\b/i.test(text))) return true;
+        return false;
+    },
+
+    // Affiche une ligne de progression : si une ligne de progression existe
+    // déjà, on la remplace en place (pas de cascade de lignes) ; sinon on en
+    // crée une nouvelle.
+    _appendProgressLine(raw, lastProgressEl) {
+        const text = this._cleanProgressLine(raw);
+        const output = document.getElementById("activity-output");
+        if (!output) return null;
+        if (lastProgressEl && lastProgressEl.isConnected) {
+            lastProgressEl.textContent = text;
+            this._scrollActivity();
+            return lastProgressEl;
+        }
+        const line = this._appendActivity(text, "progress");
+        return line || null;
     },
 
     _finishActivity(success, output) {
@@ -119,6 +167,8 @@ Object.assign(window.DockyApp, {
         let output = "";
         let success = false;
         let streamEnded = false;
+        // Dernière ligne de progression affichée (réécrite en place).
+        let lastProgressEl = null;
         try {
             while (!streamEnded) {
                 const { done, value } = await reader.read();
@@ -134,7 +184,14 @@ Object.assign(window.DockyApp, {
                         const line = parsed.data.line || "";
                         if (line) {
                             output += (output ? "\n" : "") + line;
-                            this._appendActivity(line, "");
+                            if (this._isProgressLine(line)) {
+                                // Progression éphémère → réécrit la ligne courante.
+                                lastProgressEl = this._appendProgressLine(line, lastProgressEl);
+                            } else {
+                                // Ligne finale/informationnelle → ligne distincte.
+                                lastProgressEl = null;
+                                this._appendActivity(line, "");
+                            }
                         }
                     } else if (parsed.event === "done") {
                         success = !!parsed.data.success;

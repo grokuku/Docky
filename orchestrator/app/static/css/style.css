@@ -1584,6 +1584,12 @@ body {
     margin-bottom: 1px;
 }
 
+.terminal-line.progress {
+    color: var(--text-muted);
+    white-space: pre-wrap;
+    word-break: break-all;
+}
+
 .terminal-empty {
     color: var(--text-muted);
     font-style: italic;
