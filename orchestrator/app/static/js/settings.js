@@ -14,11 +14,37 @@ const SettingsApp = {
     // Utilities
     // -------------------------------------------------------
 
+    /** Lecture brute d'un cookie (parser simple, tolerant aux espaces). */
+    getCookie(name) {
+        if (typeof document === "undefined" || !document.cookie) return null;
+        const parts = document.cookie.split(/;\s*/);
+        for (let i = 0; i < parts.length; i++) {
+            const eq = parts[i].indexOf("=");
+            if (eq === -1) continue;
+            if (parts[i].slice(0, eq) === name) {
+                const raw = parts[i].slice(eq + 1);
+                try { return decodeURIComponent(raw); } catch (e) { return raw; }
+            }
+        }
+        return null;
+    },
+
     async apiFetch(url, options = {}) {
+        const method = (options.method || "GET").toUpperCase();
+        const isSafeMethod = method === "GET" || method === "HEAD" || method === "OPTIONS";
+        const headers = { ...(options.headers || {}) };
+        // Double-submit cookie : toute requête mutante doit porter le
+        // X-CSRF-Token lu depuis le cookie csrf_token (voir docs/csrf-protection.md).
+        // La page settings ne charge pas api.js (wrapper global window.fetch),
+        // donc on ajoute l'en-tête ici, de façon autonome.
+        if (!isSafeMethod && !headers["X-CSRF-Token"]) {
+            const token = this.getCookie("csrf_token");
+            if (token) headers["X-CSRF-Token"] = token;
+        }
         try {
             const resp = await fetch(url, {
                 ...options,
-                headers: { ...(options.headers || {}) },
+                headers,
                 credentials: "same-origin",
             });
             if (resp.status === 401) {

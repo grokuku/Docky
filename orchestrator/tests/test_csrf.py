@@ -116,6 +116,48 @@ def test_api_mutant_with_matching_pair_reaches_endpoint(orchestrator_client, val
     assert resp.json() == {"ok": True}
 
 
+def test_settings_agents_mutant_without_token_is_403(orchestrator_client, valid_jwt, csrf_on):
+    """POST /api/settings/agents (add agent) without X-CSRF-Token → 403."""
+    orchestrator_client.cookies.set("docky_token", valid_jwt)
+    resp = orchestrator_client.post(
+        "/api/settings/agents",
+        json={"name": "agent-a", "url": "http://agent-a:8080"},
+    )
+    assert resp.status_code == 403
+    assert resp.json() == {"detail": "CSRF"}
+
+
+def test_settings_agents_mutant_with_matching_pair_reaches_endpoint(
+    orchestrator_client, valid_jwt, csrf_on
+):
+    """POST /api/settings/agents with a valid cookie/header pair → 200."""
+    orchestrator_client.cookies.set("docky_token", valid_jwt)
+    headers = _set_csrf_pair(orchestrator_client, "settings-pair-token")
+    resp = orchestrator_client.post(
+        "/api/settings/agents",
+        json={"name": "agent-a", "url": "http://agent-a:8080"},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"success": True}
+
+
+def test_settings_agents_mutant_with_wrong_token_is_403(
+    orchestrator_client, valid_jwt, csrf_on
+):
+    """POST /api/settings/agents with a mismatched pair → 403."""
+    orchestrator_client.cookies.set("docky_token", valid_jwt)
+    headers = _set_csrf_pair(orchestrator_client, "valid-cookie")
+    headers["X-CSRF-Token"] = "forged-value"
+    resp = orchestrator_client.post(
+        "/api/settings/agents",
+        json={"name": "agent-a", "url": "http://agent-a:8080"},
+        headers=headers,
+    )
+    assert resp.status_code == 403
+    assert resp.json() == {"detail": "CSRF"}
+
+
 def test_safe_methods_are_never_blocked(orchestrator_client, csrf_on):
     """No cookies at all: GETs go through (auth answers 401/303, not 403)."""
     for path in ("/api/version", "/api/agents", "/dashboard", "/"):

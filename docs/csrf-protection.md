@@ -103,6 +103,28 @@ Endpoints WS : `/api/events`, `/api/chat/stream`,
 - Templates `login.html` / `change_password.html` : champ caché
   `<input type="hidden" name="_csrf_token" value="{{ csrf_token }}">`.
 
+### 5.1 Page Settings — wrapper autonome (bug CSRF corrigé)
+
+**Cause racine** : la page `GET /settings` est bien rendue avec le cookie
+`csrf_token` (via `_render_page` de `dashboard.py`), mais `settings.html` ne
+charge **ni `app.js` ni `api.js`** — seulement `settings.js`. Le wrapper global
+`window.fetch` d'`api.js` n'est donc **jamais installé** sur cette page, et
+`settings.js` possède ses propres `apiFetch`/`apiPost`/`apiPut`/`apiDelete` qui
+appellent `fetch(...)` directement. Résultat : les mutations (ajout/édition/
+suppression d'agent, test, sauvegarde LLM, changement de mot de passe,
+historique git) partaient **sans `X-CSRF-Token`** → rejet `403 {"detail":"CSRF"}`
+(« CSRF » affiché en bas de page, rien n'était sauvegardé).
+
+**Correction** : plutôt que de charger `app.js` (dont `init()` exécute du code
+spécifique au dashboard) sur la page settings, `settings.js` ajoute désormais
+l'en-tête `X-CSRF-Token` **de façon autonome** dans son `apiFetch` : pour toute
+méthode mutante (POST/PUT/PATCH/DELETE…), il lit le cookie `csrf_token` via un
+helper `getCookie` et pose l'en-tête s'il n'est pas déjà présent. Les méthodes
+sûres (GET/HEAD/OPTIONS) ne sont jamais modifiées. Ceci couvre **toutes** les
+mutations de la page settings (ajout/édition/suppression d'agent, test agent,
+test/scan/sauvegarde LLM, changement de mot de passe, historique git) via un
+seul point centralisé, cohérent avec le wrapper d'`api.js`.
+
 ## 6. Compatibilité tests (impératif : zéro modification des 372 tests)
 
 Les tests TestClient ne chargent ni le JS ni les templates pour extraire le
@@ -140,14 +162,16 @@ Cas couverts (voir le fichier pour le détail) :
 9. bascule `security.csrf.enabled: true→false` relue tardivement
 10. bypass env var : présent → mutations autorisées (état par défaut des tests)
 11. rendu de page pose bien le cookie (non-httpOnly, samesite=lax) + champ caché
+12. `POST /api/settings/agents` (ajout d'agent) : sans token → `403`, mauvais
+    token → `403`, bon couple cookie/en-tête → `200`
 
 ## 8. Résultats
 
 Validation finale (`.venv/bin/python -m pytest -q` depuis `/projects/Docky`,
 `asyncio_mode=auto`, `pythonpath=["orchestrator","."]`) :
 
-- **392 passed, 3 warnings** en ~38 s (dont 20 tests dédiés CSRF). Aucun échec.
-- Référence pré-CSRF : 372 passed → **+20 nouveaux tests**, aucune suppression.
+- **420 passed, 3 warnings** en ~41 s (dont 23 tests dédiés CSRF). Aucun échec.
+- Référence pré-CSRF : 372 passed → **+48 nouveaux tests**, aucune suppression.
 - **Zéro test existant modifié** (le bypass est fourni par la fixture autouse de
   `orchestrator/tests/conftest.py`, voir §6).
 
