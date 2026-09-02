@@ -135,8 +135,8 @@ Object.assign(window.DockyApp, {
             bubble.classList.add("chat-bubble-error");
         }
 
-        // Format content: escape HTML, then restore code blocks
-        bubble.innerHTML = this.formatChatContent(content);
+        // Render markdown → safe HTML (XSS-safe, see markdownToHtml)
+        bubble.innerHTML = this.markdownToHtml(content);
 
         wrapper.appendChild(bubble);
         container.appendChild(wrapper);
@@ -144,21 +144,196 @@ Object.assign(window.DockyApp, {
         return wrapper;
     },
 
-    formatChatContent(text) {
-        if (!text) return "";
-        // Escape HTML first
-        let html = this.escapeHtml(text);
-        // Convert `inline code` to <code>
-        html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-        // Convert multi-line code blocks ```...```
-        html = html.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
-        // Basic line breaks
-        html = html.replace(/\n/g, "<br>");
-        // Fix: <pre> blocks shouldn't have <br>
-        html = html.replace(/<pre><code>([\s\S]*?)<\/code><\/pre>/g, function(m, p1) {
-            return '<pre><code>' + p1.replace(/<br>/g, '\n') + '</code></pre>';
+    // -------------------------------------------------------
+    // Markdown rendering — renderer maison, auto-contenu, XSS-safe.
+    // -------------------------------------------------------
+    // Stratégie de sécurité :
+    //   . La structure en blocs (titres, listes, citations, code…) est détectée
+    //     sur le texte brut, mais CHAQUE contenu est ensuite échappé
+    //     (<, >, &, ", ') AVANT d'y appliquer les styles markdown inline.
+    //     Aucun HTML arbitraire ne peut donc être injecté (XSS).
+    //   . On ne génère que des tags/attributs strictement contrôlés
+    //     (aucun iframe, aucun attribut on*).
+    //   . Les liens sont sanitizés (whitelist de schémas) + target=_blank et
+    //     rel=noopener noreferrer.
+    //   . Le renderer est pur/stateless : on peut le rappeler à chaque chunk
+    //     incrémental d'un flux streaming re-rendu sans perte d'état ni scroll.
+    markdownToHtml(md) {
+        if (!md) return "";
+        const esc = (s) => this.escapeHtml(s);
+
+        // Normalisation des fins de ligne, puis protection des blocs de code
+        // ```...``` sur le texte BRUT (leur contenu n'est donc jamais
+        // interprété comme du markdown). Chaque bloc devient un placeholder
+        // sur une ligne isolée.
+        let text = md.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+        const fences = [];
+        text = text.replace(/```([^\n`]*)\n?([\s\S]*?)```/g, (m, lang, code) => {
+            fences.push({ lang: (lang || "").trim(), code: code.replace(/\n$/, "") });
+            return "\n\u0000F" + (fences.length - 1) + "\u0000\n";
         });
-        return html;
+
+        const isBlank   = /^\s*$/;
+        const isHr      = /^\s*([-*_])\s*\1\s*\1(?:\s*\1)*\s*$/;
+        const isHeading = /^(#{1,6})\s+(.*)$/;
+        const isQuote   = /^>\s?(.*)$/;
+        const isFence   = /^\u0000F(\d+)\u0000$/;
+        const isUl      = /^\s*[-*+]\s+(.*)$/;
+        const isOl      = /^\s*\d+[.)]\s+(.*)$/;
+        const isTask    = /^\s*[-*+]\s+\[([ xX])\]\s+(.*)$/;
+
+        const lines = text.split("\n");
+        const out = [];
+        const inline = (t) => this._markdownInline(t);
+
+        const renderFence = (idx) => {
+            const f = fences[idx];
+            const langAttr = f.lang ? ' class="language-' + esc(f.lang) + '"' : "";
+            // Le contenu du bloc est échappé ici → toujours affiché en texte
+            // brut, jamais exécuté (= aucun XSS, aucune coloration).
+            return '<pre><code' + langAttr + '>' + esc(f.code) + '</code></pre>';
+        };
+
+        let i = 0;
+        while (i < lines.length) {
+            const line = lines[i];
+            if (isBlank.test(line)) { i++; continue; }
+
+            // Bloc de code (placeholder protégé)
+            const fp = line.match(isFence);
+            if (fp) { out.push(renderFence(+fp[1])); i++; continue; }
+
+            // Ligne horizontale
+            if (isHr.test(line)) { out.push('<hr>'); i++; continue; }
+
+            // Titre (h1..h6)
+            const h = line.match(isHeading);
+            if (h) {
+                const lvl = h[1].length;
+                out.push('<h' + lvl + '>' + inline(h[2]) + '</h' + lvl + '>');
+                i++;
+                continue;
+            }
+
+            // Citation (lignes ">" consécutives)
+            if (isQuote.test(line)) {
+                const q = [];
+                while (i < lines.length && isQuote.test(lines[i])) {
+                    q.push(lines[i].match(isQuote)[1]);
+                    i++;
+                }
+                // Chaque ligne est rendue inline séparément, puis reliée par un
+                // vrai <br> (que l'échappement inline ne dégrade pas).
+                out.push('<blockquote>' + q.map(x => inline(x)).join("<br>") + '</blockquote>');
+                continue;
+            }
+
+            // Liste de tâches
+            if (isTask.test(line)) {
+                const items = [];
+                while (i < lines.length && isTask.test(lines[i])) {
+                    const m = lines[i].match(isTask);
+                    const checked = (m[1] === "x" || m[1] === "X");
+                    items.push('<li class="task-item"><input type="checkbox"' +
+                        (checked ? " checked" : "") + ' disabled> ' + inline(m[2]) + '</li>');
+                    i++;
+                }
+                out.push('<ul class="task-list">' + items.join("") + '</ul>');
+                continue;
+            }
+
+            // Liste à puces
+            if (isUl.test(line)) {
+                const items = [];
+                while (i < lines.length && isUl.test(lines[i])) {
+                    items.push('<li>' + inline(lines[i].match(isUl)[1]) + '</li>');
+                    i++;
+                }
+                out.push('<ul>' + items.join("") + '</ul>');
+                continue;
+            }
+
+            // Liste ordonnée
+            if (isOl.test(line)) {
+                const items = [];
+                while (i < lines.length && isOl.test(lines[i])) {
+                    items.push('<li>' + inline(lines[i].match(isOl)[1]) + '</li>');
+                    i++;
+                }
+                out.push('<ol>' + items.join("") + '</ol>');
+                continue;
+            }
+
+            // Paragraphe (sauts de ligne conservés)
+            const para = [];
+            while (i < lines.length &&
+                   !isBlank.test(lines[i]) &&
+                   !isHr.test(lines[i]) &&
+                   !isHeading.test(lines[i]) &&
+                   !isQuote.test(lines[i]) &&
+                   !isUl.test(lines[i]) &&
+                   !isOl.test(lines[i]) &&
+                   !isTask.test(lines[i]) &&
+                   !isFence.test(lines[i])) {
+                para.push(lines[i]);
+                i++;
+            }
+            if (para.length) {
+                // Le <br> de liaison est ajouté APRÈS le rendu inline de chaque
+                // ligne pour ne pas être échappé en texte littéral.
+                out.push('<p>' + para.map(x => inline(x)).join("<br>") + '</p>');
+            }
+        }
+
+        return out.join("\n");
+    },
+
+    // Point d'entrée inline : on échappe TOUT le HTML (anti-XSS) puis on
+    // applique les styles markdown. Le texte renvoyé ne peut contenir que des
+    // tags contrôlés.
+    _markdownInline(text) {
+        if (!text) return "";
+        return this._markdownInlineEscaped(this.escapeHtml(text));
+    },
+
+    // Rendu inline sur du texte déjà échappé : code `...`, liens [t](u),
+    // **gras**, *italique*, _italique_, ~~barré~~.
+    _markdownInlineEscaped(text) {
+        const codes = [];
+        // Protéger le code inline d'abord (ses contenus ne sont pas reformatés)
+        let r = text.replace(/`([^`]+)`/g, (m, c) => {
+            codes.push(c);
+            return "\u0000C" + (codes.length - 1) + "\u0000";
+        });
+
+        // Liens [texte](url) — href sanitizé, target=_blank + rel noopener
+        r = r.replace(/\[([^\]]+)\]\(([^\s)]+)\)/g, (m, label, url) => {
+            const href = this._safeMarkdownLink(url);
+            return '<a href="' + href + '" target="_blank" rel="noopener noreferrer">' +
+                this._markdownInlineEscaped(label) + '</a>';
+        });
+
+        // **gras** (avant italique)
+        r = r.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+        // *italique*
+        r = r.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, (m, p1, p2) => p1 + '<em>' + p2 + '</em>');
+        // _italique_
+        r = r.replace(/(^|[^_])_([^_\n]+)_(?!_)/g, (m, p1, p2) => p1 + '<em>' + p2 + '</em>');
+        // ~~barré~~
+        r = r.replace(/~~([^~]+)~~/g, '<del>$1</del>');
+
+        // Restaurer le code inline
+        r = r.replace(/\u0000C(\d+)\u0000/g, (m, i) => '<code>' + codes[+i] + '</code>');
+        return r;
+    },
+
+    // Whitelist des schémas de liens : tout schéma exécutable (javascript:,
+    // vbscript:, data:, file:) est neutralisé (→ "#"). Le reste (http, https,
+    // mailto, ftp, tel, ancre, relatif) est conservé tel quel.
+    _safeMarkdownLink(url) {
+        const u = (url || "").trim();
+        if (/^(javascript|vbscript|data|file):/i.test(u)) return "#";
+        return u;
     },
 
     renderToolCalls(toolCalls) {

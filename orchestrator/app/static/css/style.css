@@ -1840,6 +1840,66 @@ body {
     white-space: pre;
 }
 
+/* --- Markdown rendering inside chat bubbles --- */
+
+.chat-bubble h1,
+.chat-bubble h2,
+.chat-bubble h3,
+.chat-bubble h4,
+.chat-bubble h5,
+.chat-bubble h6 {
+    margin: 0.6em 0 0.3em;
+    line-height: 1.25;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.chat-bubble h1 { font-size: 1.15rem; }
+.chat-bubble h2 { font-size: 1.05rem; }
+.chat-bubble h3 { font-size: 0.98rem; }
+.chat-bubble h4,
+.chat-bubble h5,
+.chat-bubble h6 { font-size: 0.9rem; }
+
+.chat-bubble p { margin: 0.4em 0; }
+
+.chat-bubble ul,
+.chat-bubble ol {
+    margin: 0.4em 0;
+    padding-left: 1.4em;
+}
+
+.chat-bubble li { margin: 0.15em 0; }
+
+.chat-bubble blockquote {
+    margin: 0.5em 0;
+    padding: 0.2em 0.8em;
+    border-left: 3px solid var(--accent);
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 0 4px 4px 0;
+}
+
+.chat-bubble hr {
+    border: 0;
+    border-top: 1px solid var(--border-color);
+    margin: 0.6em 0;
+}
+
+.chat-bubble a {
+    color: var(--accent);
+    text-decoration: underline;
+}
+
+.chat-bubble ul.task-list {
+    list-style: none;
+    padding-left: 0.2em;
+}
+
+.chat-bubble li.task-item input[type="checkbox"] {
+    margin-right: 0.4em;
+    vertical-align: middle;
+}
+
 /* Tool calls indicator */
 
 .chat-toolcalls {
