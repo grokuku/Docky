@@ -31,7 +31,7 @@ def _git_init() -> None:
         subprocess.run(["git", "config", "user.name", "Docky"], cwd=str(stacks_dir), capture_output=True)
         subprocess.run(["git", "config", "user.email", "docky@local"], cwd=str(stacks_dir), capture_output=True)
         # .gitignore to exclude .git itself and sensitive files
-        with open(stacks_dir / '.gitignore', 'w') as f:
+        with open(stacks_dir / '.gitignore', 'w', encoding='utf-8') as f:
             f.write(".git\n")
         logger.info("Git repository initialized in %s", stacks_dir)
 
@@ -46,14 +46,25 @@ def _git_save(stack_name: str, message: str = None) -> None:
         return
 
     # Add all files in the stack directory
-    add = subprocess.run(["git", "add", str(stack_path)], cwd=str(stacks_dir), capture_output=True, text=True)
+    add = subprocess.run(
+        ["git", "add", str(stack_path)],
+        cwd=str(stacks_dir), capture_output=True, text=True, encoding='utf-8',
+    )
     if add.returncode != 0:
         logger.warning("git add failed for stack '%s': %s", stack_name, add.stderr.strip())
 
     # Commit
     from datetime import datetime
     msg = message or f"Save {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-    commit = subprocess.run(["git", "commit", "-m", msg], cwd=str(stacks_dir), capture_output=True, text=True)
+    # Pass the commit message as UTF-8 *bytes*: git subprocess args are encoded
+    # with the OS filesystem encoding (os.fsencode), which is ASCII on legacy
+    # C/POSIX-locale hosts.  A non-ASCII message (e.g. "Création de …" from
+    # create_stack) then raises ``UnicodeEncodeError: 'ascii' codec can't
+    # encode…``.  Bytes are handed to the child verbatim, bypassing fsencode.
+    commit = subprocess.run(
+        ["git", "commit", "-m", msg.encode("utf-8")],
+        cwd=str(stacks_dir), capture_output=True, text=True, encoding='utf-8',
+    )
     if commit.returncode != 0:
         # Nothing staged (no change) is expected and harmless; anything else
         # should be visible in the logs instead of failing silently.

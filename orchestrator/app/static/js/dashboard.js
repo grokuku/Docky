@@ -2291,11 +2291,44 @@ Object.assign(window.DockyApp, {
         return containers.filter(c => (c.name || '').toLowerCase().includes(q));
     },
 
+    // Agents sélectionnés (non cachés), c.-à-d. ceux qui doivent être considérés
+    // dans la vue courante. Un agent peut être présent sans avoir de stack.
+    _visibleAgents() {
+        return (this.agentsList || []).filter((a) => {
+            const name = a.name || a;
+            return !this._hiddenAgents.has(name);
+        });
+    },
+
+    // Parmi les agents sélectionnés, ceux réellement connectés. La présence/le
+    // statut d'un agent ne doit PAS dépendre du fait qu'il possède une stack :
+    // un agent connecté sans stack reste connecté.
+    _visibleConnectedAgents() {
+        return this._visibleAgents().filter((a) => {
+            const status = a.status || 'offline';
+            return status === 'online' || status === 'connected' || status === true;
+        });
+    },
+
     // Message vide selon que la recherche est active ou non.
+    // La détermination « aucun agent » repose sur TOUS les agents sélectionnés
+    // (et leur statut réel), pas seulement sur un agent particulier : si au
+    // moins un agent sélectionné est connecté, même sans stack ni container, on
+    // ne conclut plus à « aucun agent connecté ».
     _emptyViewMessage() {
-        return this._searchQuery
-            ? '<div class="placeholder"><p>🔍 Aucun container ne correspond à la recherche</p></div>'
-            : '<div class="placeholder"><p>🔇 Aucun agent affiché</p><p class="placeholder-hint">Active des agents via les boutons de filtre</p></div>';
+        if (this._searchQuery) {
+            return '<div class="placeholder"><p>🔍 Aucun container ne correspond à la recherche</p></div>';
+        }
+        const connected = this._visibleConnectedAgents();
+        if (connected.length > 0) {
+            const names = connected
+                .map((a) => this.escapeHtml(a.name || a))
+                .join(', ');
+            const label = connected.length === 1 ? 'agent connecté' : 'agents connectés';
+            return '<div class="placeholder"><p>✅ ' + connected.length + ' ' + label + ' sélectionné' + (connected.length === 1 ? '' : 's') + '</p>'
+                + '<p class="placeholder-hint">Aucune stack/container pour l\'instant sur ' + names + '</p></div>';
+        }
+        return '<div class="placeholder"><p>🔇 Aucun agent affiché</p><p class="placeholder-hint">Active des agents via les boutons de filtre</p></div>';
     },
 
     _sortStacks(stacks) {
