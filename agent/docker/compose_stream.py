@@ -21,6 +21,19 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
+def _b(*args):
+    """Encode every ``str`` arg to UTF-8 *bytes* for a subprocess argv.
+
+    ``asyncio.create_subprocess_exec`` encodes ``str`` args with the OS
+    filesystem encoding (``os.fsencode``), which is ASCII on legacy
+    C/POSIX-locale hosts.  A non-ASCII path or name (e.g. a data dir
+    containing ``ù``) then raises ``UnicodeEncodeError``.  Bytes are handed to
+    the child verbatim, bypassing fsencode.  ``bytes`` and ``None`` are passed
+    through unchanged.
+    """
+    return [a.encode("utf-8") if isinstance(a, str) else a for a in args]
+
+
 def _dm():
     """Résolution tardive du namespace agent.docker_manager (évite tout cycle)."""
     from agent import docker_manager
@@ -66,17 +79,18 @@ async def _run_compose(stack_name: str, command: str, timeout: int = 300) -> Dic
     """
     args, work_dir = _dm()._resolve_compose_args(stack_name, command)
     full_cmd = " ".join(args)
+    argv = _b(*args)
     try:
         if work_dir:
             proc = await asyncio.create_subprocess_exec(
-                *args,
+                *argv,
                 cwd=work_dir,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
         else:
             proc = await asyncio.create_subprocess_exec(
-                *args,
+                *argv,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -127,7 +141,7 @@ async def _run_command_stream(
     yielded and then :class:`StreamCommandError` is raised.
     """
     proc = await asyncio.create_subprocess_exec(
-        *cmd,
+        *_b(*cmd),
         cwd=cwd,
         env=env,
         stdout=asyncio.subprocess.PIPE,

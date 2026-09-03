@@ -2251,10 +2251,10 @@ async def delete_stack(name: str) -> Dict[str, Any]:
             subprocess.run(["git", "config", "user.name", "Docky"], cwd=str(stacks_dir), capture_output=True)
             subprocess.run(["git", "config", "user.email", "docky@local"], cwd=str(stacks_dir), capture_output=True)
         await asyncio.to_thread(
-            subprocess.run, ["git", "add", "-A", str(stacks_dir)], cwd=str(stacks_dir), capture_output=True
+            subprocess.run, ["git", "add", "-A", str(stacks_dir).encode("utf-8")], cwd=str(stacks_dir), capture_output=True
         )
         await asyncio.to_thread(
-            subprocess.run, ["git", "commit", "-m", f"Suppression de {name}", "--allow-empty"], cwd=str(stacks_dir), capture_output=True
+            subprocess.run, ["git", "commit", "-m", f"Suppression de {name}".encode("utf-8"), "--allow-empty"], cwd=str(stacks_dir), capture_output=True
         )
     except Exception as exc:
         logger.warning("git commit of stack deletion '%s' failed: %s", name, exc)

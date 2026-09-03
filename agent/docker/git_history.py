@@ -16,6 +16,19 @@ from agent.config import get_data_dir
 logger = logging.getLogger(__name__)
 
 
+def _b(*args):
+    """Encode every ``str`` arg to UTF-8 *bytes* for a subprocess argv.
+
+    ``subprocess`` encodes ``str`` args with the OS filesystem encoding
+    (``os.fsencode``), which is ASCII on legacy C/POSIX-locale hosts.  A
+    non-ASCII path or argument (e.g. a data dir containing ``ù``) then raises
+    ``UnicodeEncodeError: 'ascii' codec can't encode…``.  Bytes are handed to
+    the child verbatim, bypassing fsencode.  ``bytes`` and ``None`` are passed
+    through unchanged.
+    """
+    return [a.encode("utf-8") if isinstance(a, str) else a for a in args]
+
+
 def _dm():
     """Résolution tardive du namespace agent.docker_manager (évite tout cycle)."""
     from agent import docker_manager
@@ -27,9 +40,9 @@ def _git_init() -> None:
     stacks_dir = Path(get_data_dir()) / 'stacks'
     git_dir = stacks_dir / '.git'
     if not git_dir.exists():
-        subprocess.run(["git", "init"], cwd=str(stacks_dir), capture_output=True)
-        subprocess.run(["git", "config", "user.name", "Docky"], cwd=str(stacks_dir), capture_output=True)
-        subprocess.run(["git", "config", "user.email", "docky@local"], cwd=str(stacks_dir), capture_output=True)
+        subprocess.run(_b("git", "init"), cwd=str(stacks_dir), capture_output=True)
+        subprocess.run(_b("git", "config", "user.name", "Docky"), cwd=str(stacks_dir), capture_output=True)
+        subprocess.run(_b("git", "config", "user.email", "docky@local"), cwd=str(stacks_dir), capture_output=True)
         # .gitignore to exclude .git itself and sensitive files
         with open(stacks_dir / '.gitignore', 'w', encoding='utf-8') as f:
             f.write(".git\n")
@@ -47,7 +60,7 @@ def _git_save(stack_name: str, message: str = None) -> None:
 
     # Add all files in the stack directory
     add = subprocess.run(
-        ["git", "add", str(stack_path)],
+        _b("git", "add", str(stack_path)),
         cwd=str(stacks_dir), capture_output=True, text=True, encoding='utf-8',
     )
     if add.returncode != 0:
@@ -62,7 +75,7 @@ def _git_save(stack_name: str, message: str = None) -> None:
     # create_stack) then raises ``UnicodeEncodeError: 'ascii' codec can't
     # encode…``.  Bytes are handed to the child verbatim, bypassing fsencode.
     commit = subprocess.run(
-        ["git", "commit", "-m", msg.encode("utf-8")],
+        _b("git", "commit", "-m", msg),
         cwd=str(stacks_dir), capture_output=True, text=True, encoding='utf-8',
     )
     if commit.returncode != 0:
@@ -88,9 +101,9 @@ def _get_git_history(stack_name: str = None, max_count: int = 50) -> list:
         return []
 
     path_filter = [str(stacks_dir / stack_name)] if stack_name else []
-    cmd = ["git", "log", f"--max-count={max_count}", "--format=%H|%ct|%s", "--date=unix"]
+    cmd = _b("git", "log", f"--max-count={max_count}", "--format=%H|%ct|%s", "--date=unix")
     if path_filter:
-        cmd += ["--", *path_filter]
+        cmd += [b"--", *[p.encode("utf-8") for p in path_filter]]
 
     result = subprocess.run(cmd, cwd=str(stacks_dir), capture_output=True, text=True)
     if result.returncode != 0 or not result.stdout.strip():
@@ -116,7 +129,7 @@ def _get_git_version(stack_name: str, hash: str) -> dict:
     # Get the file content at that commit
     compose_path = f"{stack_name}/docker-compose.yml"
     result = subprocess.run(
-        ["git", "show", f"{hash}:{compose_path}"],
+        _b("git", "show", f"{hash}:{compose_path}"),
         cwd=str(stacks_dir), capture_output=True, text=True
     )
     if result.returncode != 0:
@@ -124,7 +137,7 @@ def _get_git_version(stack_name: str, hash: str) -> dict:
 
     # Also get commit info
     log_result = subprocess.run(
-        ["git", "log", "-1", "--format=%H|%ct|%s", hash],
+        _b("git", "log", "-1", "--format=%H|%ct|%s", hash),
         cwd=str(stacks_dir), capture_output=True, text=True
     )
 
@@ -145,7 +158,7 @@ def _git_restore(stack_name: str, hash: str) -> dict:
 
     # Restore the file
     result = subprocess.run(
-        ["git", "checkout", hash, "--", str(stacks_dir / stack_name)],
+        _b("git", "checkout", hash, "--", str(stacks_dir / stack_name)),
         cwd=str(stacks_dir), capture_output=True, text=True
     )
     if result.returncode != 0:
@@ -184,7 +197,7 @@ def _git_cleanup(stack_name: str, max_versions: int = 50) -> None:
     stack_path = str(stacks_dir / stack_name)
 
     def _run(args):
-        return subprocess.run(args, cwd=str(stacks_dir), capture_output=True, text=True)
+        return subprocess.run(_b(*args), cwd=str(stacks_dir), capture_output=True, text=True)
 
     # Commits touching this stack, newest first.
     log = _run(["git", "log", "--format=%H", "--", stack_path])

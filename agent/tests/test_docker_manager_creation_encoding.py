@@ -66,11 +66,58 @@ def test_create_stack_non_ascii_description_writes_utf8_and_commits_bytes(tmp_pa
 
     # Le message de commit git est passé en bytes UTF-8 -> contourne le
     # fsencode ASCII de l'hôte hérité.
-    commit_argv = [a for a in captured if a[0] == "git" and "-m" in a]
-    message_args = [a[a.index("-m") + 1] for a in commit_argv]
+    commit_argv = [a for a in captured if a[0] == b"git" and b"-m" in a]
+    message_args = [a[a.index(b"-m") + 1] for a in commit_argv]
     assert message_args, "un commit git devait être émis pour la création"
     for m in message_args:
         assert isinstance(m, bytes), f"message de commit non-bytes: {m!r}"
         assert m.decode("utf-8") == f"Création de {name}"
+
+    assert result["name"] == name
+
+
+def test_create_stack_non_ascii_data_dir_encodes_all_git_args(tmp_path, monkeypatch):
+    """Le chemin du dossier de données peut contenir un caractère non-ASCII
+    (ex. ``ù``) : TOUS les args git (add, commit, log, checkout…) doivent être
+    passés en bytes UTF-8, pas seulement le message de commit. Sinon le
+    ``git add`` lève ``UnicodeEncodeError`` sur un hôte à locale C/POSIX."""
+    # Dossier de données dont le chemin contient un ``ù`` (cas réel : le
+    # dossier de données de l'agent peut être sous un chemin non-ASCII).
+    data_dir = tmp_path / "données-ù"
+    monkeypatch.setenv("DOCKY_DATA_DIR", str(data_dir))
+    stacks_dir = Path(dm.get_data_dir()) / "stacks"
+    stacks_dir.mkdir(parents=True)
+
+    name = "ai-swarm"  # nom de stack ASCII
+    compose = (
+        "# @name: ai-swarm\n"
+        "# @category: Web\n"
+        "# @description: description avec ù\n"
+        "services:\n"
+        "  app:\n"
+        "    image: nginx:latest\n"
+    )
+
+    captured = []
+    monkeypatch.setattr(gh, "_git_init", lambda: None)
+    monkeypatch.setattr(gh.subprocess, "run", _ascii_fsencode_subprocess(captured))
+
+    # Ne lève plus UnicodeEncodeError (le bug d'origine).
+    result = dm.create_stack(name, compose)
+
+    # Le docker-compose.yml est bien écrit en UTF-8.
+    written = (stacks_dir / name / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "description avec ù" in written
+
+    # Chaque argv git ne doit contenir AUCUN arg ``str`` (tout est bytes UTF-8)
+    # : un arg str non-ASCII (le chemin du data dir) lèverait UnicodeEncodeError
+    # sur un hôte à locale C/POSIX.
+    git_argv = [a for a in captured if a[0] == b"git"]
+    assert git_argv, "des commandes git devaient être émises pour la création"
+    for argv in git_argv:
+        for item in argv:
+            assert isinstance(item, bytes), (
+                f"arg git non-bytes dans {argv!r}: {item!r}"
+            )
 
     assert result["name"] == name
