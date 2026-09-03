@@ -319,6 +319,52 @@ body {
     background: rgba(229, 72, 77, 0.12);
 }
 
+/* WebUI choice modal links */
+.webui-link {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--accent, #3b82f6);
+    text-decoration: none;
+}
+
+.webui-link:hover {
+    text-decoration: underline;
+}
+
+/* WebUI edit section rows */
+.edit-section-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+
+.edit-webui-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+
+.edit-webui-row .edit-webui-name {
+    flex: 0 0 40%;
+}
+
+.edit-webui-row .edit-webui-url {
+    flex: 1;
+}
+
+.edit-webui-row .btn-icon-row {
+    flex: 0 0 auto;
+}
+
 /* Bouton « Mettre à jour » neutralisé quand tout est exclu */
 #update-all-confirm-btn:disabled {
     opacity: 0.5;

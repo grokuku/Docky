@@ -362,6 +362,39 @@ def test_proxy_restart_container(auth_client, mock_agent_manager):
     assert resp.json() == {"success": False}
 
 
+def test_proxy_container_edit_spec_passes_webui(auth_client, mock_agent_manager):
+    """edit-spec is a pass-through: the agent's webui field reaches the client."""
+    mock_agent_manager.get_container_edit_spec.return_value = {
+        "name": "web",
+        "image": "nginx:latest",
+        "webui": [{"url": "http://a.example", "name": "Admin"}],
+    }
+    resp = auth_client.get(
+        "/api/containers/abc/edit-spec", params={"agent": "Test Agent"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["webui"] == [{"url": "http://a.example", "name": "Admin"}]
+    mock_agent_manager.get_container_edit_spec.assert_awaited_once_with("Test Agent", "abc")
+
+
+def test_proxy_container_update_passes_webui(auth_client, mock_agent_manager):
+    """update is a pass-through: the webui payload reaches the agent unchanged."""
+    mock_agent_manager.update_container.return_value = {"success": True}
+    payload = {
+        "name": "web",
+        "image": "nginx:latest",
+        "webui": [{"url": "http://a.example", "name": "Admin"}, {"url": ":8080"}],
+    }
+    resp = auth_client.post(
+        "/api/containers/abc/update",
+        params={"agent": "Test Agent"},
+        json=payload,
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"success": True}
+    mock_agent_manager.update_container.assert_awaited_once_with("Test Agent", "abc", payload)
+
+
 def test_proxy_container_agent_validation(auth_client, mock_agent_manager):
     resp = auth_client.post("/api/containers/abc/start", params={"agent": "ghost"})
     assert resp.status_code == 404

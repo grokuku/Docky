@@ -116,6 +116,71 @@ def get_docker_client() -> docker.DockerClient:
 # Containers
 # ---------------------------------------------------------------------------
 
+def _webui_label_numbers(labels: Dict[str, str]) -> set:
+    """Return the set of ``n`` for which a ``docky.webui.<n>`` label exists.
+
+    ``docky.webui.<n>.name`` suffix keys are ignored here (they are consumed
+    via the matching address key).
+    """
+    numbers: set = set()
+    for key in labels:
+        if not key.startswith("docky.webui."):
+            continue
+        rest = key[len("docky.webui."):]
+        if not rest or rest.endswith(".name"):
+            continue
+        try:
+            numbers.add(int(rest))
+        except ValueError:
+            continue
+    return numbers
+
+
+def _parse_webui_labels(labels: Dict[str, str]) -> List[Dict[str, Any]]:
+    """Parse ``docky.webui.*`` labels into an ordered list of web UI entries.
+
+    Contract:
+    - ``docky.webui.<n>`` = the web address (n = 1, 2, 3, …).
+    - ``docky.webui.<n>.name`` = optional human-readable label.
+
+    Returns ``[{url, name?}, ...]`` sorted by ``n``. The URL is returned
+    **raw** (exactly as stored in the label): the frontend is responsible for
+    resolving relative addresses (option B) against the agent's public URL,
+    because the agent does not know its own public URL.
+    """
+    entries: List[Dict[str, Any]] = []
+    for n in sorted(_webui_label_numbers(labels)):
+        url = (labels.get(f"docky.webui.{n}") or "").strip()
+        if not url:
+            continue
+        entry: Dict[str, Any] = {"url": url}
+        name = (labels.get(f"docky.webui.{n}.name") or "").strip()
+        if name:
+            entry["name"] = name
+        entries.append(entry)
+    return entries
+
+
+def _webui_labels_from_spec(webui: Optional[List[Dict[str, Any]]]) -> Dict[str, str]:
+    """Convert a ``webui`` spec list into ``docky.webui.*`` labels.
+
+    ``webui`` is a list of ``{url, name?}`` dicts. Returns a dict of labels
+    (``docky.webui.<n>`` and optional ``docky.webui.<n>.name``) ready to be
+    merged into a compose service or a ``docker run`` label set. Entries with
+    an empty URL are skipped.
+    """
+    labels: Dict[str, str] = {}
+    for i, w in enumerate(webui or [], start=1):
+        url = (w.get("url") or "").strip()
+        if not url:
+            continue
+        labels[f"docky.webui.{i}"] = url
+        name = (w.get("name") or "").strip()
+        if name:
+            labels[f"docky.webui.{i}.name"] = name
+    return labels
+
+
 def _container_to_dict(c, managed_stacks: Optional[set] = None) -> Dict[str, Any]:
     """Convert a Docker container object to a serialisable dict.
 
@@ -169,6 +234,7 @@ def _container_to_dict(c, managed_stacks: Optional[set] = None) -> Dict[str, Any
         "service": labels.get("com.docker.compose.service", ""),
         "managed": False,  # filled in by list_containers()
         "labels": labels,
+        "webui": _parse_webui_labels(labels),
         "created": c.attrs.get("Created", ""),
     }
 
@@ -305,6 +371,9 @@ def _get_container_full_spec(container_id: str) -> Optional[Dict[str, Any]]:
     raw_labels = attrs.get("Config", {}).get("Labels") or {}
     labels = [{"key": k, "value": v} for k, v in raw_labels.items()]
 
+    # WebUI (parsed from docky.webui.* labels)
+    webui = _parse_webui_labels(raw_labels)
+
     # Restart policy
     restart_policy = attrs.get("HostConfig", {}).get("RestartPolicy", {}).get("Name", "no")
 
@@ -322,6 +391,7 @@ def _get_container_full_spec(container_id: str) -> Optional[Dict[str, Any]]:
         "env": env,
         "networks": networks,
         "labels": labels,
+        "webui": webui,
         "stack": project,
         "managed": managed,
     }
@@ -1137,6 +1207,17 @@ async def _update_compose_container(project: str, container_id: str, spec: Dict,
         k, v = l.get("key", ""), l.get("value", "")
         if k:
             labels[k] = v
+
+    # WebUI labels: merge into the service labels, replacing any previous
+    # ``docky.webui.*`` entries. Existing non-webui labels are preserved so a
+    # partial edit (the UI does not expose raw labels) does not drop them.
+    existing_labels = service.get("labels") or {}
+    if isinstance(existing_labels, dict):
+        for k in [k for k in existing_labels if k.startswith("docky.webui.")]:
+            del existing_labels[k]
+        labels.update(existing_labels)
+    labels.update(_webui_labels_from_spec(spec.get("webui")))
+
     if labels:
         service["labels"] = labels
     elif "labels" in service:
@@ -1302,7 +1383,7 @@ async def _recreate_container(c, container_id: str, spec: Dict, client, attrs: D
         # An explicitly provided field counts as a change even when empty
         # (clearing ports/env/... is a change).
         spec_changed = image_changed or (new_rp != old_rp)
-        for key in ("ports", "volumes", "env", "labels", "networks"):
+        for key in ("ports", "volumes", "env", "labels", "networks", "webui"):
             if key in spec and spec.get(key) is not None:
                 spec_changed = True
                 break
@@ -1354,6 +1435,12 @@ async def _recreate_container(c, container_id: str, spec: Dict, client, attrs: D
 
         # Labels
         labels_dict = {l["key"]: l["value"] for l in labels_spec if l.get("key")}
+
+        # WebUI labels: merge into the container labels, replacing any previous
+        # ``docky.webui.*`` entries.
+        for k in [k for k in labels_dict if k.startswith("docky.webui.")]:
+            del labels_dict[k]
+        labels_dict.update(_webui_labels_from_spec(spec.get("webui")))
 
         # Networks (preserve existing attachments on recreate)
         network_kwargs = {}

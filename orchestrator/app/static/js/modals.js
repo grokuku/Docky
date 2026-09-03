@@ -277,8 +277,21 @@ Object.assign(window.DockyApp, {
     _renderContainerEditForm(spec) {
         const body = document.getElementById("container-edit-body");
         
+        // WebUI section (en HAUT, avant les onglets Infos/Ports/Volumes/Env/Réseau)
+        let html = '<div class="edit-section" id="edit-section-webui">';
+        html += '<div class="edit-section-title">' + this.icon('globe') + ' Accès Web (WebUI)</div>';
+        html += '<div id="edit-webui-body">';
+        const webui = spec.webui || [];
+        webui.forEach(w => {
+            html += this._webUIRowHtml(w.name || '', w.url || '');
+        });
+        html += this._webUIRowHtml('', ''); // ligne vide en bas pour ajouter
+        html += '</div>';
+        html += '<p class="form-hint">Adresses web (labels docky.webui.*). Une adresse relative (ex. :8080, /admin) sera préfixée par l\'URL de l\'agent.</p>';
+        html += '</div>';
+
         // Tabs (ancres de scroll)
-        let html = '<div class="edit-section-tabs">';
+        html += '<div class="edit-section-tabs">';
         const tabs = [
             {id:'info', label: this.icon('info') + ' Infos'},
             {id:'ports', label: this.icon('cable') + ' Ports'},
@@ -374,6 +387,31 @@ Object.assign(window.DockyApp, {
         }
 
         body.innerHTML = html;
+        this._attachWebUIRowListener();
+    },
+
+    /** Ligne [Libellé (optionnel)] [Adresse] [✕] de la section WebUI. */
+    _webUIRowHtml(name, url) {
+        return '<div class="edit-webui-row">'
+            + '<input type="text" class="edit-webui-name" placeholder="Libellé (optionnel)" value="' + this.escapeHtml(name || '') + '">'
+            + '<input type="text" class="edit-webui-url" placeholder="http://… ou :8080" value="' + this.escapeHtml(url || '') + '">'
+            + '<button class="btn-icon-row" type="button" onclick="this.closest(\'.edit-webui-row\').remove()">' + this.icon('x', 'icon-sm') + '</button>'
+            + '</div>';
+    },
+
+    /** Dès qu'une adresse est remplie sur la dernière ligne, une ligne vide apparaît. */
+    _attachWebUIRowListener() {
+        const body = document.getElementById('edit-webui-body');
+        if (!body) return;
+        body.addEventListener('input', () => {
+            const rows = body.querySelectorAll('.edit-webui-row');
+            const last = rows[rows.length - 1];
+            if (!last) return;
+            const urlInput = last.querySelector('.edit-webui-url');
+            if (urlInput && urlInput.value.trim()) {
+                body.insertAdjacentHTML('beforeend', this._webUIRowHtml('', ''));
+            }
+        });
     },
 
     _addEditRow(section) {
@@ -422,6 +460,24 @@ Object.assign(window.DockyApp, {
             const val = tr.querySelector('.edit-env-val')?.value?.trim();
             if (key) spec.env.push({ key, value: val || '' });
         });
+
+        // Collect WebUI (seules les lignes avec une adresse non vide sont envoyées)
+        const webui = [];
+        const webuiRows = document.querySelectorAll('#edit-webui-body .edit-webui-row');
+        for (const row of webuiRows) {
+            const url = row.querySelector('.edit-webui-url')?.value?.trim();
+            if (!url) continue;
+            // Validation http/https (ou relative :8080 / /admin) avant envoi.
+            if (!/^https?:\/\//i.test(url) && !/^[:/]/.test(url)) {
+                this.showToast("Adresse Web invalide : " + url + " (attendu http://, https://, :port ou /chemin)", "error");
+                return;
+            }
+            const name = row.querySelector('.edit-webui-name')?.value?.trim();
+            const entry = { url };
+            if (name) entry.name = name;
+            webui.push(entry);
+        }
+        spec.webui = webui;
         
         // Confirm if running
         if (this._editSpec && this._editSpec.status === 'running') {

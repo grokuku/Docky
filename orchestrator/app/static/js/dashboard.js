@@ -909,6 +909,7 @@ Object.assign(window.DockyApp, {
             + '<button class="grid-icon-btn btn-restart" title="Restart" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'restart\', \'' + agt + '\')">' + this.icon('refresh-cw') + '</button>'
             + '<button class="grid-icon-btn btn-logs" title="Logs" onclick="DockyApp.openLogs(\'' + escapedId + '\', \'' + name + '\', \'' + agt + '\')">' + this.icon('clipboard-list') + '</button>'
             + '<button class="grid-icon-btn btn-console" title="Console" onclick="DockyApp.openConsole(\'' + escapedId + '\', \'' + name + '\', \'' + agt + '\')">' + this.icon('terminal') + '</button>'
+            + this._webuiButton(c, agt)
             + '<button class="grid-icon-btn btn-update" title="Update" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'update-image\', \'' + agt + '\')">' + this.icon('arrow-up') + '</button>'
             + '</div></div>';
     },
@@ -1099,6 +1100,7 @@ Object.assign(window.DockyApp, {
             + '<button class="grid-icon-btn btn-restart" title="Restart" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'restart\', \'' + agt + '\')">' + this.icon('refresh-cw') + '</button>'
             + '<button class="grid-icon-btn btn-logs" title="Logs" onclick="DockyApp.openLogs(\'' + escapedId + '\', \'' + name + '\', \'' + agt + '\')">' + this.icon('clipboard-list') + '</button>'
             + '<button class="grid-icon-btn btn-console" title="Console" onclick="DockyApp.openConsole(\'' + escapedId + '\', \'' + name + '\', \'' + agt + '\')">' + this.icon('terminal') + '</button>'
+            + this._webuiButton(c, agt)
             + '<button class="grid-icon-btn btn-update" title="Update" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'update-image\', \'' + agt + '\')">' + this.icon('arrow-up') + '</button>'
             + '</div></div>';
     },
@@ -1418,6 +1420,79 @@ Object.assign(window.DockyApp, {
         }
         // Refresh immédiat
         this.refreshStacks();
+    },
+
+    // -------------------------------------------------------
+    // WebUI (docky.webui.* labels)
+    // -------------------------------------------------------
+
+    /**
+     * Résout l'option B : une adresse relative (ex. ``:8080``, ``/admin``)
+     * est préfixée par l'URL publique de l'agent. Une adresse absolue
+     * (``http://`` / ``https://``) est utilisée telle quelle. Seuls les
+     * schémas http/https sont autorisés (sécurité).
+     */
+    _resolveWebUIUrl(url, agent) {
+        const raw = String(url || '').trim();
+        if (!raw) return '';
+        if (/^https?:\/\//i.test(raw)) return raw;
+        // Option B : préfixer par l'URL de l'agent.
+        const agentInfo = (this.agentsList || []).find(a => (a.name || '') === (agent || ''));
+        const base = agentInfo && agentInfo.url ? String(agentInfo.url).replace(/\/$/, '') : '';
+        if (!base) return raw;
+        if (raw.startsWith(':')) return base + raw;
+        return base + (raw.startsWith('/') ? raw : '/' + raw);
+    },
+
+    /**
+     * Ouvre l'accès Web d'un container. Une seule adresse → ouverture directe
+     * (``window.open`` en noopener) ; plusieurs → fenêtre de choix.
+     */
+    openWebUI(containerId, agent) {
+        const container = (this._allContainersCache || []).find(c => c.id === containerId);
+        const webui = (container && container.webui) || [];
+        if (webui.length === 0) return;
+        if (webui.length === 1) {
+            const url = this._resolveWebUIUrl(webui[0].url, agent);
+            if (url) window.open(url, '_blank', 'noopener');
+            return;
+        }
+        this._renderWebUIModal(webui, agent);
+        const modal = document.getElementById('webui-modal');
+        if (modal) modal.classList.remove('hidden');
+    },
+
+    _renderWebUIModal(webui, agent) {
+        const body = document.getElementById('webui-body');
+        if (!body) return;
+        let html = '<p style="margin:0 0 10px;color:var(--text-secondary);">Plusieurs accès Web disponibles :</p>';
+        html += '<ul class="update-all-list">';
+        for (const w of webui) {
+            const label = (w.name && w.name.trim()) ? w.name.trim() : w.url;
+            const url = this._resolveWebUIUrl(w.url, agent);
+            html += '<li class="update-all-item">'
+                + '<a class="webui-link" href="' + this.escapeHtml(url) + '" target="_blank" rel="noopener noreferrer">'
+                + this.icon('globe') + ' ' + this.escapeHtml(label)
+                + '</a></li>';
+        }
+        html += '</ul>';
+        html += '<p class="form-hint">Chaque lien s\'ouvre dans un nouvel onglet (noopener).</p>';
+        body.innerHTML = html;
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
+    },
+
+    closeWebUIModal() {
+        const modal = document.getElementById('webui-modal');
+        if (modal) modal.classList.add('hidden');
+    },
+
+    /** Bouton 🌐 pour un container (vide si aucun accès Web). */
+    _webuiButton(c, agt) {
+        const webui = (c && c.webui) || [];
+        if (webui.length === 0) return '';
+        return '<button class="grid-icon-btn btn-webui" title="Accès Web" onclick="event.stopPropagation();DockyApp.openWebUI(\'' + this.escapeHtml(c.id) + '\', \'' + agt + '\')">' + this.icon('globe') + '</button>';
     },
 
     async stackAction(name, action, agent) {

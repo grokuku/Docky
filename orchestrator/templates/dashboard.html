@@ -424,6 +424,20 @@
         </div>
     </div>
 
+    <!-- WebUI choice modal (several web addresses on a container) -->
+    <div id="webui-modal" class="modal hidden">
+        <div class="modal-content" style="width:90%;max-width:520px;max-height:75vh;">
+            <div class="modal-header">
+                <h3>🌐 Accès Web</h3>
+                <button class="btn btn-ghost btn-sm" onclick="DockyApp.closeWebUIModal()">✕</button>
+            </div>
+            <div class="modal-body modal-body-pad" id="webui-body" style="overflow-y:auto;"></div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" onclick="DockyApp.closeWebUIModal()">Fermer</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast -->
     <div id="toast" class="toast hidden"></div>
 
