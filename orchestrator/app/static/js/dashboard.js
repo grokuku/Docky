@@ -892,7 +892,7 @@ Object.assign(window.DockyApp, {
         const escapedName = this.escapeHtml(stackName);
         const ports = (c.ports || []).filter(p => p.host_port).map(p => p.host_port + '→' + p.container).join(", ");
 
-        return '<div class="table-container-row" data-id="' + escapedId + '" data-stack="' + escapedName + '" data-agent="' + this.escapeHtml(agent || '') + '" style="border-left-color:' + borderColor + '" onclick="event.stopPropagation(); DockyApp.selectContainerInGrid(\'' + escapedId + '\', \'' + escapedName + '\', \'' + this.escapeHtml(agent || '') + '\')" ondblclick="event.stopPropagation(); DockyApp.openContainerEdit(\'' + escapedId + '\', \'' + escapedName + '\', \'' + this.escapeHtml(agent || '') + '\')">'
+        return '<div class="table-container-row" data-id="' + escapedId + '" data-stack="' + escapedName + '" data-agent="' + this.escapeHtml(agent || '') + '" style="border-left-color:' + borderColor + '" onclick="event.stopPropagation(); DockyApp.selectContainerInGrid(\'' + escapedId + '\', \'' + escapedName + '\', \'' + this.escapeHtml(agent || '') + '\')" oncontextmenu="event.preventDefault(); event.stopPropagation(); DockyApp.openContainerContextMenu(event, \'' + escapedId + '\', \'' + escapedName + '\', \'' + this.escapeHtml(agent || '') + '\')">'
             + '<div class="table-row-status">' + statusDot + '</div>'
             + '<div class="table-row-name" title="' + name + '">' + name
             + '<span id="update-' + escapedId + '" class="update-badge ' + this._updateBadgeClass(this._containerUpdateCacheKey(c.id)) + '" title="Mise à jour disponible" onclick="event.stopPropagation();DockyApp.containerAction(\'' + escapedId + '\', \'update-image\', \'' + agt + '\')">' + this.icon('arrow-up') + ' Update</span>'
@@ -1089,7 +1089,7 @@ Object.assign(window.DockyApp, {
 
         return '<div class="grid-container-card" data-id="' + escapedId + '" data-stack="' + this.escapeHtml(stackName) + '" data-agent="' + this.escapeHtml(agent || '') + '" style="left:' + left + 'px;top:' + top + 'px;width:' + width + 'px;min-height:' + height + 'px;z-index:3;background-color:' + bgColor + ';border-color:' + borderColor + '"'
             + ' onclick="event.stopPropagation(); DockyApp.selectContainerInGrid(\'' + escapedId + '\', \'' + this.escapeHtml(stackName) + '\', \'' + this.escapeHtml(agent || '') + '\')"'
-            + ' ondblclick="event.stopPropagation(); DockyApp.openContainerEdit(\'' + escapedId + '\', \'' + this.escapeHtml(stackName) + '\', \'' + this.escapeHtml(agent || '') + '\')">'
+            + ' oncontextmenu="event.preventDefault(); event.stopPropagation(); DockyApp.openContainerContextMenu(event, \'' + escapedId + '\', \'' + this.escapeHtml(stackName) + '\', \'' + this.escapeHtml(agent || '') + '\')">'
             + '<div class="grid-card-top"><span class="grid-card-name" title="' + name + '">' + name + '</span>' + statusDot + '</div>'
             + '<div class="grid-card-image" title="' + image + '">' + this.icon('package') + ' ' + image + '</div>'
             + '<div class="grid-card-resources" id="resources-' + escapedId + '"><div class="resource-line"><span class="resource-label">CPU</span><div class="progress-bar"><div class="progress-fill" style="width:0%"></div></div><span class="resource-value">—</span></div><div class="resource-line"><span class="resource-label">RAM</span><div class="progress-bar"><div class="progress-fill ram" style="width:0%"></div></div><span class="resource-value">—</span></div></div>'
@@ -1493,6 +1493,101 @@ Object.assign(window.DockyApp, {
         const webui = (c && c.webui) || [];
         if (webui.length === 0) return '';
         return '<button class="grid-icon-btn btn-webui" title="Accès Web" onclick="event.stopPropagation();DockyApp.openWebUI(\'' + this.escapeHtml(c.id) + '\', \'' + agt + '\')">' + this.icon('globe') + '</button>';
+    },
+
+    // -------------------------------------------------------
+    // Menu contextuel container (clic droit)
+    // -------------------------------------------------------
+
+    /**
+     * Ouvre le menu contextuel personnalisé au clic droit sur un container.
+     * Entrées : WebUI (une par adresse, libellé si présent sinon URL brute),
+     * Edit, Start, Stop, Restart, Update. Le menu est positionné au curseur
+     * (clampé aux bords de la fenêtre) et se ferme au clic ailleurs, à Échap
+     * et au scroll.
+     */
+    openContainerContextMenu(event, containerId, stackName, agent) {
+        event.preventDefault();
+        event.stopPropagation();
+
+        const menu = document.getElementById('container-context-menu');
+        if (!menu) return;
+
+        const container = (this._allContainersCache || []).find(c => c.id === containerId);
+        const webui = (container && container.webui) || [];
+        const agt = (agent || '').replace(/'/g, "\\'");
+        const escId = this.escapeHtml(containerId);
+        const escStack = this.escapeHtml(stackName);
+        const escAgent = this.escapeHtml(agent || '');
+
+        let html = '';
+
+        // Section WebUI : une entrée par adresse (libellé si présent, sinon URL brute).
+        if (webui.length > 0) {
+            html += '<div class="ctx-menu-group">';
+            for (const w of webui) {
+                const label = (w.name && w.name.trim()) ? w.name.trim() : w.url;
+                const url = this._resolveWebUIUrl(w.url, agent);
+                html += '<button class="ctx-menu-item" type="button" onclick="DockyApp.closeContainerContextMenu();window.open(\'' + this.escapeHtml(url) + '\', \'_blank\', \'noopener\')">'
+                    + this.icon('globe') + ' <span class="ctx-menu-label">' + this.escapeHtml(label) + '</span>'
+                    + '</button>';
+            }
+            html += '</div>';
+        }
+
+        // Actions
+        html += '<div class="ctx-menu-group">';
+        html += '<button class="ctx-menu-item" type="button" onclick="DockyApp.closeContainerContextMenu();DockyApp.openContainerEdit(\'' + escId + '\', \'' + escStack + '\', \'' + escAgent + '\')">' + this.icon('pen-square') + ' <span class="ctx-menu-label">Edit</span></button>';
+        html += '</div>';
+        html += '<div class="ctx-menu-group">';
+        html += '<button class="ctx-menu-item" type="button" onclick="DockyApp.closeContainerContextMenu();DockyApp.containerAction(\'' + escId + '\', \'start\', \'' + agt + '\')">' + this.icon('play') + ' <span class="ctx-menu-label">Start</span></button>';
+        html += '<button class="ctx-menu-item" type="button" onclick="DockyApp.closeContainerContextMenu();DockyApp.containerAction(\'' + escId + '\', \'stop\', \'' + agt + '\')">' + this.icon('square') + ' <span class="ctx-menu-label">Stop</span></button>';
+        html += '<button class="ctx-menu-item" type="button" onclick="DockyApp.closeContainerContextMenu();DockyApp.containerAction(\'' + escId + '\', \'restart\', \'' + agt + '\')">' + this.icon('refresh-cw') + ' <span class="ctx-menu-label">Restart</span></button>';
+        html += '<button class="ctx-menu-item" type="button" onclick="DockyApp.closeContainerContextMenu();DockyApp.containerAction(\'' + escId + '\', \'update-image\', \'' + agt + '\')">' + this.icon('arrow-up') + ' <span class="ctx-menu-label">Update</span></button>';
+        html += '</div>';
+
+        menu.innerHTML = html;
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
+
+        // Positionnement clampé aux bords de la fenêtre.
+        const menuW = 220;
+        const menuH = menu.offsetHeight || 200;
+        let x = event.clientX;
+        let y = event.clientY;
+        if (x + menuW > window.innerWidth) x = Math.max(0, window.innerWidth - menuW - 8);
+        if (y + menuH > window.innerHeight) y = Math.max(0, window.innerHeight - menuH - 8);
+        menu.style.left = x + 'px';
+        menu.style.top = y + 'px';
+        menu.classList.remove('hidden');
+
+        this._contextMenuOpen = true;
+    },
+
+    closeContainerContextMenu() {
+        const menu = document.getElementById('container-context-menu');
+        if (menu) menu.classList.add('hidden');
+        this._contextMenuOpen = false;
+    },
+
+    /** Attache les écouteurs globaux de fermeture du menu contextuel. */
+    _attachContextMenuListeners() {
+        const menu = document.getElementById('container-context-menu');
+        if (!menu) return;
+        // Fermeture au clic ailleurs (hors menu).
+        document.addEventListener('click', (e) => {
+            if (this._contextMenuOpen && !menu.contains(e.target)) {
+                this.closeContainerContextMenu();
+            }
+        });
+        // Fermeture à Échap.
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') this.closeContainerContextMenu();
+        });
+        // Fermeture au scroll (fenêtre et conteneurs scrollables).
+        window.addEventListener('scroll', () => this.closeContainerContextMenu(), true);
+        document.addEventListener('scroll', () => this.closeContainerContextMenu(), true);
     },
 
     async stackAction(name, action, agent) {

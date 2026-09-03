@@ -2781,6 +2781,59 @@ body {
 }
 
 /* ============================================================
+   Container context menu (clic droit)
+   ============================================================ */
+
+.container-context-menu {
+    position: fixed;
+    z-index: 10000;
+    min-width: 200px;
+    max-width: 280px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+    padding: 4px;
+    font-size: 0.8rem;
+}
+
+.container-context-menu .ctx-menu-group {
+    padding: 2px 0;
+}
+
+.container-context-menu .ctx-menu-group + .ctx-menu-group {
+    border-top: 1px solid var(--border-color);
+    margin-top: 2px;
+}
+
+.container-context-menu .ctx-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 7px 10px;
+    background: none;
+    border: none;
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 0.8rem;
+    text-align: left;
+    cursor: pointer;
+    transition: background var(--transition);
+}
+
+.container-context-menu .ctx-menu-item:hover {
+    background: var(--accent);
+    color: #fff;
+}
+
+.container-context-menu .ctx-menu-item .ctx-menu-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ============================================================
    Container Edit Modal
    ============================================================ */
 

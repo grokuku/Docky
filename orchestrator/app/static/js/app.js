@@ -320,6 +320,11 @@ window.DockyApp = {
                 }
             });
         }
+
+        // Menu contextuel container (clic droit)
+        if (typeof this._attachContextMenuListeners === 'function') {
+            this._attachContextMenuListeners();
+        }
     },
 };
 

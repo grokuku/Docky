@@ -395,6 +395,24 @@ def test_proxy_container_update_passes_webui(auth_client, mock_agent_manager):
     mock_agent_manager.update_container.assert_awaited_once_with("Test Agent", "abc", payload)
 
 
+def test_proxy_container_update_passes_command(auth_client, mock_agent_manager):
+    """update is a pass-through: the command field (formulaire Infos) reaches the agent."""
+    mock_agent_manager.update_container.return_value = {"success": True}
+    payload = {
+        "name": "web",
+        "image": "nginx:latest",
+        "command": "nginx -g daemon off;",
+    }
+    resp = auth_client.post(
+        "/api/containers/abc/update",
+        params={"agent": "Test Agent"},
+        json=payload,
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"success": True}
+    mock_agent_manager.update_container.assert_awaited_once_with("Test Agent", "abc", payload)
+
+
 def test_proxy_container_agent_validation(auth_client, mock_agent_manager):
     resp = auth_client.post("/api/containers/abc/start", params={"agent": "ghost"})
     assert resp.status_code == 404

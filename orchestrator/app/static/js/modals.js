@@ -251,27 +251,9 @@ Object.assign(window.DockyApp, {
             document.getElementById("container-edit-title").textContent = `✏ ${this.escapeHtml(spec.name || containerId)}`;
             modal.classList.remove("hidden");
             this._renderContainerEditForm(spec);
-            this._attachEditScrollSpy();
         } catch(e) {
             this.showToast("Erreur: " + e.message, "error");
         }
-    },
-
-    _attachEditScrollSpy() {
-        const editBody = document.getElementById('container-edit-body');
-        if (!editBody) return;
-        editBody.addEventListener('scroll', () => {
-            const sections = editBody.querySelectorAll('.edit-section');
-            const tabs = editBody.querySelectorAll('.edit-section-tab');
-            let currentSection = sections[0]?.id || '';
-            sections.forEach(s => {
-                const rect = s.getBoundingClientRect();
-                if (rect.top <= 150) currentSection = s.id;
-            });
-            tabs.forEach(t => {
-                t.classList.toggle('active', t.dataset.section === currentSection.replace('edit-section-', ''));
-            });
-        });
     },
 
     _renderContainerEditForm(spec) {
@@ -288,9 +270,10 @@ Object.assign(window.DockyApp, {
         html += this._webUIRowHtml('', ''); // ligne vide en bas pour ajouter
         html += '</div>';
         html += '<p class="form-hint">Adresses web (labels docky.webui.*). Une adresse relative (ex. :8080, /admin) sera préfixée par l\'URL de l\'agent.</p>';
+        html += '<button class="edit-add-row" type="button" onclick="DockyApp._addWebUIRow()">' + this.icon('plus', 'icon-sm') + ' Ajouter une adresse</button>';
         html += '</div>';
 
-        // Tabs (ancres de scroll)
+        // Tabs (bascule d'onglet : affiche le panneau ciblé)
         html += '<div class="edit-section-tabs">';
         const tabs = [
             {id:'info', label: this.icon('info') + ' Infos'},
@@ -300,12 +283,12 @@ Object.assign(window.DockyApp, {
             {id:'network', label: this.icon('globe') + ' Réseau'},
         ];
         tabs.forEach((t) => {
-            html += `<button class="edit-section-tab ${t.id==='info'?'active':''}" data-section="${t.id}" onclick="document.getElementById('edit-section-${t.id}').scrollIntoView({behavior:'smooth'})">${t.label}</button>`;
+            html += `<button class="edit-section-tab ${t.id==='info'?'active':''}" data-section="${t.id}" onclick="DockyApp._switchEditTab('${t.id}', this)">${t.label}</button>`;
         });
         html += '</div>';
         
         // Info section
-        html += '<div class="edit-section" id="edit-section-info">';
+        html += '<div class="edit-section edit-tab-panel" id="edit-section-info">';
         html += '<div class="edit-info-grid">';
         html += `<div class="edit-info-group"><label>Nom</label><input type="text" id="edit-container-name" class="form-input" value="${this.escapeHtml(spec.name)}"></div>`;
         html += `<div class="edit-info-group"><label>Image</label><input type="text" id="edit-container-image" class="form-input" value="${this.escapeHtml(spec.image)}"></div>`;
@@ -313,6 +296,8 @@ Object.assign(window.DockyApp, {
         html += `<div class="edit-info-group"><label>Statut</label><div class="edit-value"><span class="edit-status-dot ${statusDot}"></span>${this.escapeHtml(spec.status)}</div></div>`;
         html += `<div class="edit-info-group"><label>Stack</label><div class="edit-value">${this.escapeHtml(spec.stack || 'Standalone')}</div></div>`;
         html += '</div>';
+        // Command (mockup : champ « Command » dans le formulaire Infos)
+        html += '<div class="form-group"><label>Commande</label><input type="text" id="edit-container-command" class="form-input" value="' + this.escapeHtml(spec.command || '') + '" placeholder="ex. nginx -g daemon off;"></div>';
         // Restart policy
         html += '<div class="form-group"><label>Politique de redémarrage</label><select id="edit-restart-policy" class="edit-select">';
         ['no','always','on-failure','unless-stopped'].forEach(p => {
@@ -322,7 +307,7 @@ Object.assign(window.DockyApp, {
         html += '</div>'; // end info
         
         // Ports section
-        html += '<div class="edit-section" id="edit-section-ports">';
+        html += '<div class="edit-section edit-tab-panel" id="edit-section-ports">';
         html += '<table class="edit-table"><thead><tr><th>Port hôte</th><th>Port container</th><th>Protocole</th><th></th></tr></thead><tbody id="edit-ports-body">';
         (spec.ports||[]).forEach(p => {
             const cp = p.container_port || '';
@@ -341,7 +326,7 @@ Object.assign(window.DockyApp, {
         html += '</div>'; // end ports
         
         // Volumes section
-        html += '<div class="edit-section" id="edit-section-volumes">';
+        html += '<div class="edit-section edit-tab-panel" id="edit-section-volumes">';
         html += '<table class="edit-table"><thead><tr><th>Chemin hôte</th><th>Chemin container</th><th>Mode</th><th></th></tr></thead><tbody id="edit-volumes-body">';
         (spec.volumes||[]).forEach(v => {
             html += `<tr>
@@ -355,7 +340,7 @@ Object.assign(window.DockyApp, {
         html += '</div>'; // end volumes
         
         // Env section
-        html += '<div class="edit-section" id="edit-section-env">';
+        html += '<div class="edit-section edit-tab-panel" id="edit-section-env">';
         html += '<table class="edit-table"><thead><tr><th>Variable</th><th>Valeur</th><th></th></tr></thead><tbody id="edit-env-body">';
         (spec.env||[]).forEach(e => {
             html += `<tr>
@@ -368,7 +353,7 @@ Object.assign(window.DockyApp, {
         html += '</div>'; // end env
         
         // Network section (read-only)
-        html += '<div class="edit-section" id="edit-section-network">';
+        html += '<div class="edit-section edit-tab-panel" id="edit-section-network">';
         const nets = spec.networks || [];
         if (nets.length === 0) {
             html += '<p class="placeholder-hint">Aucun réseau configuré</p>';
@@ -414,6 +399,29 @@ Object.assign(window.DockyApp, {
         });
     },
 
+    /** Ajoute une ligne WebUI vide (bouton « + Ajouter une adresse »). */
+    _addWebUIRow() {
+        const body = document.getElementById('edit-webui-body');
+        if (!body) return;
+        body.insertAdjacentHTML('beforeend', this._webUIRowHtml('', ''));
+    },
+
+    /**
+     * Bascule d'onglet (Infos/Ports/Volumes/Env/Réseau) : n'affiche que le
+     * panneau ciblé et marque l'onglet actif. La section WebUI (en haut) reste
+     * toujours visible.
+     */
+    _switchEditTab(sectionId, btn) {
+        const body = document.getElementById('container-edit-body');
+        if (!body) return;
+        body.querySelectorAll('.edit-tab-panel').forEach(panel => {
+            panel.classList.toggle('hidden', panel.id !== 'edit-section-' + sectionId);
+        });
+        body.querySelectorAll('.edit-section-tab').forEach(t => {
+            t.classList.toggle('active', t.dataset.section === sectionId);
+        });
+    },
+
     _addEditRow(section) {
         const tbody = document.getElementById(`edit-${section}-body`);
         if (!tbody) return;
@@ -437,6 +445,10 @@ Object.assign(window.DockyApp, {
             volumes: [],
             env: [],
         };
+
+        // Collect command (champ « Command » du formulaire Infos)
+        const command = document.getElementById('edit-container-command')?.value?.trim();
+        if (command) spec.command = command;
         
         // Collect ports
         document.querySelectorAll('#edit-ports-body tr').forEach(tr => {
