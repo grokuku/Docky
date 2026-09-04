@@ -311,16 +311,290 @@ def restart_container(container_id: str) -> bool:
         return False
 
 
+def _container_compose_context(c):
+    """Return ``(project, service, compose_path)`` for a Compose-managed
+    container, or ``(None, None, None)`` when no managed compose should be
+    edited.
+
+    A compose file is only edited for stacks **managed by Docky** (i.e. whose
+    directory lives in ``/data/stacks/``), matching the policy of
+    :func:`update_container` which refuses to edit external stacks.  External
+    Compose projects keep the legacy docker-level behaviour (no file
+    modification) because their files live outside Docky's managed directory
+    and Docky's git history only tracks managed stacks.
+
+    The project label (lowercased by Docker) is matched case-insensitively
+    against the managed stack directories so the original directory casing is
+    preserved for ``_resolve_stack_compose`` and ``_git_save``.
+    """
+    labels = c.attrs.get("Config", {}).get("Labels", {}) or {}
+    project = labels.get("com.docker.compose.project") or ""
+    service = labels.get("com.docker.compose.service") or ""
+    if not project or not service:
+        return None, None, None
+
+    stacks_dir = Path(get_data_dir()) / "stacks"
+    dir_name = None
+    if stacks_dir.is_dir():
+        for entry in stacks_dir.iterdir():
+            if entry.is_dir() and entry.name.lower() == project.lower():
+                dir_name = entry.name
+                break
+    if dir_name is None:
+        return None, None, None
+
+    compose_file, _cwd = _resolve_stack_compose(dir_name)
+    if compose_file is None or not Path(compose_file).exists():
+        return None, None, None
+    return dir_name, service, compose_file
+
+
+def _leading_comment_header(content: str) -> str:
+    """Return the leading comment / blank ``# @metadata`` block of a compose
+    file so a YAML round-trip can re-inject it (PyYAML strips comments)."""
+    header: list = []
+    for line in content.splitlines():
+        if line.strip().startswith("#") or line.strip() == "":
+            header.append(line)
+        else:
+            break
+    return "\n".join(header)
+
+
+def _service_name_from_line(stripped: str) -> Optional[str]:
+    """Return the service name if *stripped* is a plain block ``name:`` line
+    (optionally followed by a trailing ``# comment``), else ``None``.
+
+    Inline/flow content after the colon (e.g. ``web: {image: nginx}``) is
+    rejected so the caller falls back to a safe YAML round-trip instead of
+    producing an invalid edit.
+    """
+    head = stripped.split("#", 1)[0]
+    if ":" not in head:
+        return None
+    name, rest = head.split(":", 1)
+    name = name.strip()
+    rest = rest.strip()
+    if not name or rest != "":
+        return None
+    return name
+
+
+def _text_edit_compose(content: str, service: str, action: str) -> Optional[str]:
+    """Attempt a targeted, comment-preserving textual edit of a compose file.
+
+    Only the minimal lines needed for *action* (``restart_no`` or ``remove``)
+    are touched; everything else (comments, ordering, blank lines) is kept
+    byte-for-byte.  Returns the new content on success, or ``None`` when the
+    layout cannot be edited safely (caller falls back to a YAML round-trip).
+
+    Limits: only handles block-style services under a top-level ``services:``
+    key.  Flow-style / anchor / merged entries fall back to YAML round-trip.
+    """
+    lines = content.splitlines(keepends=True)
+
+    def _indent(line: str) -> int:
+        return len(line) - len(line.lstrip(" "))
+
+    # 1. Locate a top-level ``services:`` key.
+    svc_index = None
+    for i, line in enumerate(lines):
+        if _indent(line) != 0:
+            continue
+        stripped = line.lstrip().rstrip("\n\r")
+        if stripped == "services:" or stripped.startswith("services: #"):
+            svc_index = i
+            break
+    if svc_index is None:
+        return None
+
+    # 2. Parse contiguous plain block services into ``{name: (start, end)}``.
+    service_indent = None
+    blocks: Dict[str, tuple] = {}
+    current_name: Optional[str] = None
+    current_start = None
+
+    i = svc_index + 1
+    while i < len(lines):
+        raw = lines[i]
+        text = raw.rstrip("\n\r")
+        if text.strip() == "":
+            i += 1
+            continue
+        indent = _indent(text)
+        stripped = text.lstrip()
+        if stripped.startswith("#"):
+            i += 1
+            continue
+        if indent == 0:
+            # New top-level key -> closes the current service block.
+            if current_name is not None:
+                blocks[current_name] = (current_start, i)
+                current_name = None
+            break
+        if service_indent is None:
+            name = _service_name_from_line(stripped)
+            if name is None:
+                return None  # not a plain block mapping -> fallback
+            service_indent = indent
+            current_name = name
+            current_start = i
+        elif indent == service_indent:
+            name = _service_name_from_line(stripped)
+            if name is None:
+                return None
+            if current_name is not None:
+                blocks[current_name] = (current_start, i)
+            current_name = name
+            current_start = i
+        elif indent > service_indent:
+            pass  # property line of the current service
+        else:
+            return None  # ambiguous nesting -> fallback
+        i += 1
+    if current_name is not None:
+        blocks[current_name] = (current_start, len(lines))
+
+    if service not in blocks:
+        return None
+    start, end = blocks[service]
+    prop_indent = service_indent + 2
+
+    if action == "restart_no":
+        restart_idx = None
+        lead = " " * prop_indent
+        prop_found = False
+        # Detect the base property indentation from the first property key
+        # (nested list/dict lines come later) and find an existing ``restart:``
+        # at that base level.
+        for k in range(start + 1, end):
+            t = lines[k].rstrip("\n\r")
+            if not t.strip() or t.lstrip().startswith("#"):
+                continue
+            pi = _indent(t)
+            if pi <= service_indent:
+                break
+            if not prop_found:
+                prop_indent = pi
+                lead = " " * prop_indent
+                prop_found = True
+            head = t.split("#", 1)[0]
+            if pi == prop_indent and head.lstrip().startswith("restart:"):
+                restart_idx = k
+                lead = t[: len(t) - len(t.lstrip(" "))]
+                break
+        if restart_idx is not None:
+            old = lines[restart_idx]
+            old_text = old.rstrip("\n\r")
+            after = old_text.split("#", 1)
+            comment = ("#" + after[1]) if len(after) > 1 else ""
+            lines[restart_idx] = f'{lead}restart: "no"{comment}\n'
+        else:
+            # Insert a new ``restart: "no"`` right after the service head so
+            # the key is clearly at the base property indentation.
+            lines.insert(start + 1, " " * prop_indent + 'restart: "no"\n')
+        return "".join(lines)
+
+    if action == "remove":
+        del lines[start:end]
+        return "".join(lines)
+
+    return None
+
+
+def _yaml_roundtrip_edit(content: str, service: str, action: str) -> Optional[str]:
+    """Fallback editor: PyYAML ``safe_load``/``dump`` round-trip.
+
+    Used only when the targeted text edit cannot safely apply (flow style,
+    anchors, unusual layout).  Preserves semantic content but strips comments
+    except the leading Docky ``# @metadata`` header (same limitation as
+    :func:`_update_compose_container`). Returns ``None`` on any error so the
+    compose file is never left corrupted.
+    """
+    try:
+        import yaml
+
+        header = _leading_comment_header(content)
+        compose = yaml.safe_load(content) or {}
+        services = compose.get("services")
+        if not isinstance(services, dict) or service not in services:
+            return None
+        if action == "restart_no":
+            services[service]["restart"] = "no"
+        elif action == "remove":
+            del services[service]
+        else:
+            return None
+        dumped = yaml.dump(compose, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        if header:
+            return header + "\n" + dumped
+        return dumped
+    except Exception as exc:
+        logger.warning("_yaml_roundtrip_edit failed for service '%s' (%s): %s", service, action, exc)
+        return None
+
+
+def _edit_managed_compose(compose_path, service: str, action: str) -> bool:
+    """Edit a managed compose file to apply *action* on *service*.
+
+    Prefers the comment-preserving textual edit; falls back to YAML round-trip.
+    Returns ``True`` only when the file was successfully rewritten, ``False``
+    otherwise (never modifies the file on failure / invalid compose).
+    """
+    try:
+        content = compose_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.warning("_edit_managed_compose: cannot read %s: %s", compose_path, exc)
+        return False
+
+    new_content = _text_edit_compose(content, service, action)
+    if new_content is None:
+        new_content = _yaml_roundtrip_edit(content, service, action)
+        if new_content is None:
+            logger.warning(
+                "_edit_managed_compose: service '%s' not editable in %s (%s)",
+                service, compose_path, action,
+            )
+            return False
+    try:
+        compose_path.write_text(new_content, encoding="utf-8")
+    except OSError as exc:
+        logger.warning("_edit_managed_compose: cannot write %s: %s", compose_path, exc)
+        return False
+    return True
+
+
 def disable_container(container_id: str) -> bool:
     """Disable a container: set its restart policy to ``no`` and stop it.
 
     Equivalent to ``docker update --restart=no <id>`` followed by
-    ``docker stop <id>``. Works for both Compose and standalone containers
-    without modifying the Compose file. Returns ``True`` on success.
+    ``docker stop <id>``. For a container of a **Docky-managed** Compose
+    service, the ``restart: "no"`` key is also written to the service in the
+    compose file (and a git backup is made) so it stays disabled across
+    re-deploys / ``up``.  External and standalone containers keep the
+    docker-level behaviour (no file modification). Returns ``True`` on success.
     """
     try:
         client = get_docker_client()
         c = client.containers.get(container_id)
+    except (NotFound, DockerException, APIError):
+        return False
+
+    try:
+        project, service, compose_path = _container_compose_context(c)
+        if compose_path is not None:
+            if _edit_managed_compose(compose_path, service, "restart_no"):
+                from datetime import datetime
+                _git_save(project, f"Désactivation service {service} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            else:
+                logger.warning(
+                    "disable_container: compose edit for %s/%s failed; applying docker-level disable only",
+                    project, service,
+                )
+    except Exception as exc:
+        logger.warning("disable_container: compose edit error: %s", exc)
+
+    try:
         c.update(restart_policy={"Name": "no"})
         c.stop(timeout=10)
         return True
@@ -331,12 +605,33 @@ def disable_container(container_id: str) -> bool:
 def delete_container(container_id: str) -> bool:
     """Delete a container (force).
 
-    Equivalent to ``docker rm -f <id>``. Works for both Compose and standalone
-    containers. Returns ``True`` on success.
+    Equivalent to ``docker rm -f <id>``. For a container of a **Docky-managed**
+    Compose service, the service is also removed from the ``services:`` mapping
+    of the compose file (and a git backup is made).  External and standalone
+    containers keep the docker-level behaviour (no file modification). Returns
+    ``True`` on success.
     """
     try:
         client = get_docker_client()
         c = client.containers.get(container_id)
+    except (NotFound, DockerException, APIError):
+        return False
+
+    try:
+        project, service, compose_path = _container_compose_context(c)
+        if compose_path is not None:
+            if _edit_managed_compose(compose_path, service, "remove"):
+                from datetime import datetime
+                _git_save(project, f"Suppression service {service} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            else:
+                logger.warning(
+                    "delete_container: compose edit for %s/%s failed; removing container only",
+                    project, service,
+                )
+    except Exception as exc:
+        logger.warning("delete_container: compose edit error: %s", exc)
+
+    try:
         c.remove(force=True)
         return True
     except (NotFound, DockerException, APIError):
