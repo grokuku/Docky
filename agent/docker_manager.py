@@ -883,6 +883,19 @@ def _compose_file_path(stack_path: Path) -> Optional[Path]:
     return None
 
 
+def _b(*args):
+    """Encode every ``str`` arg to UTF-8 *bytes* for a subprocess argv/cwd.
+
+    On legacy C/POSIX-locale hosts the OS filesystem encoding is ASCII
+    (``os.fsencode``), so a non-ASCII stack name or path (e.g. one containing
+    ``ù``) would otherwise raise ``UnicodeEncodeError: 'ascii' codec can't
+    encode…`` when ``subprocess`` / ``create_subprocess_exec`` encode each
+    ``str`` argv/cwd.  Bytes are handed to the child verbatim, bypassing
+    ``os.fsencode``.  ``bytes`` and ``None`` pass through unchanged.
+    """
+    return [a.encode("utf-8") if isinstance(a, str) else a for a in args]
+
+
 def _resolve_compose_args(stack_name: str, command: str):
     """Return ``(args, work_dir)`` for a ``docker compose`` invocation.
 
@@ -892,6 +905,12 @@ def _resolve_compose_args(stack_name: str, command: str):
     instead, which allows commands such as ``stop``, ``restart`` and
     ``start`` to operate on the existing containers without needing the
     compose file.
+
+    Every ``str`` argv element and the working directory are returned as
+    UTF-8 *bytes* (see :func:`_b`) so the caller's ``subprocess.run`` /
+    ``create_subprocess_exec`` never re-encode them with the ASCII
+    C/POSIX-locale fsencode (which would raise ``UnicodeEncodeError`` on a
+    non-ASCII stack name/path, e.g. ``ù``).
     """
     compose_file, cwd = _resolve_stack_compose(stack_name)
     cmd_parts = command.split()
@@ -904,7 +923,7 @@ def _resolve_compose_args(stack_name: str, command: str):
         # External stack without a compose file: use --project-name
         args = ["docker", "compose", "--project-name", stack_name] + cmd_parts
         work_dir = None
-    return args, work_dir
+    return _b(*args), (_b(work_dir)[0] if work_dir is not None else None)
 
 
 def _compose_project_services(project: str) -> Optional[Dict[str, Any]]:

@@ -39,7 +39,10 @@ def _load_cache(self):
     """Load cache from disk if available."""
     try:
         if os.path.exists(self._cache_path):
-            with open(self._cache_path) as f:
+            # Open with an explicit UTF-8 codec so non-ASCII data (e.g. a \u00f9
+            # in a stack/container/port name) survives even when the host
+            # locale / filesystem encoding defaults to ASCII (C/POSIX).
+            with open(self._cache_path, encoding="utf-8", errors="replace") as f:
                 saved = json.load(f)
                 if isinstance(saved, dict):
                     self._cache = saved
@@ -56,7 +59,10 @@ def _save_cache(self):
     """Persist cache to disk."""
     try:
         os.makedirs(os.path.dirname(self._cache_path), exist_ok=True)
-        with open(self._cache_path, "w") as f:
+        # encode='utf-8' keeps serialization independent of the host locale;
+        # errors='replace' is a safety net so a single bad char can never crash
+        # the orchestrator cache write on an ASCII (C/POSIX) host.
+        with open(self._cache_path, "w", encoding="utf-8", errors="replace") as f:
             json.dump(self._cache, f, default=str)
     except Exception:
         logger.exception("Failed to persist cache to %s", self._cache_path)

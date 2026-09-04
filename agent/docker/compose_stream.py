@@ -50,6 +50,18 @@ STREAM_EVENT_OUTPUT = "output"
 STREAM_EVENT_RESULT = "result"
 
 
+def _join_cmd(args):
+    """Join argv pieces (``str`` or ``bytes``) into a displayable command str.
+
+    ``_resolve_compose_args`` now returns UTF-8 *bytes* argv so a plain
+    ``" ".join(args)`` would raise ``TypeError`` on a bytes list.  This
+    decodes each piece back to ``str`` for the ``command`` strings surfaced
+    in results / stream events (purely informational; the actual subprocess
+    receives the original bytes argv).
+    """
+    return " ".join(a.decode("utf-8") if isinstance(a, bytes) else str(a) for a in args)
+
+
 class StreamCommandError(Exception):
     """Raised when a streamed subprocess exits with a non-zero status.
 
@@ -78,7 +90,7 @@ async def _run_compose(stack_name: str, command: str, timeout: int = 300) -> Dic
     spec updates that redeploy internally).
     """
     args, work_dir = _dm()._resolve_compose_args(stack_name, command)
-    full_cmd = " ".join(args)
+    full_cmd = _join_cmd(args)
     argv = _b(*args)
     try:
         if work_dir:
@@ -204,7 +216,7 @@ async def _run_command_stream(
         raise StreamCommandError(
             f"Command failed with exit code {proc.returncode}",
             returncode=proc.returncode,
-            command=" ".join(cmd),
+            command=_join_cmd(cmd),
         )
 
 
@@ -221,7 +233,7 @@ async def _stream_compose(
     result event reports ``success: False``.
     """
     args, work_dir = _dm()._resolve_compose_args(stack_name, command)
-    full_cmd = " ".join(args)
+    full_cmd = _join_cmd(args)
     output_lines: list = []
     try:
         async for line in _run_command_stream(args, cwd=work_dir, idle_timeout=idle_timeout):
@@ -296,7 +308,7 @@ async def _stream_command_step(
     if label:
         collect.append(label)
         yield {"type": STREAM_EVENT_OUTPUT, "line": label}
-    full_cmd = " ".join(args)
+    full_cmd = _join_cmd(args)
     try:
         async for line in _run_command_stream(args, cwd=cwd, idle_timeout=idle_timeout):
             collect.append(line)

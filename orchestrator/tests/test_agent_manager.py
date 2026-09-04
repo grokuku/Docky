@@ -681,3 +681,55 @@ async def test_get_container_failure_logs_warning(fresh_agent_manager, respx_moc
         "get_container failed" in r.message and "c1" in r.message
         for r in caplog.records
     )
+
+
+# ---------------------------------------------------------------------------
+# Cache persistence under an ASCII filesystem encoding (C/POSIX)
+# ---------------------------------------------------------------------------
+
+def test_cache_open_uses_utf8_under_ascii_fsencoding(fresh_agent_manager, monkeypatch, tmp_path):
+    """The cache file must always be read/written as UTF-8, whatever the locale.
+
+    Regression guard for the ascii-file-encoding crash observed when an agent
+    returns stack/container/port names containing ``\\u00f9``: unless the cache
+    file is opened with an explicit ``encoding="utf-8"``, an ASCII (C/POSIX)
+    locale / filesystem encoding raises ``UnicodeEncodeError``/``UnicodeDecodeError``
+    on non-ASCII data, breaking get_stacks/get_containers/get_ports for the
+    affected agent.
+    """
+    mgr = fresh_agent_manager
+    cache_path = tmp_path / "data" / "cache.json"
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    mgr._cache_path = str(cache_path)
+
+    # Spy on builtins.open and refuse any cache-file access without utf-8. This
+    # is deterministic (unlike switching the real C-level locale encoding) and
+    # fails on the pre-fix code which opened the cache without a codec.
+    real_open = open
+    opened_without_utf8 = []
+
+    def guarded_open(file, mode="r", *args, **kwargs):
+        if str(file) == mgr._cache_path and kwargs.get("encoding") != "utf-8":
+            opened_without_utf8.append((mode, kwargs))
+        return real_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", guarded_open)
+
+    # Save a cache entry containing a non-ASCII (\u00f9) value.
+    mgr._cache = {
+        "stacks": {"data": [{"name": "stack-\u00f9", "agent_name": "a"}], "timestamp": 0, "pending": False},
+        "containers": {"data": [], "timestamp": 0, "pending": False},
+        "ports": {"data": [], "timestamp": 0, "pending": False},
+    }
+    mgr._save_cache()
+    assert cache_path.exists()
+
+    # Load it back and confirm the non-ASCII data round-trips.
+    mgr._cache = {}
+    mgr._load_cache()
+    assert mgr._cache["stacks"]["data"][0]["name"] == "stack-\u00f9"
+
+    assert opened_without_utf8 == [], (
+        "cache file opened without encoding='utf-8': " + repr(opened_without_utf8)
+    )
+
