@@ -387,6 +387,57 @@ def test_change_password_too_short(auth_client):
 
 
 # ---------------------------------------------------------------------------
+# /api/settings/mcp
+# ---------------------------------------------------------------------------
+
+def _write_settings(data_dir, **security):
+    """Rewrite settings.yaml, merging the given ``security`` keys."""
+    settings = yaml.safe_load((data_dir / "settings.yaml").read_text(encoding="utf-8"))
+    settings.setdefault("security", {}).update(security)
+    (data_dir / "settings.yaml").write_text(
+        yaml.safe_dump(settings, default_flow_style=False, sort_keys=False),
+        encoding="utf-8",
+    )
+
+
+def test_get_mcp_settings_returns_key_in_clear(auth_client, data_dir):
+    _write_settings(data_dir, mcp_enabled=True, mcp_api_key="mcp-secret-key-123")
+    resp = auth_client.get("/api/settings/mcp")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["enabled"] is True
+    assert body["api_key"] == "mcp-secret-key-123"
+
+
+def test_get_mcp_settings_defaults_enabled(auth_client, data_dir):
+    # No mcp_* keys in settings.yaml → enabled defaults to True, key empty.
+    resp = auth_client.get("/api/settings/mcp")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["enabled"] is True
+    assert body["api_key"] == ""
+
+
+def test_regenerate_mcp_key_persists_new_key(auth_client, data_dir):
+    _write_settings(data_dir, mcp_api_key="old-key")
+    resp = auth_client.post("/api/settings/mcp/regenerate")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["success"] is True
+    new_key = body["api_key"]
+    assert new_key and new_key != "old-key"
+    persisted = yaml.safe_load((data_dir / "settings.yaml").read_text(encoding="utf-8"))
+    assert persisted["security"]["mcp_api_key"] == new_key
+
+
+def test_mcp_settings_requires_auth(orchestrator_client):
+    resp = orchestrator_client.get("/api/settings/mcp")
+    assert resp.status_code == 401
+    resp = orchestrator_client.post("/api/settings/mcp/regenerate")
+    assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
 # Proxy endpoints (containers / stacks / ports)
 # ---------------------------------------------------------------------------
 

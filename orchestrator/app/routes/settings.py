@@ -9,6 +9,7 @@ the tests' monkeypatches of ``app.routes.api.agent_manager`` and
 import asyncio
 import logging
 import re
+import secrets
 from urllib.parse import urlparse
 
 import httpx
@@ -488,6 +489,47 @@ async def api_version_check(request: Request):
         "agents": agent_versions,
         "mismatches": mismatches,
     }
+
+
+# ---------------------------------------------------------------------------
+# Settings - MCP API key
+# ---------------------------------------------------------------------------
+
+@router.get("/settings/mcp")
+async def api_get_mcp_settings(request: Request):
+    """Return the MCP server status and its Bearer API key (in clear).
+
+    The key is returned unmasked so the UI can display / copy it. Only
+    authenticated users can read it (same guard as every other settings
+    endpoint).
+    """
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    settings = load_settings()
+    security = settings.get("security", {}) or {}
+    return {
+        "enabled": bool(security.get("mcp_enabled", True)),
+        "api_key": security.get("mcp_api_key", ""),
+    }
+
+
+@router.post("/settings/mcp/regenerate")
+async def api_regenerate_mcp_key(request: Request):
+    """Regenerate the MCP Bearer API key and persist it in settings.yaml.
+
+    A fresh cryptographically-random key is generated and saved under
+    ``security.mcp_api_key``. This invalidates every currently-connected MCP
+    client, which must reconnect with the new key.
+    """
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    new_key = secrets.token_urlsafe(32)
+    settings = load_settings()
+    settings.setdefault("security", {})["mcp_api_key"] = new_key
+    save_settings(settings)
+    return {"success": True, "api_key": new_key}
 
 
 # ---------------------------------------------------------------------------

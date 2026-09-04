@@ -130,6 +130,29 @@
                 </div>
             </div>
         </section>
+
+        <!-- API MCP -->
+        <section class="panel settings-panel">
+            <div class="panel-header">
+                <h2><i data-lucide="plug"></i> API MCP</h2>
+                <span id="mcp-status" class="status-indicator status-unknown">…</span>
+            </div>
+            <div class="panel-body settings-body">
+                <p class="form-hint">Clé Bearer utilisée par les clients MCP externes (Claude, Cursor…) pour se connecter au serveur <code>/mcp</code>.</p>
+                <div class="form-group">
+                    <label for="mcp-api-key">Clé API MCP</label>
+                    <div class="mcp-key-row">
+                        <input type="password" id="mcp-api-key" class="form-input" readonly autocomplete="off" placeholder="••••••••">
+                        <button type="button" class="btn btn-ghost" id="mcp-toggle-btn" onclick="SettingsApp.toggleMcpKey()">Afficher</button>
+                        <button type="button" class="btn btn-ghost" onclick="SettingsApp.copyMcpKey()">Copier</button>
+                    </div>
+                    <p class="form-hint">La clé est affichée en clair. Ne la partagez qu'avec des clients MCP de confiance.</p>
+                </div>
+                <div class="settings-actions">
+                    <button class="btn btn-danger" onclick="SettingsApp.regenerateMcpKey()">Régénérer la clé</button>
+                </div>
+            </div>
+        </section>
     </div>
 
     <!-- Agent form modal -->

@@ -137,6 +137,9 @@ def ensure_config_files():
                 "csrf": {
                     "enabled": True,
                 },
+                # MCP server (voir app/mcp_server.py et docs/mcp-server.md)
+                "mcp_enabled": True,
+                "mcp_api_key": os.urandom(32).hex(),
             },
             "agents": [],
         }

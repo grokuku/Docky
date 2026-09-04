@@ -9,6 +9,7 @@ const SettingsApp = {
     agents: [],
     editingAgentName: null,   // null = add mode, string = edit mode
     pendingDeleteAgent: null,
+    mcpKeyVisible: false,     // whether the MCP key is shown in clear
 
     // -------------------------------------------------------
     // Utilities
@@ -489,6 +490,74 @@ const SettingsApp = {
     },
 
     // -------------------------------------------------------
+    // API MCP
+    // -------------------------------------------------------
+
+    async loadMcpSettings() {
+        const data = await this.apiFetch("/api/settings/mcp");
+        if (!data) return;
+        const input = document.getElementById("mcp-api-key");
+        if (input) {
+            input.value = data.api_key || "";
+            input.type = this.mcpKeyVisible ? "text" : "password";
+        }
+        const status = document.getElementById("mcp-status");
+        if (status) {
+            status.className = "status-indicator " + (data.enabled ? "status-online" : "status-offline");
+            status.textContent = data.enabled ? "Activé" : "Désactivé";
+        }
+        const btn = document.getElementById("mcp-toggle-btn");
+        if (btn) btn.textContent = this.mcpKeyVisible ? "Masquer" : "Afficher";
+    },
+
+    toggleMcpKey() {
+        this.mcpKeyVisible = !this.mcpKeyVisible;
+        const input = document.getElementById("mcp-api-key");
+        if (input) input.type = this.mcpKeyVisible ? "text" : "password";
+        const btn = document.getElementById("mcp-toggle-btn");
+        if (btn) btn.textContent = this.mcpKeyVisible ? "Masquer" : "Afficher";
+    },
+
+    async copyMcpKey() {
+        const input = document.getElementById("mcp-api-key");
+        if (!input || !input.value) {
+            this.showToast("Aucune clé à copier.", "error");
+            return;
+        }
+        try {
+            await navigator.clipboard.writeText(input.value);
+            this.showToast("Clé API MCP copiée.", "success");
+        } catch (e) {
+            this.showToast("Impossible de copier: " + e.message, "error");
+        }
+    },
+
+    async regenerateMcpKey() {
+        if (!window.confirm(
+            "Régénérer la clé API MCP ?\n\n" +
+            "Cette action invalide immédiatement tous les clients MCP connectés. " +
+            "Ils devront se reconnecter avec la nouvelle clé."
+        )) {
+            return;
+        }
+        const data = await this.apiPost("/api/settings/mcp/regenerate");
+        if (!data) return;
+        if (data.success) {
+            this.mcpKeyVisible = true;
+            const input = document.getElementById("mcp-api-key");
+            if (input) {
+                input.value = data.api_key || "";
+                input.type = "text";
+            }
+            const btn = document.getElementById("mcp-toggle-btn");
+            if (btn) btn.textContent = "Masquer";
+            this.showToast("Clé API MCP régénérée.", "success");
+        } else {
+            this.showToast(data.detail || "Erreur lors de la régénération.", "error");
+        }
+    },
+
+    // -------------------------------------------------------
     // Init
     // -------------------------------------------------------
 
@@ -496,6 +565,7 @@ const SettingsApp = {
         this.loadLLMConfig();
         this.loadAgents();
         this.loadGitHistorySettings();
+        this.loadMcpSettings();
     },
 };
 
