@@ -2187,12 +2187,18 @@ body {
 }
 
 .settings-layout {
-    max-width: 860px;
-    margin: 0 auto;
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    gap: 20px;
+    align-items: start;
     padding: 24px 20px;
-    display: flex;
-    flex-direction: column;
-    gap: 24px;
+}
+
+.settings-card-wide {
+    grid-column: 1 / -1;
 }
 
 .settings-panel {
