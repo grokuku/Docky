@@ -27,7 +27,11 @@ jobs:
             requirements-dev.txt
 
       - name: Install dependencies
-        run: pip install -r orchestrator/requirements.txt -r agent/requirements.txt -r requirements-dev.txt
+        # --only-binary=:all: interdit tout build depuis source (sdist) :
+        # évite la compilation Cython de PyYAML 6.0.x (AttributeError
+        # 'build_ext' has no attribute 'cython_sources'). Toutes les deps
+        # (fastmcp, mcp, etc.) disposent de wheels.
+        run: pip install --only-binary=:all: -r orchestrator/requirements.txt -r agent/requirements.txt -r requirements-dev.txt
 
       - name: Run tests
         run: python -m pytest -q
