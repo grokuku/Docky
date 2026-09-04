@@ -236,6 +236,80 @@ def test_add_settings_agent_missing_fields_400(auth_client, mock_agent_manager):
     assert resp.status_code == 400
 
 
+def test_add_settings_agent_non_ascii_api_key_rejected(auth_client, mock_agent_manager, data_dir):
+    resp = auth_client.post(
+        "/api/settings/agents",
+        json={"name": "Agent ù", "url": "http://agent:8080", "api_key": "sk-ù-secret"},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "La clé API ne doit contenir que des caractères ASCII"
+    settings = yaml.safe_load((data_dir / "settings.yaml").read_text(encoding="utf-8"))
+    assert all(a["name"] != "Agent ù" for a in settings["agents"])
+
+
+def test_add_settings_agent_non_ascii_url_rejected(auth_client, mock_agent_manager, data_dir):
+    resp = auth_client.post(
+        "/api/settings/agents",
+        json={"name": "Agent 2", "url": "http://agént:8080", "api_key": "k2"},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == (
+        "L'URL de l'agent doit être valide (http:// ou https://) et sans caractères accentués"
+    )
+    settings = yaml.safe_load((data_dir / "settings.yaml").read_text(encoding="utf-8"))
+    assert all(a["name"] != "Agent 2" for a in settings["agents"])
+
+
+def test_add_settings_agent_url_without_scheme_rejected(auth_client, mock_agent_manager, data_dir):
+    resp = auth_client.post(
+        "/api/settings/agents",
+        json={"name": "Agent 2", "url": "agent:8080", "api_key": "k2"},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == (
+        "L'URL de l'agent doit être valide (http:// ou https://) et sans caractères accentués"
+    )
+    settings = yaml.safe_load((data_dir / "settings.yaml").read_text(encoding="utf-8"))
+    assert all(a["name"] != "Agent 2" for a in settings["agents"])
+
+
+def test_add_settings_agent_valid_accepted(auth_client, mock_agent_manager, data_dir):
+    resp = auth_client.post(
+        "/api/settings/agents",
+        json={"name": "Agent 2", "url": "https://agent2.example:8443", "api_key": "k2"},
+    )
+    assert resp.status_code == 200
+    assert resp.json() == {"success": True}
+    settings = yaml.safe_load((data_dir / "settings.yaml").read_text(encoding="utf-8"))
+    assert any(a["name"] == "Agent 2" for a in settings["agents"])
+
+
+def test_update_settings_agent_non_ascii_api_key_rejected(auth_client, mock_agent_manager, data_dir):
+    resp = auth_client.put(
+        "/api/settings/agents/Test Agent",
+        json={"api_key": "sk-ù-secret"},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "La clé API ne doit contenir que des caractères ASCII"
+    settings = yaml.safe_load((data_dir / "settings.yaml").read_text(encoding="utf-8"))
+    agent = next(a for a in settings["agents"] if a["name"] == "Test Agent")
+    assert agent["api_key"] == "test-key"
+
+
+def test_update_settings_agent_non_ascii_url_rejected(auth_client, mock_agent_manager, data_dir):
+    resp = auth_client.put(
+        "/api/settings/agents/Test Agent",
+        json={"url": "http://agént:8080"},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == (
+        "L'URL de l'agent doit être valide (http:// ou https://) et sans caractères accentués"
+    )
+    settings = yaml.safe_load((data_dir / "settings.yaml").read_text(encoding="utf-8"))
+    agent = next(a for a in settings["agents"] if a["name"] == "Test Agent")
+    assert agent["url"] == "http://agent:8080"
+
+
 def test_update_settings_agent(auth_client, mock_agent_manager, data_dir):
     resp = auth_client.put(
         "/api/settings/agents/Test Agent",
@@ -360,6 +434,32 @@ def test_proxy_restart_container(auth_client, mock_agent_manager):
     resp = auth_client.post("/api/containers/abc/restart", params={"agent": "Test Agent"})
     assert resp.status_code == 200
     assert resp.json() == {"success": False}
+
+
+def test_proxy_disable_container(auth_client, mock_agent_manager):
+    mock_agent_manager.disable_container.return_value = True
+    resp = auth_client.post("/api/containers/abc/disable", params={"agent": "Test Agent"})
+    assert resp.status_code == 200
+    assert resp.json() == {"success": True}
+    mock_agent_manager.disable_container.assert_awaited_once_with("Test Agent", "abc")
+
+
+def test_proxy_delete_container(auth_client, mock_agent_manager):
+    mock_agent_manager.delete_container.return_value = True
+    resp = auth_client.post("/api/containers/abc/delete", params={"agent": "Test Agent"})
+    assert resp.status_code == 200
+    assert resp.json() == {"success": True}
+    mock_agent_manager.delete_container.assert_awaited_once_with("Test Agent", "abc")
+
+
+def test_proxy_disable_delete_agent_validation(auth_client, mock_agent_manager):
+    resp = auth_client.post("/api/containers/abc/disable", params={"agent": "ghost"})
+    assert resp.status_code == 404
+    mock_agent_manager.disable_container.assert_not_awaited()
+
+    resp = auth_client.post("/api/containers/abc/delete", params={"agent": "ghost"})
+    assert resp.status_code == 404
+    mock_agent_manager.delete_container.assert_not_awaited()
 
 
 def test_proxy_container_edit_spec_passes_webui(auth_client, mock_agent_manager):

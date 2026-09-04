@@ -118,6 +118,36 @@ async def api_restart_container(
     return {"success": ok}
 
 
+@router.post("/containers/{container_id}/disable")
+async def api_disable_container(
+    request: Request, container_id: str, agent: str = Query(...)
+):
+    """Disable a container (restart policy ``no`` + stop) via the agent."""
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    ok = await _api().agent_manager.disable_container(agent_name, container_id)
+    return {"success": ok}
+
+
+@router.post("/containers/{container_id}/delete")
+async def api_delete_container(
+    request: Request, container_id: str, agent: str = Query(...)
+):
+    """Delete a container (force) via the agent."""
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    ok = await _api().agent_manager.delete_container(agent_name, container_id)
+    return {"success": ok}
+
+
 @router.get("/containers/{container_id}/edit-spec")
 async def api_get_container_edit_spec(
     request: Request, container_id: str, agent: str = Query(...)

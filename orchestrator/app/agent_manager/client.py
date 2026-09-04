@@ -465,6 +465,32 @@ class AgentManager:
             logger.error("restart_container failed for agent '%s', container '%s': %s", agent_name, container_id, exc)
             return False
 
+    async def disable_container(self, agent_name: str, container_id: str) -> bool:
+        """Disable a container on an agent (restart policy ``no`` + stop)."""
+        try:
+            data = await self._request(
+                agent_name, "POST", f"/agent/containers/{container_id}/disable"
+            )
+            if isinstance(data, dict):
+                return data.get("success", False)
+            return True
+        except Exception as exc:
+            logger.error("disable_container failed for agent '%s', container '%s': %s", agent_name, container_id, exc)
+            return False
+
+    async def delete_container(self, agent_name: str, container_id: str) -> bool:
+        """Delete a container on an agent (force)."""
+        try:
+            data = await self._request(
+                agent_name, "POST", f"/agent/containers/{container_id}/delete"
+            )
+            if isinstance(data, dict):
+                return data.get("success", False)
+            return True
+        except Exception as exc:
+            logger.error("delete_container failed for agent '%s', container '%s': %s", agent_name, container_id, exc)
+            return False
+
     async def check_update(self, agent_name: str, container_id: str) -> Dict[str, Any]:
         """Check if a container image has an update available on the registry."""
         try:

@@ -91,6 +91,34 @@ def test_get_container_found(agent_client, api_key_header, monkeypatch):
     assert body["stats"]["cpu_percent"] == 0.0
 
 
+@pytest.mark.parametrize(
+    "path, fn_name",
+    [
+        ("/agent/containers/abc123/disable", "disable_container"),
+        ("/agent/containers/abc123/delete", "delete_container"),
+    ],
+)
+def test_container_disable_delete_routes(agent_client, api_key_header, monkeypatch, path, fn_name):
+    monkeypatch.setattr(dm, fn_name, lambda container_id: True)
+
+    resp = agent_client.post(path, headers=api_key_header)
+
+    assert resp.status_code == 200
+    assert resp.json() == {"success": True}
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/agent/containers/abc123/disable",
+        "/agent/containers/abc123/delete",
+    ],
+)
+def test_container_disable_delete_require_auth(agent_client, path):
+    resp = agent_client.post(path)
+    assert resp.status_code == 401
+
+
 # ---------------------------------------------------------------------------
 # Stacks, stack files, ports
 # ---------------------------------------------------------------------------

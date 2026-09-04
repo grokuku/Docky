@@ -311,6 +311,38 @@ def restart_container(container_id: str) -> bool:
         return False
 
 
+def disable_container(container_id: str) -> bool:
+    """Disable a container: set its restart policy to ``no`` and stop it.
+
+    Equivalent to ``docker update --restart=no <id>`` followed by
+    ``docker stop <id>``. Works for both Compose and standalone containers
+    without modifying the Compose file. Returns ``True`` on success.
+    """
+    try:
+        client = get_docker_client()
+        c = client.containers.get(container_id)
+        c.update(restart_policy={"Name": "no"})
+        c.stop(timeout=10)
+        return True
+    except (NotFound, DockerException, APIError):
+        return False
+
+
+def delete_container(container_id: str) -> bool:
+    """Delete a container (force).
+
+    Equivalent to ``docker rm -f <id>``. Works for both Compose and standalone
+    containers. Returns ``True`` on success.
+    """
+    try:
+        client = get_docker_client()
+        c = client.containers.get(container_id)
+        c.remove(force=True)
+        return True
+    except (NotFound, DockerException, APIError):
+        return False
+
+
 def _get_container_full_spec(container_id: str) -> Optional[Dict[str, Any]]:
     """Return the complete spec of a container for the edit modal.
 

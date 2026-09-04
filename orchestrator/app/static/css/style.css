@@ -2827,6 +2827,15 @@ body {
     color: #fff;
 }
 
+.container-context-menu .ctx-menu-item.ctx-menu-danger {
+    color: var(--danger, #e5484d);
+}
+
+.container-context-menu .ctx-menu-item.ctx-menu-danger:hover {
+    background: var(--danger, #e5484d);
+    color: #fff;
+}
+
 .container-context-menu .ctx-menu-item .ctx-menu-label {
     overflow: hidden;
     text-overflow: ellipsis;

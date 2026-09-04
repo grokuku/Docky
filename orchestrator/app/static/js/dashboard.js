@@ -1382,7 +1382,7 @@ Object.assign(window.DockyApp, {
     // -------------------------------------------------------
 
     async containerAction(id, action, agent) {
-        const labels = {start: 'Démarrer', stop: 'Arrêter', restart: 'Redémarrer', update: 'Mettre à jour', 'update-image': 'Mettre à jour'};
+        const labels = {start: 'Démarrer', stop: 'Arrêter', restart: 'Redémarrer', update: 'Mettre à jour', 'update-image': 'Mettre à jour', disable: 'Désactiver', delete: 'Supprimer'};
         this._openActivity(`${labels[action] || action} — container`);
         // update-image est streamé (pull + recreate progressifs).
         // start/stop/restart container restent JSON (rapides, basés SDK).
@@ -1420,6 +1420,16 @@ Object.assign(window.DockyApp, {
         }
         // Refresh immédiat
         this.refreshStacks();
+    },
+
+    /**
+     * Demande confirmation avant de supprimer un container (action destructif).
+     * Utilise une modale native ``window.confirm`` (repli simple et fiable).
+     */
+    confirmContainerDelete(id, agent) {
+        if (window.confirm('Supprimer ce container ?\n\nCette action est irréversible (docker rm -f).')) {
+            this.containerAction(id, 'delete', agent);
+        }
     },
 
     // -------------------------------------------------------
@@ -1544,6 +1554,13 @@ Object.assign(window.DockyApp, {
         html += '<button class="ctx-menu-item" type="button" onclick="DockyApp.closeContainerContextMenu();DockyApp.containerAction(\'' + escId + '\', \'stop\', \'' + agt + '\')">' + this.icon('square') + ' <span class="ctx-menu-label">Stop</span></button>';
         html += '<button class="ctx-menu-item" type="button" onclick="DockyApp.closeContainerContextMenu();DockyApp.containerAction(\'' + escId + '\', \'restart\', \'' + agt + '\')">' + this.icon('refresh-cw') + ' <span class="ctx-menu-label">Restart</span></button>';
         html += '<button class="ctx-menu-item" type="button" onclick="DockyApp.closeContainerContextMenu();DockyApp.containerAction(\'' + escId + '\', \'update-image\', \'' + agt + '\')">' + this.icon('arrow-up') + ' <span class="ctx-menu-label">Update</span></button>';
+        html += '</div>';
+        // Désactiver / Supprimer (groupe séparé). Désactiver est direct (non
+        // destructif : le container peut être redémarré). Supprimer demande une
+        // confirmation car destructif.
+        html += '<div class="ctx-menu-group">';
+        html += '<button class="ctx-menu-item" type="button" onclick="DockyApp.closeContainerContextMenu();DockyApp.containerAction(\'' + escId + '\', \'disable\', \'' + agt + '\')">' + this.icon('pause') + ' <span class="ctx-menu-label">Désactiver</span></button>';
+        html += '<button class="ctx-menu-item ctx-menu-danger" type="button" onclick="DockyApp.closeContainerContextMenu();DockyApp.confirmContainerDelete(\'' + escId + '\', \'' + agt + '\')">' + this.icon('trash-2') + ' <span class="ctx-menu-label">Supprimer</span></button>';
         html += '</div>';
 
         menu.innerHTML = html;

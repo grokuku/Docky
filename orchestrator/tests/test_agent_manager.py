@@ -482,6 +482,38 @@ async def test_update_container_failure_keeps_cache(respx_mock, fresh_agent_mana
     assert manager._cache["containers"]["data"] == [{"id": "abc", "image": "old", "agent_name": "Test Agent"}]
 
 
+async def test_disable_container_passthrough(respx_mock, fresh_agent_manager):
+    manager = fresh_agent_manager
+    respx_mock.post("http://agent:8080/agent/containers/abc/disable").mock(
+        return_value=httpx.Response(200, json={"success": True})
+    )
+    assert await manager.disable_container("Test Agent", "abc") is True
+
+
+async def test_disable_container_failure(respx_mock, fresh_agent_manager):
+    manager = fresh_agent_manager
+    respx_mock.post("http://agent:8080/agent/containers/abc/disable").mock(
+        return_value=httpx.Response(200, json={"success": False})
+    )
+    assert await manager.disable_container("Test Agent", "abc") is False
+
+
+async def test_delete_container_passthrough(respx_mock, fresh_agent_manager):
+    manager = fresh_agent_manager
+    respx_mock.post("http://agent:8080/agent/containers/abc/delete").mock(
+        return_value=httpx.Response(200, json={"success": True})
+    )
+    assert await manager.delete_container("Test Agent", "abc") is True
+
+
+async def test_delete_container_failure(respx_mock, fresh_agent_manager):
+    manager = fresh_agent_manager
+    respx_mock.post("http://agent:8080/agent/containers/abc/delete").mock(
+        return_value=httpx.Response(200, json={"success": False})
+    )
+    assert await manager.delete_container("Test Agent", "abc") is False
+
+
 # ---------------------------------------------------------------------------
 # _load_cache / _save_cache
 # ---------------------------------------------------------------------------

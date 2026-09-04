@@ -45,6 +45,20 @@ class FakeContainer:
     def reload(self):
         return None
 
+    def stop(self, timeout=None):
+        """Record a stop call (docker stop)."""
+        self._stop_calls = getattr(self, "_stop_calls", 0) + 1
+
+    def update(self, **kwargs):
+        """Record an update call (docker update)."""
+        self._update_calls = getattr(self, "_update_calls", [])
+        self._update_calls.append(kwargs)
+
+    def remove(self, force=False):
+        """Record a remove call (docker rm)."""
+        self._remove_calls = getattr(self, "_remove_calls", [])
+        self._remove_calls.append({"force": force})
+
 
 class _FakeContainersManager:
     def __init__(self, containers):

@@ -8,6 +8,8 @@ the tests' monkeypatches of ``app.routes.api.agent_manager`` and
 
 import asyncio
 import logging
+import re
+from urllib.parse import urlparse
 
 import httpx
 import bcrypt
@@ -38,6 +40,49 @@ def _coerce_tls_verify(value) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in ("1", "true", "yes", "on")
     return bool(value)
+
+
+# ---------------------------------------------------------------------------
+# Agent validation
+# ---------------------------------------------------------------------------
+
+# Hostname: letters, digits, hyphens, dots (no underscores, no accents).
+_HOSTNAME_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$")
+
+
+def _is_ascii(value: str) -> bool:
+    """Return True if ``value`` contains only ASCII characters."""
+    try:
+        value.encode("ascii")
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
+_MSG_API_KEY_ASCII = "La clé API ne doit contenir que des caractères ASCII"
+_MSG_URL_INVALID = (
+    "L'URL de l'agent doit être valide (http:// ou https://) et sans caractères accentués"
+)
+
+
+def _validate_agent(url: str, api_key: str):
+    """Validate an agent's URL and API key.
+
+    Returns an error message (str) on failure, or ``None`` when valid.
+    Guards against silent ``UnicodeEncodeError`` when httpx builds the
+    ``Authorization`` header from a non-ASCII API key, and against malformed
+    URLs that would break every request to the agent.
+    """
+    if not _is_ascii(api_key):
+        return _MSG_API_KEY_ASCII
+    if not _is_ascii(url):
+        return _MSG_URL_INVALID
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return _MSG_URL_INVALID
+    if not _HOSTNAME_RE.match(parsed.hostname):
+        return _MSG_URL_INVALID
+    return None
 
 
 def _save_agents(agents: list):
@@ -232,6 +277,9 @@ async def api_add_settings_agent(request: Request):
     api_key = data.get("api_key") or ""
     if not name or not url:
         return JSONResponse(status_code=400, content={"detail": "name and url are required"})
+    error = _validate_agent(url, api_key)
+    if error:
+        return JSONResponse(status_code=400, content={"detail": error})
     settings = load_settings()
     agents = settings.get("agents", []) or []
     if any(a.get("name") == name for a in agents):
@@ -275,6 +323,9 @@ async def api_update_settings_agent(request: Request, name: str):
     new_key = data.get("api_key")
     if not new_key or new_key.startswith("****"):
         new_key = found.get("api_key", "")
+    error = _validate_agent(new_url, new_key)
+    if error:
+        return JSONResponse(status_code=400, content={"detail": error})
     # If the name changed, make sure it does not collide with another agent.
     if new_name != name and any(a.get("name") == new_name for a in agents):
         return JSONResponse(status_code=409, content={"detail": f"Agent '{new_name}' already exists"})

@@ -437,6 +437,33 @@ async def restart_container(request: Request, container_id: str):
     return {"success": ok}
 
 
+@router.post("/containers/{container_id}/disable")
+async def disable_container(request: Request, container_id: str):
+    """Disable a container: set restart policy to ``no`` and stop it.
+
+    Works for both Compose and standalone containers without modifying the
+    Compose file. Simple JSON POST (non-streamed), like start/stop/restart.
+    """
+    auth_err = require_api_key(request)
+    if auth_err:
+        return auth_err
+    ok = await asyncio.to_thread(docker_manager.disable_container, container_id)
+    return {"success": ok}
+
+
+@router.post("/containers/{container_id}/delete")
+async def delete_container(request: Request, container_id: str):
+    """Delete a container (force). Works for Compose and standalone containers.
+
+    Simple JSON POST (non-streamed), like start/stop/restart.
+    """
+    auth_err = require_api_key(request)
+    if auth_err:
+        return auth_err
+    ok = await asyncio.to_thread(docker_manager.delete_container, container_id)
+    return {"success": ok}
+
+
 @router.get("/containers/{container_id}/update-check")
 async def update_check(request: Request, container_id: str):
     auth_err = require_api_key(request)

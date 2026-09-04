@@ -109,6 +109,8 @@ _ASYNC_METHODS = [
     "start_container",
     "stop_container",
     "restart_container",
+    "disable_container",
+    "delete_container",
     "start_stack",
     "stop_stack",
     "restart_stack",
