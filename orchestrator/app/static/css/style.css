@@ -1603,11 +1603,17 @@ body {
 
 .modal-body {
     flex: 1;
-    overflow: hidden;
+    overflow: auto;
     display: flex;
     flex-direction: column;
-    padding: 0;
+    padding: 18px;
     min-height: 0;
+}
+
+/* Console modal: inner elements (terminal-output, console-input-area)
+   already carry their own padding, so avoid double-padding here. */
+.modal-console .modal-body {
+    padding: 0;
 }
 
 /* Terminal output */

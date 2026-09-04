@@ -75,6 +75,7 @@ window.DockyApp = {
     chatBusy: false,
     chatLLMConfigured: true,
     chatVisible: true,      // whether the chat panel is shown (persisted in localStorage)
+    editorVisible: true,    // whether the compose editor panel is shown (persisted in localStorage)
 
     // Sort & Group
     _sortMode: 'name-asc',   // persisted in localStorage
@@ -94,6 +95,14 @@ window.DockyApp = {
             this.chatVisible = true;
         }
         this.applyChatVisibility();
+
+        // Load compose editor visibility preference (persisted in localStorage)
+        try {
+            this.editorVisible = localStorage.getItem('docky-editor-visible') !== '0';
+        } catch (e) {
+            this.editorVisible = true;
+        }
+        this.applyEditorVisibility();
 
         // Restore hidden agents filter from localStorage
         try {

@@ -30,6 +30,56 @@ Object.assign(window.DockyApp, {
     deleteTargetStack: null,
     permsTargetFile: null,
 
+    // -------------------------------------------------------
+    // Compose editor panel toggle (show/hide)
+    // -------------------------------------------------------
+
+    toggleEditor() {
+        this.editorVisible = !this.editorVisible;
+        this.applyEditorVisibility();
+        // Persist preference
+        try {
+            localStorage.setItem('docky-editor-visible', this.editorVisible ? '1' : '0');
+        } catch (e) {
+            /* localStorage may be unavailable */
+        }
+    },
+
+    applyEditorVisibility() {
+        const rightCol = document.querySelector('.right-column');
+        const vResizer = document.getElementById('resizer-vertical');
+        const leftCol = document.querySelector('.left-column');
+
+        if (rightCol) {
+            rightCol.style.display = this.editorVisible ? '' : 'none';
+        }
+        if (vResizer) {
+            vResizer.style.display = this.editorVisible ? '' : 'none';
+        }
+        // Let the dashboard take the full width when the editor is hidden
+        if (leftCol) {
+            if (!this.editorVisible) {
+                leftCol.style.flex = '1';
+                leftCol.style.width = '';
+            } else {
+                // Restore the saved width if available, otherwise reset to flex default
+                const saved = localStorage.getItem('docky-left-width');
+                if (saved) {
+                    leftCol.style.width = saved + '%';
+                    leftCol.style.flex = 'none';
+                } else {
+                    leftCol.style.flex = '';
+                    leftCol.style.width = '';
+                }
+            }
+        }
+        // Update the toggle button active state
+        const btn = document.getElementById('editor-toggle');
+        if (btn) {
+            btn.classList.toggle('active', this.editorVisible);
+        }
+    },
+
     onStackSelect() {
         const selector = document.getElementById("stack-selector");
         if (!selector) return;
