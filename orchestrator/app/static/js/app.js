@@ -334,6 +334,14 @@ window.DockyApp = {
         if (typeof this._attachContextMenuListeners === 'function') {
             this._attachContextMenuListeners();
         }
+        // Menu contextuel ports (clic droit sur la zone des ports)
+        if (typeof this._attachPortsContextMenuListeners === 'function') {
+            this._attachPortsContextMenuListeners();
+        }
+        // Menu contextuel ports libres (clic droit sur un port hôte de l'éditeur)
+        if (typeof this._attachHostPortContextMenuListeners === 'function') {
+            this._attachHostPortContextMenuListeners();
+        }
     },
 };
 

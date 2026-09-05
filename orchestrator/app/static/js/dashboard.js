@@ -469,7 +469,7 @@ Object.assign(window.DockyApp, {
                         </div>
                     </div>
                     <div class="container-extra">
-                        ${ports ? `<span class="meta-badge meta-ports">${this.icon('cable')} ${this.escapeHtml(ports)}</span>` : ""}
+                        ${ports ? `<span class="meta-badge meta-ports" oncontextmenu="event.preventDefault(); event.stopPropagation(); DockyApp.openPortsContextMenu(event, '${this.escapeHtml(c.id)}')">${this.icon('cable')} ${this.escapeHtml(ports)}</span>` : ""}
                         <button class="update-badge ${this._updateBadgeClass(this._containerUpdateCacheKey(c.id))}" id="update-${this.escapeHtml(c.id)}" onclick="DockyApp.containerAction('${this.escapeHtml(c.id)}', 'update-image', '${agt}')" title="Mettre à jour">${this.icon('arrow-up')} Update dispo</button>
                     </div>
                     <div class="container-actions">
@@ -902,7 +902,7 @@ Object.assign(window.DockyApp, {
             + '<div class="table-resource"><span class="resource-label">CPU</span><div class="progress-bar"><div class="progress-fill" id="stats-cpu-' + escapedId + '" style="width:0%"></div></div><span class="resource-value" id="stats-cpu-val-' + escapedId + '">—</span></div>'
             + '<div class="table-resource"><span class="resource-label">RAM</span><div class="progress-bar"><div class="progress-fill ram" id="stats-ram-' + escapedId + '" style="width:0%"></div></div><span class="resource-value" id="stats-ram-val-' + escapedId + '">—</span></div>'
             + '</div>'
-            + '<div class="table-row-ports" title="' + ports + '">' + (ports ? this.icon('cable') + ' ' + ports : '') + '</div>'
+            + '<div class="table-row-ports" title="' + ports + '" oncontextmenu="event.preventDefault(); event.stopPropagation(); DockyApp.openPortsContextMenu(event, \'' + escapedId + '\')">' + (ports ? this.icon('cable') + ' ' + ports : '') + '</div>'
             + '<div class="table-row-actions" onclick="event.stopPropagation()">'
             + '<button class="grid-icon-btn btn-start" title="Start" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'start\', \'' + agt + '\')">' + this.icon('play') + '</button>'
             + '<button class="grid-icon-btn btn-stop" title="Stop" onclick="DockyApp.containerAction(\'' + escapedId + '\', \'stop\', \'' + agt + '\')">' + this.icon('square') + '</button>'
@@ -1588,16 +1588,125 @@ Object.assign(window.DockyApp, {
         this._contextMenuOpen = false;
     },
 
+    // -------------------------------------------------------
+    // Menu contextuel ports (clic droit sur la zone des ports)
+    // -------------------------------------------------------
+
+    /**
+     * Ouvre une petite popup listant les correspondances port_hôte → port_container
+     * d'un container, au clic droit sur sa zone d'affichage des ports.
+     */
+    openPortsContextMenu(event, containerId) {
+        event.preventDefault();
+        event.stopPropagation();
+
+        const menu = document.getElementById('ports-context-menu');
+        if (!menu) return;
+
+        const container = (this._allContainersCache || []).find(c => c.id === containerId);
+        const ports = (container && container.ports) || [];
+        const mapped = ports.filter(p => p.host_port);
+
+        let html = '<div class="ctx-menu-group"><div class="ctx-menu-title">' + this.icon('cable') + ' Ports mappés</div></div>';
+        if (mapped.length === 0) {
+            html += '<div class="ctx-menu-group"><div class="ctx-menu-empty">Aucun port mappé</div></div>';
+        } else {
+            html += '<div class="ctx-menu-group">';
+            for (const p of mapped) {
+                html += '<div class="ctx-menu-port-row">'
+                    + '<span class="ctx-menu-port-host">' + this.escapeHtml(p.host_port) + '</span>'
+                    + '<span class="ctx-menu-port-arrow">→</span>'
+                    + '<span class="ctx-menu-port-ctn">' + this.escapeHtml(p.container) + '</span>'
+                    + '</div>';
+            }
+            html += '</div>';
+        }
+
+        menu.innerHTML = html;
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
+
+        // Positionnement clampé aux bords de la fenêtre.
+        const menuW = 200;
+        const menuH = menu.offsetHeight || 120;
+        let x = event.clientX;
+        let y = event.clientY;
+        if (x + menuW > window.innerWidth) x = Math.max(0, window.innerWidth - menuW - 8);
+        if (y + menuH > window.innerHeight) y = Math.max(0, window.innerHeight - menuH - 8);
+        menu.style.left = x + 'px';
+        menu.style.top = y + 'px';
+        menu.classList.remove('hidden');
+
+        this._portsMenuOpen = true;
+    },
+
+    closePortsContextMenu() {
+        const menu = document.getElementById('ports-context-menu');
+        if (menu) menu.classList.add('hidden');
+        this._portsMenuOpen = false;
+    },
+
+    /** Attache les écouteurs globaux de fermeture du menu contextuel des ports. */
+    _attachPortsContextMenuListeners() {
+        const menu = document.getElementById('ports-context-menu');
+        if (!menu) return;
+
+        const isOutside = (e) => this._portsMenuOpen && !menu.contains(e.target);
+
+        document.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
+            if (!isOutside(e)) return;
+            e.preventDefault();
+            e.stopPropagation();
+        }, true);
+
+        document.addEventListener('click', (e) => {
+            if (!isOutside(e)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            this.closePortsContextMenu();
+        }, true);
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') this.closePortsContextMenu();
+        });
+        window.addEventListener('scroll', () => this.closePortsContextMenu(), true);
+        document.addEventListener('scroll', () => this.closePortsContextMenu(), true);
+    },
+
     /** Attache les écouteurs globaux de fermeture du menu contextuel. */
     _attachContextMenuListeners() {
         const menu = document.getElementById('container-context-menu');
         if (!menu) return;
-        // Fermeture au clic ailleurs (hors menu).
+
+        // Un clic en DEHORS du menu doit le fermer SANS déclencher l'élément
+        // situé derrière. On intercepte donc le clic en phase de capture :
+        //  - mousedown (bouton gauche uniquement) : on bloque l'événement pour
+        //    empêcher les interactions basées sur mousedown (drag, resizer…)
+        //    de démarrer derrière le menu. On ne ferme PAS ici (sinon le clic
+        //    suivant ne serait plus considéré comme « extérieur »).
+        //  - click : on bloque l'événement (stopPropagation) pour que l'action
+        //    de l'élément derrière (bouton, lien, onclick…) ne se déclenche pas,
+        //    puis on ferme le menu.
+        // Les clics DANS le menu (menu.contains) ne sont jamais bloqués, et un
+        // clic droit (bouton 2) reste libre pour ouvrir un nouveau menu ailleurs.
+        const isOutside = (e) => this._contextMenuOpen && !menu.contains(e.target);
+
+        document.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return; // ne bloquer que le clic gauche
+            if (!isOutside(e)) return;
+            e.preventDefault();
+            e.stopPropagation();
+        }, true);
+
         document.addEventListener('click', (e) => {
-            if (this._contextMenuOpen && !menu.contains(e.target)) {
-                this.closeContainerContextMenu();
-            }
-        });
+            if (!isOutside(e)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            this.closeContainerContextMenu();
+        }, true);
+
         // Fermeture à Échap.
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') this.closeContainerContextMenu();

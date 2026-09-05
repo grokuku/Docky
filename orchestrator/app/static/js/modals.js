@@ -316,7 +316,7 @@ Object.assign(window.DockyApp, {
             const portNum = parts[0] || '';
             const proto = parts[1] || 'tcp';
             html += `<tr>
-                <td><input type="text" class="edit-port-host" value="${this.escapeHtml(hp)}" placeholder="8080"></td>
+                <td><input type="text" class="edit-port-host" value="${this.escapeHtml(hp)}" placeholder="8080" oncontextmenu="event.preventDefault(); event.stopPropagation(); DockyApp.openHostPortContextMenu(event, this)"></td>
                 <td><input type="text" class="edit-port-ctn" value="${this.escapeHtml(portNum)}" placeholder="80"></td>
                 <td><select class="edit-select edit-port-proto"><option value="tcp" ${proto==='tcp'?'selected':''}>TCP</option><option value="udp" ${proto==='udp'?'selected':''}>UDP</option></select></td>
                 <td><button class="btn-icon-row" onclick="this.closest('tr').remove()">${this.icon('x', 'icon-sm')}</button></td>
@@ -426,11 +426,141 @@ Object.assign(window.DockyApp, {
         const tbody = document.getElementById(`edit-${section}-body`);
         if (!tbody) return;
         const rows = {
-            ports: '<tr><td><input type="text" class="edit-port-host" placeholder="8080"></td><td><input type="text" class="edit-port-ctn" placeholder="80"></td><td><select class="edit-select edit-port-proto"><option value="tcp">TCP</option><option value="udp">UDP</option></select></td><td><button class="btn-icon-row" onclick="this.closest(\'tr\').remove()">' + this.icon('x', 'icon-sm') + '</button></td></tr>',
+            ports: '<tr><td><input type="text" class="edit-port-host" placeholder="8080" oncontextmenu="event.preventDefault(); event.stopPropagation(); DockyApp.openHostPortContextMenu(event, this)"></td><td><input type="text" class="edit-port-ctn" placeholder="80"></td><td><select class="edit-select edit-port-proto"><option value="tcp">TCP</option><option value="udp">UDP</option></select></td><td><button class="btn-icon-row" onclick="this.closest(\'tr\').remove()">' + this.icon('x', 'icon-sm') + '</button></td></tr>',
             volumes: '<tr><td><input type="text" class="edit-vol-host" placeholder="/host/path"></td><td><input type="text" class="edit-vol-ctn" placeholder="/container/path"></td><td><select class="edit-select edit-vol-mode"><option value="rw">RW</option><option value="ro">RO</option></select></td><td><button class="btn-icon-row" onclick="this.closest(\'tr\').remove()">' + this.icon('x', 'icon-sm') + '</button></td></tr>',
             env: '<tr><td><input type="text" class="edit-env-key" placeholder="KEY"></td><td><input type="text" class="edit-env-val" placeholder="value"></td><td><button class="btn-icon-row" onclick="this.closest(\'tr\').remove()">' + this.icon('x', 'icon-sm') + '</button></td></tr>',
         };
         if (rows[section]) tbody.insertAdjacentHTML('beforeend', rows[section]);
+    },
+
+    // -------------------------------------------------------
+    // Menu contextuel « ports libres » (clic droit sur un port hôte)
+    // -------------------------------------------------------
+
+    /**
+     * Ouvre un menu proposant des ports hôtes libres pour le port container de
+     * la ligne. Propositions (~10) : le prochain port libre, puis des variantes
+     * avec chiffres devant (port + 10000, +20000, …). Utilise les ports utilisés
+     * (agent_manager.get_used_ports / get_all_ports via /api/ports).
+     */
+    async openHostPortContextMenu(event, hostInput) {
+        event.preventDefault();
+        event.stopPropagation();
+
+        const menu = document.getElementById('host-port-context-menu');
+        if (!menu) return;
+
+        const row = hostInput.closest('tr');
+        const ctnInput = row ? row.querySelector('.edit-port-ctn') : null;
+        const containerPort = parseInt(((ctnInput && ctnInput.value) || '').trim(), 10);
+        if (isNaN(containerPort) || containerPort <= 0) {
+            this.showToast("Port container invalide : impossible de proposer des ports libres", "warning");
+            return;
+        }
+
+        // Récupère les ports utilisés (tous les agents). null = agent injoignable.
+        let usedPorts = new Set();
+        try {
+            const data = await this.apiFetch("/api/ports?agent=all");
+            if (data === null) {
+                this.showToast("Agent injoignable : impossible de récupérer les ports utilisés", "error");
+                return;
+            }
+            if (Array.isArray(data)) {
+                for (const p of data) {
+                    const n = parseInt(p.port, 10);
+                    if (!isNaN(n)) usedPorts.add(n);
+                }
+            }
+        } catch (e) {
+            this.showToast("Agent injoignable : impossible de récupérer les ports utilisés", "error");
+            return;
+        }
+
+        // Construit les propositions (~10) : prochain port libre, puis variantes
+        // avec chiffres devant (port + 10000, +20000, …).
+        const candidates = [];
+        let next = containerPort;
+        while (usedPorts.has(next)) next++;
+        candidates.push(next);
+        if (!usedPorts.has(containerPort) && containerPort !== next) candidates.push(containerPort);
+        for (let k = 1; k <= 12; k++) {
+            const v = containerPort + 10000 * k;
+            if (!usedPorts.has(v)) candidates.push(v);
+        }
+        const proposals = [...new Set(candidates)].slice(0, 10);
+
+        let html = '<div class="ctx-menu-group"><div class="ctx-menu-title">' + this.icon('cable') + ' Ports libres pour ' + containerPort + '</div></div>';
+        html += '<div class="ctx-menu-group">';
+        for (const p of proposals) {
+            html += '<button class="ctx-menu-item" type="button" onclick="DockyApp.closeHostPortContextMenu();DockyApp._setHostPort(\'' + p + '\')">'
+                + '<span class="ctx-menu-label">' + p + '</span>'
+                + '<span class="ctx-menu-port-arrow">→</span>'
+                + '<span class="ctx-menu-port-ctn">' + containerPort + '</span>'
+                + '</button>';
+        }
+        html += '</div>';
+
+        menu.innerHTML = html;
+        if (typeof lucide !== 'undefined') {
+            lucide.createIcons();
+        }
+
+        // Positionnement clampé aux bords de la fenêtre.
+        const menuW = 220;
+        const menuH = menu.offsetHeight || 200;
+        let x = event.clientX;
+        let y = event.clientY;
+        if (x + menuW > window.innerWidth) x = Math.max(0, window.innerWidth - menuW - 8);
+        if (y + menuH > window.innerHeight) y = Math.max(0, window.innerHeight - menuH - 8);
+        menu.style.left = x + 'px';
+        menu.style.top = y + 'px';
+        menu.classList.remove('hidden');
+
+        this._hostPortMenuOpen = true;
+        this._hostPortMenuTarget = hostInput;
+    },
+
+    /** Remplace le port hôte du champ ciblé par la valeur proposée. */
+    _setHostPort(value) {
+        const input = this._hostPortMenuTarget;
+        if (input) input.value = value;
+        this._hostPortMenuTarget = null;
+    },
+
+    closeHostPortContextMenu() {
+        const menu = document.getElementById('host-port-context-menu');
+        if (menu) menu.classList.add('hidden');
+        this._hostPortMenuOpen = false;
+        this._hostPortMenuTarget = null;
+    },
+
+    /** Attache les écouteurs globaux de fermeture du menu des ports libres. */
+    _attachHostPortContextMenuListeners() {
+        const menu = document.getElementById('host-port-context-menu');
+        if (!menu) return;
+
+        const isOutside = (e) => this._hostPortMenuOpen && !menu.contains(e.target);
+
+        document.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
+            if (!isOutside(e)) return;
+            e.preventDefault();
+            e.stopPropagation();
+        }, true);
+
+        document.addEventListener('click', (e) => {
+            if (!isOutside(e)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            this.closeHostPortContextMenu();
+        }, true);
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') this.closeHostPortContextMenu();
+        });
+        window.addEventListener('scroll', () => this.closeHostPortContextMenu(), true);
+        document.addEventListener('scroll', () => this.closeHostPortContextMenu(), true);
     },
 
     async applyContainerEdit() {

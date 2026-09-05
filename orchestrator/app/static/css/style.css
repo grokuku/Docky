@@ -2854,6 +2854,56 @@ body {
     white-space: nowrap;
 }
 
+/* Menu contextuel ports : titre + lignes port_hôte → port_container */
+.container-context-menu .ctx-menu-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.container-context-menu .ctx-menu-empty {
+    padding: 6px 10px;
+    color: var(--text-muted, var(--text-secondary));
+    font-style: italic;
+}
+
+.container-context-menu .ctx-menu-port-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 10px;
+    font-size: 0.8rem;
+    border-radius: 4px;
+}
+
+.container-context-menu .ctx-menu-port-row:hover {
+    background: var(--accent);
+    color: #fff;
+}
+
+.container-context-menu .ctx-menu-port-host {
+    font-weight: 600;
+    font-family: var(--font-mono, monospace);
+}
+
+.container-context-menu .ctx-menu-port-arrow {
+    color: var(--text-muted, var(--text-secondary));
+}
+
+.container-context-menu .ctx-menu-port-row:hover .ctx-menu-port-arrow {
+    color: #fff;
+}
+
+.container-context-menu .ctx-menu-port-ctn {
+    font-family: var(--font-mono, monospace);
+}
+
 /* ============================================================
    Container Edit Modal
    ============================================================ */
