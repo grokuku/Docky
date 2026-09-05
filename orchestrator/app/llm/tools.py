@@ -18,6 +18,21 @@ from app.llm.soul import read_soul, update_soul
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Protection des secrets (.env)
+# ---------------------------------------------------------------------------
+
+# Placeholder renvoyé au LLM à la place du contenu d'un fichier ``.env``.
+# Les fichiers ``.env`` contiennent des secrets : leur contenu ne doit jamais
+# être exposé aux LLM (chat Docky et serveur MCP passent tous deux par
+# ``execute_tool``). La *présence* du fichier reste visible (listing).
+ENV_FILE_PLACEHOLDER = "[Contenu masqué : fichier .env (secrets)]"
+
+
+def _is_env_file(filename: str) -> bool:
+    """True si ``filename`` est un fichier ``.env`` (nom exact, insensible à la casse)."""
+    return filename is not None and filename.lower() == ".env"
+
 
 def _client():
     """Résolution tardive du namespace app.llm.client (évite tout cycle)."""
@@ -678,6 +693,9 @@ async def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
             stack_name = arguments["stack_name"]
             filename = arguments["filename"]
             content = arguments["content"]
+            # Sécurité : cet outil écrit le nouveau contenu via save_stack_file
+            # et ne renvoie JAMAIS le contenu courant au LLM (même pour ``.env``).
+            # Le LLM peut donc écrire un nouveau ``.env`` sans jamais lire l'ancien.
             result = await agent_manager.save_stack_file(
                 agent_name, stack_name, filename, content
             )
@@ -693,8 +711,28 @@ async def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
             try:
                 # L'outil LLM garde la vision complète du dossier (l'UI filtre
                 # par défaut sur les fichiers éditables).
+                # Listing uniquement : la présence du fichier ``.env`` reste
+                # visible, mais aucun contenu n'est renvoyé ici.
                 result = await agent_manager.get_stack_files(agent_name, stack_name, include_hidden=True)
                 return json.dumps({"files": result})
+            except Exception as e:
+                return json.dumps({"error": str(e)})
+
+        elif tool_name == "get_stack_files_with_content":
+            # Outil défensif : non exposé dans TOOLS aujourd'hui (utilisé par
+            # l'UI/éditeur), mais s'il était un jour appelé via execute_tool,
+            # le contenu du ``.env`` doit rester masqué pour le LLM.
+            agent_name = arguments.get("agent_name")
+            stack_name = arguments.get("stack_name")
+            try:
+                result = await agent_manager.get_stack_files_with_content(
+                    agent_name, stack_name, include_hidden=True
+                )
+                if isinstance(result, dict):
+                    for f in result.get("files", []):
+                        if _is_env_file(f.get("filename")):
+                            f["content"] = ENV_FILE_PLACEHOLDER
+                return json.dumps(result)
             except Exception as e:
                 return json.dumps({"error": str(e)})
 
@@ -703,6 +741,9 @@ async def execute_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
             stack_name = arguments.get("stack_name")
             filename = arguments.get("filename")
             try:
+                if _is_env_file(filename):
+                    # Ne jamais exposer le contenu du ``.env`` au LLM.
+                    return json.dumps({"filename": filename, "content": ENV_FILE_PLACEHOLDER})
                 result = await agent_manager.get_stack_file(agent_name, stack_name, filename)
                 return json.dumps({"filename": filename, "content": result})
             except Exception as e:

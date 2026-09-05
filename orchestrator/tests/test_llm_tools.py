@@ -322,6 +322,110 @@ async def test_execute_read_stack_file(mock_agent_manager):
     assert json.loads(result) == {"filename": "docker-compose.yml", "content": "version: '3'"}
 
 
+# ---------------------------------------------------------------------------
+# Protection des secrets (.env) — le contenu ne doit jamais fuiter vers le LLM
+# ---------------------------------------------------------------------------
+
+async def test_execute_read_stack_file_env_masked(mock_agent_manager):
+    """read_stack_file sur .env → contenu masqué, jamais lu depuis l'agent."""
+    from app.llm.client import execute_tool
+
+    mock_agent_manager.get_stack_file.return_value = "SECRET=super-secret-value"
+    result = await execute_tool(
+        "read_stack_file", {"agent_name": "A", "stack_name": "web", "filename": ".env"}
+    )
+    payload = json.loads(result)
+    assert payload["filename"] == ".env"
+    assert payload["content"] == "[Contenu masqué : fichier .env (secrets)]"
+    assert "super-secret-value" not in result
+    # L'agent ne doit même pas être interrogé pour le contenu du .env.
+    mock_agent_manager.get_stack_file.assert_not_awaited()
+
+
+async def test_execute_read_stack_file_env_masked_case_insensitive(mock_agent_manager):
+    """Le masquage .env est insensible à la casse (.ENV, .Env, ...)."""
+    from app.llm.client import execute_tool
+
+    mock_agent_manager.get_stack_file.return_value = "SECRET=leak"
+    for name in [".ENV", ".Env", ".env"]:
+        result = await execute_tool(
+            "read_stack_file", {"agent_name": "A", "stack_name": "web", "filename": name}
+        )
+        payload = json.loads(result)
+        assert payload["content"] == "[Contenu masqué : fichier .env (secrets)]"
+        assert "leak" not in result
+    mock_agent_manager.get_stack_file.assert_not_awaited()
+
+
+async def test_execute_read_stack_file_non_env_visible(mock_agent_manager):
+    """Les fichiers autres que .env restent visibles pour le LLM."""
+    from app.llm.client import execute_tool
+
+    mock_agent_manager.get_stack_file.return_value = "services: {}"
+    result = await execute_tool(
+        "read_stack_file", {"agent_name": "A", "stack_name": "web", "filename": "docker-compose.yml"}
+    )
+    assert json.loads(result) == {"filename": "docker-compose.yml", "content": "services: {}"}
+    mock_agent_manager.get_stack_file.assert_awaited_once_with("A", "web", "docker-compose.yml")
+
+
+async def test_execute_get_stack_files_with_content_env_masked(mock_agent_manager):
+    """get_stack_files_with_content → .env masqué, les autres fichiers restent visibles."""
+    from app.llm.client import execute_tool
+
+    mock_agent_manager.get_stack_files_with_content.return_value = {
+        "files": [
+            {"filename": "docker-compose.yml", "content": "services: {}", "size": 20},
+            {"filename": ".env", "content": "SECRET=super-secret-value", "size": 30},
+            {"filename": "config.yml", "content": "debug: true", "size": 15},
+        ]
+    }
+    result = await execute_tool(
+        "get_stack_files_with_content", {"agent_name": "A", "stack_name": "web"}
+    )
+    payload = json.loads(result)
+    by_name = {f["filename"]: f for f in payload["files"]}
+    assert by_name["docker-compose.yml"]["content"] == "services: {}"
+    assert by_name["config.yml"]["content"] == "debug: true"
+    assert by_name[".env"]["content"] == "[Contenu masqué : fichier .env (secrets)]"
+    assert "super-secret-value" not in result
+
+
+async def test_execute_get_stack_files_env_presence_visible(mock_agent_manager):
+    """get_stack_files (listing) → la présence du .env reste visible, sans contenu."""
+    from app.llm.client import execute_tool
+
+    mock_agent_manager.get_stack_files.return_value = [
+        {"filename": "docker-compose.yml"},
+        {"filename": ".env"},
+    ]
+    result = await execute_tool("get_stack_files", {"agent_name": "A", "stack_name": "web"})
+    payload = json.loads(result)
+    names = [f["filename"] for f in payload["files"]]
+    assert ".env" in names
+    assert "docker-compose.yml" in names
+    # Aucun contenu dans le listing.
+    assert all("content" not in f for f in payload["files"])
+
+
+async def test_execute_modify_stack_file_env_no_content_leak(mock_agent_manager):
+    """modify_stack_file sur .env → le contenu courant n'est jamais renvoyé au LLM."""
+    from app.llm.client import execute_tool
+
+    mock_agent_manager.save_stack_file.return_value = {"success": True}
+    result = await execute_tool(
+        "modify_stack_file",
+        {"agent_name": "A", "stack_name": "web", "filename": ".env", "content": "NEW=value"},
+    )
+    assert "mis à jour" in result
+    assert "NEW=value" not in result
+    assert "[Contenu masqué" not in result
+    # Le LLM écrit le nouveau contenu, mais ne lit jamais l'ancien.
+    mock_agent_manager.save_stack_file.assert_awaited_once_with("A", "web", ".env", "NEW=value")
+    mock_agent_manager.get_stack_file.assert_not_awaited()
+
+
+
 async def test_execute_update_stack(mock_agent_manager):
     from app.llm.client import execute_tool
 

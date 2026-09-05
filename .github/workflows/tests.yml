@@ -31,7 +31,7 @@ jobs:
         # évite la compilation Cython de PyYAML 6.0.x (AttributeError
         # 'build_ext' has no attribute 'cython_sources'). Toutes les deps
         # (fastmcp, mcp, etc.) disposent de wheels.
-        run: pip install --only-binary=:all: -r orchestrator/requirements.txt -r agent/requirements.txt -r requirements-dev.txt
+        run: "pip install --only-binary=:all: -r orchestrator/requirements.txt -r agent/requirements.txt -r requirements-dev.txt"
 
       - name: Run tests
         run: python -m pytest -q

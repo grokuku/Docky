@@ -70,3 +70,44 @@ Non cassé : les Dockerfiles (`orchestrator/Dockerfile`, `agent/Dockerfile`)
 utilisent `python:3.12-slim` et `pip install -r requirements.txt`. Avec le pin
 `pyyaml==6.0.2`, ils continuent d'utiliser le wheel `cp312` précompilé (aucun
 build source). Aucune modification des Dockerfiles nécessaire.
+
+## Correctif workflow YAML (syntaxe)
+
+### Symptôme
+
+Le workflow `tests.yml` ne se chargeait **pas du tout** dans GitHub Actions
+(graph vide) : le fichier YAML était invalide, donc le workflow était ignoré
+avant même d'exécuter une étape.
+
+### Erreur YAML exacte
+
+```
+yaml.scanner.ScannerError: mapping values are not allowed here
+  in ".github/workflows/tests.yml", line 34, column 44
+```
+
+La colonne 44 de la ligne 34 correspond au **second `:`** de la valeur
+`--only-binary=:all:`. Ce `:` est immédiatement suivi d'un espace
+(`:all: -r`), ce que YAML interprète comme un **séparateur clé/valeur** de
+mapping → erreur de syntaxe.
+
+### Correctif appliqué
+
+La valeur de `run` a été **mise entre guillemets doubles** pour que le `: `
+soit traité comme du texte littéral et non comme un séparateur :
+
+```yaml
+run: "pip install --only-binary=:all: -r orchestrator/requirements.txt -r agent/requirements.txt -r requirements-dev.txt"
+```
+
+Aucune logique du workflow n'a été modifiée (triggers, steps, commande pip
+`--only-binary` + `pytest` inchangés).
+
+### Validation
+
+```
+python -c "import yaml; yaml.safe_load(open('.github/workflows/tests.yml'))"
+```
+
+→ passe sans erreur. Les autres workflows (`release.yml`, `test-build.yml`)
+restent valides.
