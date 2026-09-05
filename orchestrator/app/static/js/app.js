@@ -102,7 +102,6 @@ window.DockyApp = {
         } catch (e) {
             this.editorVisible = true;
         }
-        this.applyEditorVisibility();
 
         // Restore hidden agents filter from localStorage
         try {
@@ -158,6 +157,13 @@ window.DockyApp = {
         this.updateSearchClearUI();
 
         this.initResizers();
+
+        // Apply the compose editor visibility AFTER the resizers have restored the
+        // saved panel sizes (restorePanelSizes). Otherwise, when the editor is
+        // hidden, restorePanelSizes would re-apply the saved left-column width and
+        // break the full-width layout of the dashboard. This also keeps the toggle
+        // button's active state in sync with the restored visibility.
+        this.applyEditorVisibility();
 
         // Load version number
         this.loadVersion();

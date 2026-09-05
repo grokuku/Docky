@@ -29,6 +29,19 @@ Permettre à l'utilisateur de masquer/afficher le panneau de l'éditeur Compose
 - État initial chargé dans `app.js` → `init()` via `applyEditorVisibility()`.
 - Écrit à chaque bascule dans `editor.js` → `toggleEditor()`.
 
+## Restauration au chargement (redémarrage)
+- `init()` lit `docky-editor-visible` dans `localStorage` et stocke le résultat
+  dans `DockyApp.editorVisible` (`'0'` → masqué, sinon → visible).
+- `applyEditorVisibility()` est appelé **après** `initResizers()` (qui appelle
+  `restorePanelSizes()`). C'est indispensable : si l'éditeur est masqué,
+  `restorePanelSizes()` ré-appliquerait la largeur sauvegardée
+  (`docky-left-width`) sur `.left-column` et casserait la pleine largeur du
+  dashboard. En appliquant la visibilité après, `.left-column` repasse bien en
+  `flex: 1` quand l'éditeur est masqué, et le bouton `#editor-toggle` reflète
+  l'état restauré (classe `active`).
+- Valeur par défaut : si la clé est absente (première visite), l'éditeur est
+  **visible** (`editorVisible = true`).
+
 ## Comportement à la sélection d'une stack
 - Si l'éditeur est **masqué** et qu'on sélectionne une stack, il **reste
   masqué**. La sélection continue de charger le contenu en arrière-plan
@@ -53,5 +66,5 @@ Permettre à l'utilisateur de masquer/afficher le panneau de l'éditeur Compose
 
 ## Validation
 - `node --check` sur `editor.js` et `app.js` : OK.
-- `pytest -q` : **492 passed** (zéro régression).
+- `pytest -q` : **498 passed** (zéro régression).
 - Smoke `TestClient GET /dashboard` : **200**.
