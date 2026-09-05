@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="/static/css/style.css">
     <script src="https://unpkg.com/lucide@latest"></script>
 </head>
-<body class="app-body">
+<body class="app-body settings-page">
     <!-- Top bar -->
     <header class="topbar">
         <div class="topbar-left">
@@ -26,9 +26,12 @@
     <!-- Main layout -->
     <div class="settings-layout">
         <!-- LLM configuration -->
-        <section class="panel settings-panel settings-card-wide">
-            <div class="panel-header">
-                <h2><i data-lucide="bot"></i> Configuration LLM</h2>
+        <section class="panel settings-panel settings-panel--llm settings-card--half">
+            <div class="panel-header settings-header">
+                <div class="settings-header-title">
+                    <span class="settings-chip"><i data-lucide="bot"></i></span>
+                    <h2>Configuration LLM</h2>
+                </div>
                 <span id="llm-status" class="status-indicator status-unknown">Non testé</span>
             </div>
             <div class="panel-body settings-body">
@@ -78,9 +81,12 @@
         </section>
 
         <!-- Agents management -->
-        <section class="panel settings-panel settings-card-wide">
-            <div class="panel-header">
-                <h2><i data-lucide="terminal"></i> Agents</h2>
+        <section class="panel settings-panel settings-panel--agents settings-card--half">
+            <div class="panel-header settings-header">
+                <div class="settings-header-title">
+                    <span class="settings-chip"><i data-lucide="terminal"></i></span>
+                    <h2>Agents</h2>
+                </div>
                 <button class="btn btn-sm btn-primary" onclick="SettingsApp.showAgentForm(null)"><i data-lucide="plus"></i> Ajouter un agent</button>
             </div>
             <div class="panel-body settings-body">
@@ -91,9 +97,12 @@
         </section>
 
         <!-- Git history retention -->
-        <section class="panel settings-panel">
-            <div class="panel-header">
-                <h2>📋 Historique</h2>
+        <section class="panel settings-panel settings-panel--history settings-card--third">
+            <div class="panel-header settings-header">
+                <div class="settings-header-title">
+                    <span class="settings-chip"><i data-lucide="history"></i></span>
+                    <h2>Historique</h2>
+                </div>
             </div>
             <div class="panel-body settings-body">
                 <div class="form-group">
@@ -108,9 +117,12 @@
         </section>
 
         <!-- Security / Password change -->
-        <section class="panel settings-panel">
-            <div class="panel-header">
-                <h2><i data-lucide="lock"></i> Sécurité</h2>
+        <section class="panel settings-panel settings-panel--security settings-card--third">
+            <div class="panel-header settings-header">
+                <div class="settings-header-title">
+                    <span class="settings-chip"><i data-lucide="lock"></i></span>
+                    <h2>Sécurité</h2>
+                </div>
             </div>
             <div class="panel-body settings-body">
                 <div class="form-group">
@@ -132,9 +144,12 @@
         </section>
 
         <!-- API MCP -->
-        <section class="panel settings-panel">
-            <div class="panel-header">
-                <h2><i data-lucide="plug"></i> API MCP</h2>
+        <section class="panel settings-panel settings-panel--mcp settings-card--third">
+            <div class="panel-header settings-header">
+                <div class="settings-header-title">
+                    <span class="settings-chip"><i data-lucide="plug"></i></span>
+                    <h2>API MCP</h2>
+                </div>
                 <span id="mcp-status" class="status-indicator status-unknown">…</span>
             </div>
             <div class="panel-body settings-body">

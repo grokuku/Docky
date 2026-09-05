@@ -2183,51 +2183,152 @@ body {
 }
 
 /* ============================================================
-   Settings page
+   Settings page — « Éventail chromatique » redesign
    ============================================================ */
+
+/* Page background (scoped to settings only; dashboard untouched) */
+.settings-page {
+    background: #0d0d1b;
+}
+
+.settings-page .topbar {
+    background: #151527;
+    border-bottom-color: #262643;
+}
 
 .settings-title {
     font-size: 1rem;
     font-weight: 600;
-    color: var(--text-secondary);
+    color: #b4b4cf;
 }
 
+/* Scrollable, centered 6-column grid */
 .settings-layout {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-    gap: 20px;
-    align-items: start;
-    padding: 24px 20px;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 22px;
+    align-items: stretch;
+    max-width: 1180px;
+    width: 100%;
+    margin: 0 auto;
+    padding: 28px 32px 40px;
 }
 
-.settings-card-wide {
-    grid-column: 1 / -1;
-}
+/* Column spans */
+.settings-card--half { grid-column: span 3; }
+.settings-card--third { grid-column: span 2; }
 
+/* Cards */
 .settings-panel {
     width: 100%;
+    background: #151527;
+    border: 1px solid #262643;
+    border-radius: 14px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    transition: transform 180ms ease-out, border-color 180ms ease-out, box-shadow 180ms ease-out;
 }
 
+.settings-panel:hover {
+    transform: translateY(-2px);
+    border-color: #333352;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+
+/* Section tints */
+.settings-panel--llm      { --tint: #e94560; }
+.settings-panel--agents   { --tint: #a78bfa; }
+.settings-panel--history  { --tint: #2dd4bf; }
+.settings-panel--security { --tint: #34d399; }
+.settings-panel--mcp      { --tint: #38bdf8; }
+
+/* Header */
+.settings-header {
+    padding: 16px 20px;
+    background: #151527;
+    border-bottom: 1px solid #262643;
+    flex-shrink: 0;
+    gap: 12px;
+}
+
+.settings-header-title {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+}
+
+.settings-header-title h2 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: #f0f0f8;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Chip icon */
+.settings-chip {
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: color-mix(in srgb, var(--tint) 14%, transparent);
+    color: var(--tint);
+}
+
+.settings-chip [data-lucide] {
+    width: 17px;
+    height: 17px;
+}
+
+/* Body */
 .settings-body {
     padding: 22px 24px;
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
 }
 
-.settings-body .form-group input[type="password"] {
-    width: 100%;
-    padding: 10px 12px;
-    background: var(--bg-primary);
-    border: 1px solid var(--border-color);
-    border-radius: var(--radius-sm);
-    color: var(--text-primary);
-    font-size: 0.875rem;
+/* Form controls (scoped to settings) */
+.settings-body .form-group label {
+    color: #b4b4cf;
 }
 
-.settings-body .form-group input[type="password"]:focus {
+.settings-body .form-group input[type="text"],
+.settings-body .form-group input[type="password"],
+.settings-body .form-group input[type="number"],
+.settings-body .form-group select,
+.settings-body .form-input {
+    background: #1d1d36;
+    border-color: #262643;
+    color: #f0f0f8;
+}
+
+.settings-body .form-group input[type="text"]:focus,
+.settings-body .form-group input[type="password"]:focus,
+.settings-body .form-group input[type="number"]:focus,
+.settings-body .form-group select:focus,
+.settings-body .form-input:focus {
     outline: none;
-    border-color: var(--accent);
+    border-color: #ff5e7a;
+    box-shadow: 0 0 0 3px rgba(233, 69, 96, 0.14);
+}
+
+.settings-body .form-hint {
+    color: #7e7e9e;
+}
+
+.settings-body .form-hint-list code {
+    color: #60a5fa;
 }
 
 /* Input masking for API key fields (prevents password manager detection) */
@@ -2241,7 +2342,7 @@ body {
     margin: 6px 0 0 18px;
     padding: 0;
     font-size: 0.75rem;
-    color: var(--text-muted);
+    color: #7e7e9e;
 }
 
 .form-hint-list li {
@@ -2249,19 +2350,11 @@ body {
 }
 
 .form-hint-list code {
-    color: var(--info);
+    color: #60a5fa;
     font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
 }
 
-.settings-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 10px;
-    margin-top: 8px;
-}
-
 /* Model selector + scan button */
-
 .model-input-group {
     display: flex;
     gap: 8px;
@@ -2271,16 +2364,16 @@ body {
 .model-input-group select {
     flex: 1;
     padding: 10px 12px;
-    background: var(--bg-primary);
-    border: 1px solid var(--border-color);
-    border-radius: var(--radius-sm);
-    color: var(--text-primary);
+    background: #1d1d36;
+    border: 1px solid #262643;
+    border-radius: 8px;
+    color: #f0f0f8;
     font-size: 0.875rem;
 }
 
 .model-input-group select:focus {
     outline: none;
-    border-color: var(--accent);
+    border-color: #ff5e7a;
 }
 
 .model-input-group select:disabled {
@@ -2293,8 +2386,65 @@ body {
     flex-shrink: 0;
 }
 
-/* Status indicators */
+/* Status indicators (scoped to settings cards) */
+.settings-panel .status-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 12px;
+    white-space: nowrap;
+}
 
+.settings-panel .status-indicator::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.settings-panel .status-online {
+    color: #34d399;
+    background: rgba(52, 211, 153, 0.12);
+}
+.settings-panel .status-online::before { background: #34d399; }
+
+.settings-panel .status-offline {
+    color: #f87171;
+    background: rgba(248, 113, 113, 0.12);
+}
+.settings-panel .status-offline::before { background: #f87171; }
+
+.settings-panel .status-unknown {
+    color: #7e7e9e;
+    background: rgba(160, 160, 184, 0.12);
+}
+.settings-panel .status-unknown::before { background: #7e7e9e; }
+
+.settings-panel .status-indicator.status-running {
+    color: #34d399;
+    background: rgba(52, 211, 153, 0.12);
+}
+.settings-panel .status-indicator.status-running::before {
+    background: #34d399;
+    animation: docky-pulse 1.2s ease-in-out infinite;
+}
+
+.settings-panel .status-indicator.status-stopped {
+    color: #f87171;
+    background: rgba(248, 113, 113, 0.12);
+}
+.settings-panel .status-indicator.status-stopped::before { background: #f87171; }
+
+@keyframes docky-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.35; transform: scale(0.75); }
+}
+
+/* Status indicators — GLOBAL (shared with dashboard: activity-status) */
 .status-indicator {
     display: inline-flex;
     align-items: center;
@@ -2318,25 +2468,19 @@ body {
     color: var(--success);
     background: rgba(74, 222, 128, 0.12);
 }
-.status-online::before {
-    background: var(--success);
-}
+.status-online::before { background: var(--success); }
 
 .status-offline {
     color: var(--danger);
     background: rgba(239, 68, 68, 0.12);
 }
-.status-offline::before {
-    background: var(--danger);
-}
+.status-offline::before { background: var(--danger); }
 
 .status-unknown {
     color: var(--text-muted);
     background: rgba(160, 160, 184, 0.12);
 }
-.status-unknown::before {
-    background: var(--text-muted);
-}
+.status-unknown::before { background: var(--text-muted); }
 
 .status-indicator.status-running {
     color: var(--success);
@@ -2351,17 +2495,9 @@ body {
     color: var(--danger);
     background: rgba(239, 68, 68, 0.12);
 }
-.status-indicator.status-stopped::before {
-    background: var(--danger);
-}
-
-@keyframes docky-pulse {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.35; transform: scale(0.75); }
-}
+.status-indicator.status-stopped::before { background: var(--danger); }
 
 /* Agents list */
-
 .agents-list {
     display: flex;
     flex-direction: column;
@@ -2373,9 +2509,15 @@ body {
     align-items: center;
     gap: 16px;
     padding: 12px 14px;
-    background: var(--bg-primary);
-    border: 1px solid var(--border-color);
-    border-radius: var(--radius-sm);
+    background: #1d1d36;
+    border: 1px solid #262643;
+    border-radius: 10px;
+    transition: border-color 180ms ease-out, background 180ms ease-out;
+}
+
+.agent-row:hover {
+    border-color: #333352;
+    background: #232344;
 }
 
 .agent-row-info {
@@ -2389,12 +2531,12 @@ body {
 .agent-row-name {
     font-weight: 600;
     font-size: 0.9375rem;
-    color: var(--text-primary);
+    color: #f0f0f8;
 }
 
 .agent-row-url {
     font-size: 0.75rem;
-    color: var(--text-muted);
+    color: #7e7e9e;
     font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -2407,11 +2549,83 @@ body {
     flex-shrink: 0;
 }
 
-/* Responsive */
+/* Actions */
+.settings-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 8px;
+}
 
-@media (max-width: 600px) {
+.settings-panel .btn-primary {
+    background: #ff5e7a;
+}
+.settings-panel .btn-primary:hover:not(:disabled) {
+    background: #ff7a90;
+}
+
+/* LLM warning callout */
+.llm-warning {
+    background: rgba(251, 191, 36, 0.08);
+    border: 1px solid rgba(251, 191, 36, 0.25);
+    border-left: 4px solid #fbbf24;
+    padding: 14px 16px;
+    border-radius: 10px;
+    margin-bottom: 20px;
+    color: #fbbf24;
+    font-size: 0.8125rem;
+    line-height: 1.6;
+}
+
+.llm-warning strong {
+    color: #ffd166;
+}
+
+/* Focus rings */
+.settings-panel .btn:focus-visible,
+.settings-body input:focus-visible,
+.settings-body select:focus-visible,
+.settings-body textarea:focus-visible {
+    outline: 2px solid #ff5e7a;
+    outline-offset: 2px;
+}
+
+/* Cascade fade-up entry */
+.settings-panel {
+    animation: settings-fade-up 0.5s ease-out backwards;
+}
+.settings-panel:nth-child(2) { animation-delay: 0.05s; }
+.settings-panel:nth-child(3) { animation-delay: 0.1s; }
+.settings-panel:nth-child(4) { animation-delay: 0.15s; }
+.settings-panel:nth-child(5) { animation-delay: 0.2s; }
+
+@keyframes settings-fade-up {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .settings-panel {
+        animation: none;
+    }
+}
+
+/* Responsive */
+@media (max-width: 1100px) {
     .settings-layout {
-        padding: 16px 12px;
+        grid-template-columns: 1fr;
+        padding: 24px 20px;
+    }
+    .settings-card--half,
+    .settings-card--third {
+        grid-column: 1 / -1;
+    }
+}
+
+@media (max-width: 560px) {
+    .settings-layout {
+        padding: 16px;
+        gap: 16px;
     }
     .agent-row {
         flex-wrap: wrap;
@@ -2420,26 +2634,6 @@ body {
         width: 100%;
         justify-content: flex-end;
     }
-}
-
-/* ============================================================
-   LLM warning banner (settings page)
-   ============================================================ */
-
-.llm-warning {
-    background: rgba(255, 193, 7, 0.1);
-    border: 1px solid rgba(255, 193, 7, 0.3);
-    border-left: 4px solid #ffc107;
-    padding: 12px 16px;
-    border-radius: 6px;
-    margin-bottom: 20px;
-    color: #ffc107;
-    font-size: 14px;
-    line-height: 1.5;
-}
-
-.llm-warning strong {
-    color: #ffb300;
 }
 
 /* ============================================================
