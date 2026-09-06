@@ -10,6 +10,7 @@ const SettingsApp = {
     editingAgentName: null,   // null = add mode, string = edit mode
     pendingDeleteAgent: null,
     mcpKeyVisible: false,     // whether the MCP key is shown in clear
+    dockerhubHasToken: false, // whether a token is already stored server-side
 
     // -------------------------------------------------------
     // Utilities
@@ -558,6 +559,106 @@ const SettingsApp = {
     },
 
     // -------------------------------------------------------
+    // Docker Hub
+    // -------------------------------------------------------
+
+    async loadDockerhubSettings() {
+        const data = await this.apiFetch("/api/settings/dockerhub");
+        if (!data) return;
+        this.dockerhubHasToken = !!data.has_token;
+        const enabled = document.getElementById("dockerhub-enabled");
+        if (enabled) enabled.checked = !!data.enabled;
+        const username = document.getElementById("dockerhub-username");
+        if (username) username.value = data.username || "";
+        const token = document.getElementById("dockerhub-token");
+        if (token) {
+            token.value = "";
+            token.placeholder = data.has_token ? "•••••••• (configuré)" : "••••••••";
+        }
+        const status = document.getElementById("dockerhub-status");
+        if (status) {
+            status.className = "status-indicator " + (data.enabled ? "status-online" : "status-offline");
+            status.textContent = data.enabled ? "Activé" : "Désactivé";
+        }
+    },
+
+    async saveDockerhubSettings() {
+        const enabledEl = document.getElementById("dockerhub-enabled");
+        const usernameEl = document.getElementById("dockerhub-username");
+        const tokenEl = document.getElementById("dockerhub-token");
+        if (!enabledEl || !usernameEl || !tokenEl) return;
+
+        const enabled = enabledEl.checked;
+        const username = usernameEl.value.trim();
+        const token = tokenEl.value;
+
+        if (enabled && !username) {
+            this.showToast("Veuillez saisir le nom d'utilisateur Docker Hub.", "error");
+            return;
+        }
+        if (enabled && !token && !this.dockerhubHasToken) {
+            this.showToast("Veuillez saisir un access token Docker Hub.", "error");
+            return;
+        }
+        // Validation ASCII côté client (le backend renvoie sinon une 400).
+        const asciiOnly = (s) => !/[^\x00-\x7F]/.test(s);
+        if (!asciiOnly(username)) {
+            this.showToast("Le nom d'utilisateur ne doit contenir que des caractères ASCII.", "error");
+            return;
+        }
+        if (token && !asciiOnly(token)) {
+            this.showToast("Le token ne doit contenir que des caractères ASCII.", "error");
+            return;
+        }
+
+        const data = await this.apiPut("/api/settings/dockerhub", {
+            enabled,
+            username,
+            token,
+        });
+        if (!data) return;
+        if (data.success) {
+            let msg;
+            if (data.total > 0) {
+                msg = "Poussé sur " + data.pushed + "/" + data.total + " agents" +
+                    (data.pushed < data.total ? " — les agents hors ligne recevront la config à leur reconnexion." : ".");
+            } else {
+                msg = "Configuration Docker Hub sauvegardée (aucun agent en ligne).";
+            }
+            const errNames = Object.keys(data.errors || {});
+            if (errNames.length > 0) {
+                msg += " Erreurs : " + errNames.join(", ") + ".";
+            }
+            this.showToast(msg, errNames.length > 0 ? "info" : "success");
+            this.loadDockerhubSettings();
+        } else {
+            this.showToast(data.detail || "Erreur lors de la sauvegarde.", "error");
+        }
+    },
+
+    async clearDockerhub() {
+        if (!window.confirm(
+            "Désactiver l'authentification Docker Hub ?\n\n" +
+            "Les agents en ligne seront déconnectés (docker logout) et les " +
+            "identifiants supprimés de la configuration."
+        )) {
+            return;
+        }
+        const data = await this.apiPost("/api/settings/dockerhub/clear");
+        if (!data) return;
+        if (data.success) {
+            let msg = "Docker Hub désactivé.";
+            if (data.total > 0) {
+                msg += " Déconnecté sur " + data.pushed + "/" + data.total + " agents.";
+            }
+            this.showToast(msg, "success");
+            this.loadDockerhubSettings();
+        } else {
+            this.showToast(data.detail || "Erreur lors de la désactivation.", "error");
+        }
+    },
+
+    // -------------------------------------------------------
     // Init
     // -------------------------------------------------------
 
@@ -566,6 +667,7 @@ const SettingsApp = {
         this.loadAgents();
         this.loadGitHistorySettings();
         this.loadMcpSettings();
+        this.loadDockerhubSettings();
     },
 };
 

@@ -141,6 +141,16 @@ def ensure_config_files():
                 "mcp_enabled": True,
                 "mcp_api_key": os.urandom(32).hex(),
             },
+            # Docker Hub (voir app/routes/settings.py,
+            # app/agent_manager/client.py et docs/dockerhub-auth.md) :
+            # credentials poussés vers les agents pour authentifier les pulls
+            # et éviter l'erreur "toomanyrequests". Le token n'est JAMAIS
+            # renvoyé en clair par l'API (has_token seulement).
+            "dockerhub": {
+                "enabled": False,
+                "username": "",
+                "token": "",
+            },
             "agents": [],
         }
         with open(settings_path, "w", encoding="utf-8") as f:

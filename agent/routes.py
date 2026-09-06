@@ -14,7 +14,7 @@ import threading
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
-from agent import docker_manager
+from agent import docker_manager, dockerhub
 from agent.auth import require_api_key, verify_api_key_ws
 from agent.version import get_version
 
@@ -911,6 +911,52 @@ async def update_git_history_settings(request: Request):
     max_versions = data.get("max_versions", 50)
     docker_manager.set_history_settings(max_versions)
     return {"success": True}
+
+
+# ---------------------------------------------------------------------------
+# Docker Hub authentication
+# ---------------------------------------------------------------------------
+
+@router.post("/dockerhub/login")
+async def dockerhub_login(request: Request):
+    """Apply the Docker Hub credentials pushed by the orchestrator.
+
+    Body JSON: ``{ "username": str, "token": str, "enabled": bool }``.
+
+    - ``enabled=true`` + credentials: ``docker login -u <user> --password-stdin``
+      with the token passed on STDIN (NEVER in argv), the CLI config written in
+      ``<data_dir>/.docker`` (persistent volume) and ``DOCKER_CONFIG`` exported
+      so all subsequent docker subprocesses (compose/pull) are authenticated.
+    - ``enabled=false``: ``docker logout`` + removal of the config directory.
+
+    The token is never logged (see agent/dockerhub.py and
+    docs/dockerhub-auth.md).
+    """
+    auth_err = require_api_key(request)
+    if auth_err:
+        return auth_err
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON"})
+
+    enabled = bool(data.get("enabled", False))
+    username = (data.get("username") or "").strip()
+    token = data.get("token") or ""
+
+    if enabled:
+        if not username or not token:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "username et token sont requis quand enabled=true"},
+            )
+        ok, message = await asyncio.to_thread(dockerhub.docker_login, username, token)
+        if not ok:
+            return JSONResponse(status_code=502, content={"success": False, "message": message})
+        return {"success": True, "message": message}
+
+    ok, message = await asyncio.to_thread(dockerhub.docker_logout)
+    return {"success": ok, "message": message}
 
 
 # ---------------------------------------------------------------------------

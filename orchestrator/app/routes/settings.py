@@ -578,3 +578,130 @@ async def api_update_git_history_settings(request: Request):
         for name in _api().agent_manager.agents
     ], return_exceptions=True)
     return {"success": True}
+
+
+# ---------------------------------------------------------------------------
+# Settings - Docker Hub
+# ---------------------------------------------------------------------------
+
+_MSG_DOCKERHUB_USERNAME_ASCII = (
+    "Le nom d'utilisateur Docker Hub ne doit contenir que des caractères ASCII"
+)
+_MSG_DOCKERHUB_TOKEN_ASCII = "Le token Docker Hub ne doit contenir que des caractères ASCII"
+
+
+def _dockerhub_status_payload() -> dict:
+    """Build the GET payload — the token is NEVER returned in clear."""
+    settings = load_settings()
+    dh = settings.get("dockerhub", {}) or {}
+    return {
+        "enabled": bool(dh.get("enabled", False)),
+        "username": dh.get("username", "") or "",
+        "has_token": bool(dh.get("token", "")),
+    }
+
+
+async def _push_and_summarize() -> dict:
+    """Push the dockerhub config to all agents and summarize the results."""
+    results = await _api().agent_manager.push_dockerhub_all()
+    if not isinstance(results, dict):
+        results = {}
+    pushed = sum(
+        1 for r in results.values()
+        if isinstance(r, dict) and r.get("success")
+    )
+    errors = {
+        name: (r.get("error") or ("agent hors ligne (recevra la config à sa reconnexion)" if r.get("offline") else "échec"))
+        for name, r in results.items()
+        if isinstance(r, dict) and not r.get("success")
+    }
+    return {"push": results, "pushed": pushed, "total": len(results), "errors": errors}
+
+
+@router.get("/settings/dockerhub")
+async def api_get_dockerhub_settings(request: Request):
+    """Return the Docker Hub integration status.
+
+    ``has_token`` tells the UI whether a token is stored — the token itself is
+    NEVER returned (neither clear nor masked).
+    """
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    return _dockerhub_status_payload()
+
+
+@router.put("/settings/dockerhub")
+async def api_update_dockerhub_settings(request: Request):
+    """Persist the Docker Hub credentials and push them to online agents.
+
+    Body JSON: ``{ "enabled": bool, "username": str, "token": str }``.
+
+    - Validation: ``username`` and ``token`` MUST be ASCII-only (a non-ASCII
+      credential would make httpx fail when building the Authorization header
+      toward the agents) — ``400`` with a French message otherwise.
+    - A masked/empty token (``****``) preserves the previously stored one.
+    - After persisting, the config is pushed to every agent (déclencheur 1,
+      see docs/dockerhub-auth.md); offline agents receive it at their next
+      reconnection. The per-agent push results are returned in the response.
+    """
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"detail": "Invalid JSON body"})
+
+    enabled = bool(data.get("enabled", False))
+    hub_username = (data.get("username") or "").strip()
+    token = data.get("token") or ""
+
+    settings = load_settings()
+    dh = settings.get("dockerhub", {}) or {}
+    # A masked or empty token keeps the previously stored value (same
+    # convention as the LLM api_key).
+    if not token or token.startswith("****"):
+        token = dh.get("token", "") or ""
+
+    if enabled and (not hub_username or not token):
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Nom d'utilisateur et token requis quand Docker Hub est activé"},
+        )
+    if not _is_ascii(hub_username):
+        return JSONResponse(status_code=400, content={"detail": _MSG_DOCKERHUB_USERNAME_ASCII})
+    if not _is_ascii(token):
+        return JSONResponse(status_code=400, content={"detail": _MSG_DOCKERHUB_TOKEN_ASCII})
+
+    settings["dockerhub"] = {
+        "enabled": enabled,
+        "username": hub_username,
+        "token": token,
+    }
+    save_settings(settings)
+
+    # Déclencheur 1 : pousser vers tous les agents en ligne (le résultat par
+    # agent est renvoyé au frontend pour le toast).
+    summary = await _push_and_summarize()
+    return {"success": True, **summary}
+
+
+@router.post("/settings/dockerhub/clear")
+async def api_clear_dockerhub_settings(request: Request):
+    """Disable the Docker Hub integration and log every agent out.
+
+    Clears the stored credentials and pushes ``enabled=false`` to the online
+    agents, which run ``docker logout`` and delete their ``.docker`` config.
+    Offline agents will be logged out at their next reconnection (the config
+    is then disabled, so no push happens — instead their stale local config
+    remains until the agent receives a disabled push; see docs limitation).
+    """
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    settings = load_settings()
+    settings["dockerhub"] = {"enabled": False, "username": "", "token": ""}
+    save_settings(settings)
+    summary = await _push_and_summarize()
+    return {"success": True, **summary}

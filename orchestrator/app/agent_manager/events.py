@@ -85,6 +85,12 @@ async def _connect_agent_events(self, agent_name: str):
                 logger.info("Connected to agent '%s' events", agent_name)
                 if agent_name in self.agents:
                     self.agents[agent_name]["status"] = "online"
+                    # Docker Hub : l'agent (re)devient en ligne → pousser la
+                    # config si activée et pas déjà poussée (anti-spam hash,
+                    # voir AgentManager.maybe_push_dockerhub_on_online et
+                    # docs/dockerhub-auth.md). Tâche détachée : la connexion
+                    # WS reste ouverte ensuite.
+                    asyncio.create_task(self.maybe_push_dockerhub_on_online(agent_name))
 
                 async for event in ws:
                     await self._handle_agent_event(agent_name, event)

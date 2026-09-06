@@ -18,6 +18,7 @@ unique across ``app.routes.api``, ``app.llm.client`` and ``app.main``.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
@@ -64,6 +65,10 @@ class AgentManager:
         self._bg_task = None
         self._ws_tasks: Dict[str, asyncio.Task] = {}
         self._event_debounce_timers: Dict[str, asyncio.Task] = {}
+        # Docker Hub (voir docs/dockerhub-auth.md) : hash du dernier token
+        # poussé par agent (anti-spam de reconnexion) + pushes en cours.
+        self._dockerhub_pushed: Dict[str, str] = {}
+        self._dockerhub_push_inflight: set = set()
         # Broadcast callback injected by app.routes.api (breaks the latent
         # app.agent_manager.client <-> app.routes.api import cycle).
         self.broadcast_agent_event = None
@@ -146,16 +151,26 @@ class AgentManager:
     # ------------------------------------------------------------------
 
     async def ping_agent(self, name: str) -> bool:
-        """Ping an agent to verify it is reachable."""
+        """Ping an agent to verify it is reachable.
+
+        When an agent transitions to ``online`` (from offline/unknown) and a
+        Docker Hub config with credentials is enabled, the credentials are
+        pushed to the agent if not already (anti-spam hash, see
+        :meth:`maybe_push_dockerhub_on_online`) — this covers agents detected
+        online by health-ping rather than by their WebSocket event stream.
+        """
         if name not in self.agents:
             return False
         agent = self.agents[name]
+        was_online = agent.get("status") == "online"
         try:
             async with httpx.AsyncClient(timeout=5, **self._agent_tls_options(agent)) as client:
                 resp = await client.get(f"{agent['url']}/agent/health")
                 if resp.status_code == 200:
                     agent["status"] = "online"
                     agent["last_check"] = time.time()
+                    if not was_online:
+                        await self.maybe_push_dockerhub_on_online(name)
                     return True
         except Exception as exc:
             logger.warning("ping_agent failed for '%s': %s", name, exc)
@@ -859,6 +874,136 @@ class AgentManager:
         except Exception as e:
             logger.error("update_git_history_settings failed for agent '%s': %s", agent_name, e)
             return {"success": False, "error": str(e)}
+
+    # ------------------------------------------------------------------
+    # Docker Hub
+    # ------------------------------------------------------------------
+
+    async def push_dockerhub_to_agent(self, agent_name: str) -> Dict[str, Any]:
+        """Push the Docker Hub credentials (settings.yaml) to one agent.
+
+        POSTs ``/agent/dockerhub/login`` with ``{username, token, enabled}``.
+        On success, records the SHA-256 hash of the pushed token per agent so
+        :meth:`maybe_push_dockerhub_on_online` can skip redundant pushes at
+        reconnection (anti-spam). A ``disabled`` push clears the recorded hash
+        and asks the agent to ``docker logout``.
+
+        The token is never logged (only the agent name and the outcome).
+        """
+        settings = load_settings()
+        dh = settings.get("dockerhub", {}) or {}
+        enabled = bool(dh.get("enabled", False))
+        username = dh.get("username", "") or ""
+        token = dh.get("token", "") or ""
+        if enabled and (not username or not token):
+            return {"success": False, "error": "Configuration Docker Hub incomplète"}
+        try:
+            data = await self._request(
+                agent_name,
+                "POST",
+                "/agent/dockerhub/login",
+                json={"username": username, "token": token, "enabled": enabled},
+                timeout=30,
+            )
+            if isinstance(data, dict) and data.get("success"):
+                if enabled:
+                    self._dockerhub_pushed[agent_name] = hashlib.sha256(
+                        token.encode("utf-8")
+                    ).hexdigest()
+                    logger.info(
+                        "Docker Hub: configuration poussée vers l'agent '%s'", agent_name
+                    )
+                else:
+                    self._dockerhub_pushed.pop(agent_name, None)
+                    logger.info(
+                        "Docker Hub: déconnexion demandée à l'agent '%s'", agent_name
+                    )
+                return {"success": True}
+            message = ""
+            if isinstance(data, dict):
+                message = data.get("message") or data.get("error") or ""
+            return {"success": False, "error": message or "Réponse inattendue de l'agent"}
+        except Exception as e:
+            logger.warning("Push Docker Hub vers '%s' échoué: %s", agent_name, e)
+            return {"success": False, "error": str(e)}
+
+    async def push_dockerhub_all(self) -> Dict[str, Dict[str, Any]]:
+        """Push the Docker Hub config to every agent, online or not.
+
+        Returns a ``{agent_name: {"success": bool, ...}}`` map (offline agents
+        get ``{"success": False, "offline": True}`` — they will receive the
+        config at their next reconnection via
+        :meth:`maybe_push_dockerhub_on_online`).
+        """
+        results: Dict[str, Dict[str, Any]] = {}
+        for name, agent in self.agents.items():
+            if agent.get("status") != "online":
+                results[name] = {"success": False, "offline": True}
+                continue
+            results[name] = await self.push_dockerhub_to_agent(name)
+        return results
+
+    async def maybe_push_dockerhub_on_online(self, agent_name: str):
+        """Push the Docker Hub config when an agent (re)becomes online.
+
+        Called by the event layer (``_connect_agent_events``) and by
+        :meth:`ping_agent` when an agent transitions to online. Anti-spam:
+        the push only happens when the config is enabled with credentials AND
+        the sha-256 of the token differs from the last one pushed to this
+        agent (or was never pushed) — an agent that reconnects with the same
+        credentials is skipped (its persisted ``config.json`` is still valid).
+
+        If the config was disabled after a previous push (offline agent at
+        "clear" time), a single ``enabled=false`` push is sent so the agent
+        runs ``docker logout`` and cleans its persisted config.
+        """
+        agent = self.agents.get(agent_name)
+        if not agent or agent.get("status") != "online":
+            return
+        if agent_name in self._dockerhub_push_inflight:
+            return
+        dh = load_settings().get("dockerhub", {}) or {}
+        if not dh.get("enabled"):
+            if agent_name in self._dockerhub_pushed:
+                # Credentials were pushed before, then disabled while this
+                # agent was offline: push the logout exactly once.
+                self._dockerhub_push_inflight.add(agent_name)
+                try:
+                    await self.push_dockerhub_to_agent(agent_name)
+                    logger.info(
+                        "Docker Hub: déconnexion poussée à la reconnexion de l'agent '%s'",
+                        agent_name,
+                    )
+                finally:
+                    self._dockerhub_push_inflight.discard(agent_name)
+            return
+        token = dh.get("token", "") or ""
+        username = dh.get("username", "") or ""
+        if not token or not username:
+            return
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        if self._dockerhub_pushed.get(agent_name) == token_hash:
+            logger.debug(
+                "Docker Hub: token déjà poussé sur '%s', push de reconnexion ignoré",
+                agent_name,
+            )
+            return
+        self._dockerhub_push_inflight.add(agent_name)
+        try:
+            result = await self.push_dockerhub_to_agent(agent_name)
+            if result.get("success"):
+                logger.info(
+                    "Docker Hub: config poussée à la reconnexion de l'agent '%s'",
+                    agent_name,
+                )
+            else:
+                logger.warning(
+                    "Docker Hub: push de reconnexion vers '%s' échoué: %s",
+                    agent_name,
+                    result.get("error", ""),
+                )
+        finally:
+            self._dockerhub_push_inflight.discard(agent_name)
 
     # ------------------------------------------------------------------
     # Ports

@@ -168,6 +168,39 @@
                 </div>
             </div>
         </section>
+
+        <!-- Docker Hub -->
+        <section class="panel settings-panel settings-panel--dockerhub settings-card--third">
+            <div class="panel-header settings-header">
+                <div class="settings-header-title">
+                    <span class="settings-chip"><i data-lucide="cloud"></i></span>
+                    <h2>Docker Hub</h2>
+                </div>
+                <span id="dockerhub-status" class="status-indicator status-unknown">…</span>
+            </div>
+            <div class="panel-body settings-body">
+                <div class="form-group">
+                    <label class="checkbox-label" for="dockerhub-enabled">
+                        <input type="checkbox" id="dockerhub-enabled">
+                        <span>Activer l'authentification Docker Hub</span>
+                    </label>
+                </div>
+                <div class="form-group">
+                    <label for="dockerhub-username">Nom d'utilisateur</label>
+                    <input type="text" id="dockerhub-username" placeholder="moncompte" autocomplete="off">
+                </div>
+                <div class="form-group">
+                    <label for="dockerhub-token">Access token</label>
+                    <input type="password" id="dockerhub-token" placeholder="••••••••" autocomplete="new-password" class="form-input input-masked">
+                    <p class="form-hint">Crée un access token sur hub.docker.com (Account Settings → Security) pour éviter le quota anonyme (« toomanyrequests »). Laisser vide pour ne pas changer.</p>
+                </div>
+                <p class="form-hint">Les agents hors ligne recevront la config à leur reconnexion.</p>
+                <div class="settings-actions">
+                    <button class="btn btn-ghost" onclick="SettingsApp.clearDockerhub()">Désactiver</button>
+                    <button class="btn btn-primary" onclick="SettingsApp.saveDockerhubSettings()">Sauvegarder</button>
+                </div>
+            </div>
+        </section>
     </div>
 
     <!-- Agent form modal -->
