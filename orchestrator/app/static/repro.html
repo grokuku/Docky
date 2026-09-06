@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="topbar-right">
+    <button id="editor-toggle" class="topbar-btn active" title="Afficher/Masquer l'éditeur Compose" onclick="DockyApp.toggleEditor()"><i data-lucide="panel-right"></i></button>
+  </div>
+</header>
+<div class="app-layout">
+  <div class="left-column">
+    <section class="panel dashboard-panel">
+      <div class="panel-header">
+        <h2>Dashboard</h2>
+        <button id="view-toggle" class="topbar-btn" onclick="DockyApp.toggleViewMode()">📋</button>
+        <div class="dashboard-controls">
+          <label class="auto-refresh"><input type="checkbox" id="auto-refresh" checked><span>Auto-refresh</span></label>
+          <button class="btn btn-sm" onclick="DockyApp.refreshStacks()">Rafraîchir</button>
+        </div>
+      </div>
+      <div class="panel-body" id="dashboard-content">
+        <div class="placeholder"><p>🔄 Chargement…</p></div>
+      </div>
+    </section>
+    <div id="resizer-horizontal" class="resizer resizer-horizontal"></div>
+    <section class="panel chat-panel">
+      <div class="panel-header"><h2>Assistant</h2></div>
+      <div class="panel-body chat-body" id="chat-content"></div>
+    </section>
+  </div>
+  <div id="resizer-vertical" class="resizer resizer-vertical"></div>
+  <div class="right-column">
+    <section class="panel compose-panel">
+      <div class="panel-header">
+        <h2>📝 Éditeur Compose</h2>
+        <div class="compose-header-controls">
+          <button class="btn btn-sm" id="new-stack-btn">➕ Nouvelle stack</button>
+          <select id="stack-selector" class="stack-selector" onchange="DockyApp.onStackSelect()"><option value="">— Sélectionner —</option></select>
+        </div>
+      </div>
+      <div class="panel-body compose-body" id="compose-body">
+        <div class="placeholder"><p>Sélectionnez une stack pour éditer ses fichiers.</p></div>
+      </div>
+    </section>
+  </div>
+</div>
+<script>
+// Mock fetch to return empty data so init() doesn't crash
+window.fetch = function(url, opts) {
+  if (url.indexOf('/api/stacks') !== -1) {
+    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([{name:'mystack', agent_name:'', managed:true, standalone:false, status:'running', container_count:1, running_count:1, ports:[]}]), text: () => Promise.resolve("") });
+  }
+  if (url.indexOf('/api/containers') !== -1) {
+    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([{id:'c1', name:'c1', stack:'mystack', agent_name:'', status:'running', image:'nginx', ports:[]}]), text: () => Promise.resolve("") });
+  }
+  if (url.indexOf('files-with-content') !== -1) {
+    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({files:[{filename:'docker-compose.yml', content:'version: 3'}]}), text: () => Promise.resolve("") });
+  }
+  return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
+};
+// Mock WebSocket
+window.WebSocket = function(){};
+// Mock ResizeObserver
+window.ResizeObserver = class { observe(){} unobserve(){} disconnect(){} };
+// Mock lucide
+window.lucide = { createIcons: function(){} };
+// Mock EventSource
+window.EventSource = function(){};
+</script>
+<script src="js/app.js"></script>
+<script src="js/api.js"></script>
+<script src="js/events.js"></script>
+<script src="js/dashboard.js"></script>
+<script src="js/editor.js"></script>
+<script src="js/chat.js"></script>
+<script src="js/modals.js"></script>
+</body>
+</html>

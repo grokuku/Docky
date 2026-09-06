@@ -321,6 +321,12 @@ Object.assign(window.DockyApp, {
         if (!body) return;
         const msg = message || "Sélectionnez une stack pour éditer ses fichiers.";
         body.innerHTML = '<div class="placeholder"><p>' + this.escapeHtml(msg) + '</p><p class="placeholder-hint">Cliquez sur une stack du dashboard ou choisissez-la dans la liste.</p></div>';
+        // Source de vérité : si l'éditeur est masqué (editorVisible=false), aucun
+        // rendu (placeholder inclus) ne doit ré-afficher le panneau. On ré-applique
+        // l'état masqué après chaque écriture dans le panneau.
+        if (this.editorVisible === false) {
+            this.applyEditorVisibility();
+        }
     },
 
     // Ne remplace le contenu d'un fichier QUE si le contenu reçu diffère du
@@ -336,6 +342,10 @@ Object.assign(window.DockyApp, {
         const body = document.getElementById("compose-body");
         if (!body) return;
         body.innerHTML = '<div class="placeholder"><p>' + this.icon('loader') + ' Chargement des fichiers…</p></div>';
+        // Idem : un rendu ne doit jamais ré-afficher un panneau masqué.
+        if (this.editorVisible === false) {
+            this.applyEditorVisibility();
+        }
     },
 
     isModified(filename) {
@@ -459,6 +469,13 @@ Object.assign(window.DockyApp, {
                 editor.selectionStart = editor.selectionEnd = Math.min(cursorPos, editor.value.length);
                 editor.scrollTop = editorScrollTop;
             }
+        }
+
+        // Source de vérité : si l'éditeur est masqué (editorVisible=false), le
+        // rendu du contenu ne doit pas ré-afficher le panneau (ni laisser le
+        // layout dans un état incohérent) — on ré-applique l'état masqué.
+        if (this.editorVisible === false) {
+            this.applyEditorVisibility();
         }
     },
 

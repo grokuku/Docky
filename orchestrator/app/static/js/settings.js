@@ -562,12 +562,68 @@ const SettingsApp = {
     // Docker Hub
     // -------------------------------------------------------
 
-    async loadDockerhubSettings() {
-        const data = await this.apiFetch("/api/settings/dockerhub");
-        if (!data) return;
+    /**
+     * Calcule l'état du pill de statut Docker Hub à partir de l'état backend
+     * CONFIRMÉ (jamais de la valeur locale du formulaire).
+     *
+     * Logique à 3 états (+1 raffinement quand le résultat de poussée est
+     * connu, c.-à-d. en réponse à un PUT/clear) :
+     *  - "online"     (vert)  « Activé »   : enabled && has_token — config
+     *    complète ; poussée confirmée sur tous les agents en ligne, ou
+     *    résultat de poussée inconnu (chargement initial) ;
+     *  - "partial"    (ambre) « Partiel »  : enabled && has_token, mais la
+     *    poussée n'a pas pu être confirmée partout (agent hors ligne — il
+     *    rattrapera à sa reconnexion — ou erreur) ;
+     *  - "incomplete" (ambre) « Incomplet » : enabled mais has_token=false —
+     *    la config ne peut pas fonctionner sans token ;
+     *  - "offline"    (gris)  « Désactivé » : enabled=false.
+     */
+    dockerhubPillState(enabled, hasToken, push) {
+        if (!enabled) return { cls: "status-offline", text: "Désactivé" };
+        if (!hasToken) return { cls: "status-warning", text: "Incomplet" };
+        if (push && typeof push.total === "number" && push.total > 0) {
+            const errCount = push.errors ? Object.keys(push.errors).length : 0;
+            if ((typeof push.pushed === "number" && push.pushed < push.total) || errCount > 0) {
+                return { cls: "status-partial", text: "Partiel" };
+            }
+        }
+        return { cls: "status-online", text: "Activé" };
+    },
+
+    /**
+     * Met à jour le pill de statut de la carte Docker Hub. Appelé au
+     * chargement (GET) et immédiatement après chaque sauvegarde/désactivation
+     * — toujours à partir de l'état confirmé par le backend (payload du GET,
+     * ou réponse du PUT/clear qui porte désormais l'état persisté), jamais
+     * d'une valeur locale du formulaire.
+     */
+    renderDockerhubStatus(enabled, hasToken, push) {
+        const status = document.getElementById("dockerhub-status");
+        if (!status) return;
+        const pill = this.dockerhubPillState(enabled, hasToken, push);
+        status.className = "status-indicator " + pill.cls;
+        status.textContent = pill.text;
+        // Détail de la poussée en tooltip quand le résultat par agent est
+        // connu et que la config est active (pour un clear le toast le dit).
+        if (enabled && push && typeof push.total === "number" && push.total > 0) {
+            const errNames = Object.keys(push.errors || {});
+            status.title = "Poussé sur " + (push.pushed || 0) + "/" + push.total + " agent(s)" +
+                (errNames.length > 0 ? " — " + errNames.join(", ") : "");
+        } else {
+            status.title = "";
+        }
+    },
+
+    /**
+     * Applique au formulaire + au pill un état backend confirmé : payload du
+     * GET (chargement initial) ou réponse du PUT/clear (état persisté +,
+     * pour ces derniers, les résultats de poussée par agent). Source unique
+     * de vérité = le serveur ; aucune valeur locale n'est réinjectée.
+     */
+    applyDockerhubState(data, push) {
         this.dockerhubHasToken = !!data.has_token;
-        const enabled = document.getElementById("dockerhub-enabled");
-        if (enabled) enabled.checked = !!data.enabled;
+        const enabledInput = document.getElementById("dockerhub-enabled");
+        if (enabledInput) enabledInput.checked = !!data.enabled;
         const username = document.getElementById("dockerhub-username");
         if (username) username.value = data.username || "";
         const token = document.getElementById("dockerhub-token");
@@ -575,11 +631,16 @@ const SettingsApp = {
             token.value = "";
             token.placeholder = data.has_token ? "•••••••• (configuré)" : "••••••••";
         }
-        const status = document.getElementById("dockerhub-status");
-        if (status) {
-            status.className = "status-indicator " + (data.enabled ? "status-online" : "status-offline");
-            status.textContent = data.enabled ? "Activé" : "Désactivé";
-        }
+        this.renderDockerhubStatus(!!data.enabled, !!data.has_token, push);
+    },
+
+    async loadDockerhubSettings() {
+        const data = await this.apiFetch("/api/settings/dockerhub");
+        if (!data) return;
+        // Au chargement, le résultat de poussée n'est pas connu du GET : le
+        // pill reflète la config (Activé / Incomplet / Désactivé). Les agents
+        // hors ligne rattrapent la config à leur reconnexion.
+        this.applyDockerhubState(data);
     },
 
     async saveDockerhubSettings() {
@@ -630,7 +691,16 @@ const SettingsApp = {
                 msg += " Erreurs : " + errNames.join(", ") + ".";
             }
             this.showToast(msg, errNames.length > 0 ? "info" : "success");
-            this.loadDockerhubSettings();
+            // Le PUT renvoie l'état persisté (enabled/has_token confirmés) et
+            // les résultats de poussée par agent : le pill et le formulaire
+            // sont mis à jour immédiatement depuis CETTE réponse confirmée —
+            // pas de valeur locale réinjectée, pas de GET de rattrapage qui
+            // pourrait écraser le pill (notamment l'état « Partiel »).
+            this.applyDockerhubState(data, {
+                pushed: data.pushed,
+                total: data.total,
+                errors: data.errors,
+            });
         } else {
             this.showToast(data.detail || "Erreur lors de la sauvegarde.", "error");
         }
@@ -652,7 +722,13 @@ const SettingsApp = {
                 msg += " Déconnecté sur " + data.pushed + "/" + data.total + " agents.";
             }
             this.showToast(msg, "success");
-            this.loadDockerhubSettings();
+            // La réponse du clear porte l'état persisté confirmé
+            // (enabled=false, credentials effacés) : l'UI s'aligne dessus.
+            this.applyDockerhubState(data, {
+                pushed: data.pushed,
+                total: data.total,
+                errors: data.errors,
+            });
         } else {
             this.showToast(data.detail || "Erreur lors de la désactivation.", "error");
         }

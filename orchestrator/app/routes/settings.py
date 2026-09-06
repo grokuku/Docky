@@ -684,7 +684,11 @@ async def api_update_dockerhub_settings(request: Request):
     # Déclencheur 1 : pousser vers tous les agents en ligne (le résultat par
     # agent est renvoyé au frontend pour le toast).
     summary = await _push_and_summarize()
-    return {"success": True, **summary}
+    # L'état persisté (confirmé) est renvoyé avec les résultats de poussée :
+    # le frontend met à jour le pill de statut et le formulaire depuis CETTE
+    # réponse (état backend confirmé), jamais depuis la valeur locale du
+    # formulaire (voir docs/dockerhub-auth.md, « Badge de statut »).
+    return {"success": True, **_dockerhub_status_payload(), **summary}
 
 
 @router.post("/settings/dockerhub/clear")
@@ -704,4 +708,6 @@ async def api_clear_dockerhub_settings(request: Request):
     settings["dockerhub"] = {"enabled": False, "username": "", "token": ""}
     save_settings(settings)
     summary = await _push_and_summarize()
-    return {"success": True, **summary}
+    # Même convention que le PUT : la réponse porte l'état persisté confirmé
+    # (enabled=false, credentials effacés) pour une mise à jour UI fiable.
+    return {"success": True, **_dockerhub_status_payload(), **summary}

@@ -2188,7 +2188,9 @@ body {
 
 /* Page background (scoped to settings only; dashboard untouched) */
 .settings-page {
-    background: #0d0d1b;
+    background:
+        radial-gradient(1200px 400px at 50% -120px, rgba(233, 69, 96, 0.07), transparent 70%),
+        #0d0d1b;
 }
 
 .settings-page .topbar {
@@ -2202,13 +2204,15 @@ body {
     color: #b4b4cf;
 }
 
-/* Scrollable, centered 6-column grid */
+/* Scrollable, centered grid.
+   LLM et Agents pleine largeur (1/-1) ; les 4 cartes compactes du bas
+   (Historique, Sécurité, API MCP, Docker Hub) partagent 4 colonnes égales. */
 .settings-layout {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
     display: grid;
-    grid-template-columns: repeat(6, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     gap: 22px;
     align-items: stretch;
     max-width: 1180px;
@@ -2218,26 +2222,31 @@ body {
 }
 
 /* Column spans */
-.settings-card--half { grid-column: span 3; }
-.settings-card--third { grid-column: span 2; }
+.settings-card--wide { grid-column: 1 / -1; }
+.settings-card--quarter { grid-column: auto; }
 
 /* Cards */
 .settings-panel {
     width: 100%;
     background: #151527;
     border: 1px solid #262643;
-    border-radius: 14px;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+    border-radius: 16px;
+    box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.04),
+        0 1px 2px rgba(5, 5, 16, 0.35),
+        0 6px 20px rgba(5, 5, 16, 0.35);
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    transition: transform 180ms ease-out, border-color 180ms ease-out, box-shadow 180ms ease-out;
+    transition: border-color 180ms ease-out, box-shadow 180ms ease-out, filter 180ms ease-out, background 180ms ease-out;
 }
 
+/* Hover NET sans mouvement : pas de translateY. La carte s'éclaircit
+   légèrement (brightness), la bordure se renforce et l'ombre reste soutenue. */
 .settings-panel:hover {
-    transform: translateY(-2px);
-    border-color: #333352;
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+    filter: brightness(1.06);
+    border-color: #40406e;
+    box-shadow: 0 12px 32px rgba(5, 5, 16, 0.55);
 }
 
 /* Section tints */
@@ -2282,8 +2291,9 @@ body {
 }
 
 .settings-header-title h2 {
-    font-size: 1rem;
+    font-size: 0.9375rem;   /* 15px */
     font-weight: 600;
+    letter-spacing: 0.01em;
     color: #f0f0f8;
     white-space: nowrap;
     overflow: hidden;
@@ -2314,11 +2324,15 @@ body {
     flex: 1;
     min-height: 0;
     overflow: auto;
+    display: flex;
+    flex-direction: column;
 }
 
 /* Form controls (scoped to settings) */
 .settings-body .form-group label {
     color: #b4b4cf;
+    font-size: 0.8125rem;   /* 13px */
+    font-weight: 500;
 }
 
 .settings-body .form-group input[type="text"],
@@ -2329,6 +2343,8 @@ body {
     background: #1d1d36;
     border-color: #262643;
     color: #f0f0f8;
+    height: 40px;
+    border-radius: 10px;
 }
 
 .settings-body .form-group input[type="text"]:focus,
@@ -2338,15 +2354,21 @@ body {
 .settings-body .form-input:focus {
     outline: none;
     border-color: #ff5e7a;
-    box-shadow: 0 0 0 3px rgba(233, 69, 96, 0.14);
+    box-shadow: 0 0 0 3px rgba(233, 69, 96, 0.28);
 }
 
 .settings-body .form-hint {
     color: #7e7e9e;
+    font-size: 0.78125rem;   /* 12.5px */
+}
+
+.settings-body code {
+    color: #7dd3fc;
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
 }
 
 .settings-body .form-hint-list code {
-    color: #60a5fa;
+    color: #7dd3fc;
 }
 
 /* Input masking for API key fields (prevents password manager detection) */
@@ -2442,6 +2464,21 @@ body {
 }
 .settings-panel .status-unknown::before { background: #7e7e9e; }
 
+/* États ambre du pill Docker Hub : config incomplète (pas de token) ou
+   poussée partielle (agents hors ligne / en erreur) — voir
+   docs/dockerhub-auth.md, « Badge de statut ». */
+.settings-panel .status-warning {
+    color: #fbbf24;
+    background: rgba(251, 191, 36, 0.12);
+}
+.settings-panel .status-warning::before { background: #fbbf24; }
+
+.settings-panel .status-partial {
+    color: #fbbf24;
+    background: rgba(251, 191, 36, 0.12);
+}
+.settings-panel .status-partial::before { background: #fbbf24; }
+
 .settings-panel .status-indicator.status-running {
     color: #34d399;
     background: rgba(52, 211, 153, 0.12);
@@ -2500,6 +2537,18 @@ body {
 }
 .status-unknown::before { background: var(--text-muted); }
 
+.status-indicator.status-warning {
+    color: var(--warning);
+    background: rgba(251, 191, 36, 0.12);
+}
+.status-indicator.status-warning::before { background: var(--warning); }
+
+.status-indicator.status-partial {
+    color: var(--warning);
+    background: rgba(251, 191, 36, 0.12);
+}
+.status-indicator.status-partial::before { background: var(--warning); }
+
 .status-indicator.status-running {
     color: var(--success);
     background: rgba(74, 222, 128, 0.12);
@@ -2529,7 +2578,7 @@ body {
     padding: 12px 14px;
     background: #1d1d36;
     border: 1px solid #262643;
-    border-radius: 10px;
+    border-radius: 12px;
     transition: border-color 180ms ease-out, background 180ms ease-out;
 }
 
@@ -2572,7 +2621,13 @@ body {
     display: flex;
     justify-content: flex-end;
     gap: 10px;
-    margin-top: 8px;
+    margin-top: auto;
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+    padding-top: 14px;
+}
+
+.settings-actions .btn {
+    border-radius: 10px;
 }
 
 .settings-panel .btn-primary {
@@ -2584,9 +2639,8 @@ body {
 
 /* LLM warning callout */
 .llm-warning {
-    background: rgba(251, 191, 36, 0.08);
-    border: 1px solid rgba(251, 191, 36, 0.25);
-    border-left: 4px solid #fbbf24;
+    background: rgba(251, 191, 36, 0.12);
+    border-left: 3px solid #fbbf24;
     padding: 14px 16px;
     border-radius: 10px;
     margin-bottom: 20px;
@@ -2616,6 +2670,7 @@ body {
 .settings-panel:nth-child(3) { animation-delay: 0.1s; }
 .settings-panel:nth-child(4) { animation-delay: 0.15s; }
 .settings-panel:nth-child(5) { animation-delay: 0.2s; }
+.settings-panel:nth-child(6) { animation-delay: 0.25s; }
 
 @keyframes settings-fade-up {
     from { opacity: 0; transform: translateY(12px); }
@@ -2628,20 +2683,18 @@ body {
     }
 }
 
-/* Responsive */
+/* Responsive : les 4 cartes compactes passent à 2 colonnes puis 1 colonne.
+   LLM et Agents restent pleine largeur (settings-card--wide = 1/-1). */
 @media (max-width: 1100px) {
     .settings-layout {
-        grid-template-columns: 1fr;
+        grid-template-columns: repeat(2, 1fr);
         padding: 24px 20px;
-    }
-    .settings-card--half,
-    .settings-card--third {
-        grid-column: 1 / -1;
     }
 }
 
-@media (max-width: 560px) {
+@media (max-width: 720px) {
     .settings-layout {
+        grid-template-columns: 1fr;
         padding: 16px;
         gap: 16px;
     }

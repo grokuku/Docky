@@ -77,12 +77,55 @@ credential non ASCII ferait échouer ``httpx`` à la construction du header
 ### Frontend
 
 Carte compacte « Docker Hub » (même rangée que Historique/Sécurité/MCP, classe
-``settings-card--third``) : toggle « Activer », username, token (input
+``settings-card--quarter``) : toggle « Activer », username, token (input
 masqué, placeholder « (configuré) » si un token est stocké), boutons
 « Désactiver » et « Sauvegarder ». Après sauvegarde, le toast affiche
 « Poussé sur N/M agents » (+ erreurs par agent éventuelles). Un hint rappelle
 de créer un access token sur hub.docker.com (Account Settings → Security) et
 que les agents hors ligne recevront la config à leur reconnexion.
+
+### Badge de statut (pill « Activé / Partiel / Incomplet / Désactivé »)
+
+L'en-tête de la carte porte un pill `#dockerhub-status` calculé par
+`SettingsApp.dockerhubPillState()` à partir de l'état backend **confirmé**
+(jamais de la valeur locale du formulaire) :
+
+| État serveur                              | Pill          | Couleur |
+|-------------------------------------------|---------------|---------|
+| `enabled=false`                            | « Désactivé » | gris/rouge (`status-offline`) |
+| `enabled=true`, `has_token=false`          | « Incomplet » | ambre (`status-warning`) |
+| `enabled=true`, `has_token=true`, poussée incomplète* | « Partiel » | ambre (`status-partial`) |
+| `enabled=true`, `has_token=true` (sinon)   | « Activé »    | vert (`status-online`) |
+
+\* uniquement quand le résultat de poussée est connu (réponse d'un PUT) : au
+moins un agent n'a pas confirmé (hors ligne — il rattrapera à sa reconnexion —
+ou en erreur). Au chargement (GET), le résultat de poussée n'est pas connu : le
+pill reflète la config seule (« Activé »).
+
+Le pill est rafraîchi :
+
+- au chargement, via `SettingsApp.loadDockerhubSettings()` (payload du GET :
+  `enabled`/`has_token`) ;
+- **immédiatement** après un « Sauvegarder » (PUT) ou un « Désactiver » (clear),
+  depuis la **réponse de la mutation elle-même** : `PUT /api/settings/dockerhub`
+  et `POST …/clear` renvoient l'état persisté confirmé (`enabled`, `has_token`,
+  `username`) **plus** le résumé de poussée (`pushed`, `total`, `errors`), que
+  `SettingsApp.applyDockerhubState()` applique au formulaire et au pill (avec
+  un tooltip « Poussé sur N/M agent(s) »). Aucune valeur locale n'est
+  réinjectée et il n'y a pas de GET de rattrapage qui pourrait écraser l'état
+  « Partiel » — la source de vérité est toujours la réponse serveur.
+
+Comportements garantis côté backend :
+
+- `test_put_dockerhub_enabled_then_get_returns_enabled` : un `PUT` avec
+  `enabled: true` renvoie `enabled: true, has_token: true` **et** le `GET`
+  suivant confirme le même état (les deux payloads du pill) ;
+- `test_put_dockerhub_response_carries_partial_push_results` : la réponse du
+  `PUT` porte le résumé de poussée par agent (`pushed`/`total`/`errors`) ;
+- `test_get_dockerhub_incomplete_config_pill_payload` : `enabled` sans token
+  stocké → `GET` renvoie `enabled=true, has_token=false` (pill « Incomplet ») ;
+- `test_clear_dockerhub_disables_and_pushes_logout` : la réponse du clear
+  porte l'état désactivé confirmé (pill « Désactivé »).
 
 ---
 

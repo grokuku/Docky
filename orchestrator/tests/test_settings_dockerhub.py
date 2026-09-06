@@ -104,6 +104,83 @@ def test_get_dockerhub_settings_requires_auth(orchestrator_client):
 # PUT /api/settings/dockerhub
 # ---------------------------------------------------------------------------
 
+def test_put_dockerhub_enabled_then_get_returns_enabled(auth_client, data_dir, mock_agent_manager):
+    """PUT with ``enabled: true`` → GET returns ``enabled: true``.
+
+    Regression guard for the Settings badge: both payloads that drive the
+    Docker Hub status pill must carry the confirmed state —
+
+    1. the PUT response itself (persisted ``enabled``/``has_token``), which
+       the frontend renders immediately after saving (no local guess), and
+    2. the following GET snapshot (page reload), which must reflect the saved
+       ``enabled`` state, not a stale ``False``.
+
+    Combined ``enabled && has_token`` is what the pill maps to « Activé ».
+    """
+    mock_agent_manager.push_dockerhub_all.return_value = {"Test Agent": {"success": True}}
+
+    put = auth_client.put(
+        "/api/settings/dockerhub",
+        json={"enabled": True, "username": "hubuser", "token": "dckr_pat_badge"},
+    )
+    assert put.status_code == 200
+    put_body = put.json()
+    assert put_body["success"] is True
+    # Pill payload #1: the PUT response carries the persisted state.
+    assert put_body["enabled"] is True
+    assert put_body["has_token"] is True
+    assert put_body["pushed"] == 1
+    assert put_body["total"] == 1
+
+    get = auth_client.get("/api/settings/dockerhub")
+    assert get.status_code == 200
+    body = get.json()
+    # Pill payload #2: the GET snapshot agrees with the persisted state.
+    assert body["enabled"] is True
+    assert body["username"] == "hubuser"
+    assert body["has_token"] is True
+
+
+def test_put_dockerhub_response_carries_partial_push_results(auth_client, data_dir, mock_agent_manager):
+    """The PUT response returns the per-agent push summary next to the state.
+
+    The pill refines « Activé » into amber « Partiel » when the push could
+    not be confirmed on every online agent (offline/errored) — it needs
+    ``pushed``/``total``/``errors`` in the same response as the state.
+    """
+    mock_agent_manager.push_dockerhub_all.return_value = {
+        "Up Agent": {"success": True},
+        "Down Agent": {"success": False, "offline": True},
+    }
+
+    put = auth_client.put(
+        "/api/settings/dockerhub",
+        json={"enabled": True, "username": "hubuser", "token": "dckr_pat_part"},
+    )
+    assert put.status_code == 200
+    body = put.json()
+    assert body["enabled"] is True
+    assert body["has_token"] is True
+    assert body["pushed"] == 1
+    assert body["total"] == 2
+    assert body["errors"]["Down Agent"]
+
+
+def test_get_dockerhub_incomplete_config_pill_payload(auth_client, data_dir):
+    """``enabled`` without a stored token → the GET maps to amber « Incomplet ».
+
+    A dockerhub section with ``enabled: true`` and no token cannot work; the
+    GET payload (``enabled=true, has_token=false``) is what the frontend pill
+    renders as « Incomplet » (amber) instead of a lying green « Activé ».
+    """
+    _set_dockerhub(data_dir, enabled=True, token="")
+    resp = auth_client.get("/api/settings/dockerhub")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["enabled"] is True
+    assert body["has_token"] is False
+
+
 def test_put_dockerhub_persists_and_pushes(auth_client, data_dir, mock_agent_manager):
     mock_agent_manager.push_dockerhub_all.return_value = {"Test Agent": {"success": True}}
 
@@ -225,6 +302,11 @@ def test_clear_dockerhub_disables_and_pushes_logout(auth_client, data_dir, mock_
     assert body["success"] is True
     assert body["pushed"] == 1
     mock_agent_manager.push_dockerhub_all.assert_awaited_once()
+    # Pill payload: the clear response carries the persisted (disabled)
+    # state, which the frontend maps to grey/red « Désactivé ».
+    assert body["enabled"] is False
+    assert body["has_token"] is False
+    assert body["username"] == ""
 
     stored = load_settings()["dockerhub"]
     assert stored == {"enabled": False, "username": "", "token": ""}
