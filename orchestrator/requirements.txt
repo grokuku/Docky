@@ -1,13 +1,41 @@
-fastapi>=0.115,<1.0
-uvicorn[standard]>=0.34,<1.0
-pyyaml==6.0.2  # pin: seule version avec wheel cp312 précompilé (évite build sdist Cython)
-python-jose[cryptography]>=3.3,<4.0
-passlib[bcrypt]>=1.7,<2.0
-jinja2>=3.1,<4.0
-python-multipart>=0.0.12,<1.0
-httpx>=0.27,<1.0
-websockets>=13.0
+# Pins EXACTS (==) issus de l'environnement testé (.venv) — graphe déterministe,
+# zéro backtracking. Fix du CI `resolution-too-deep` : les plages ouvertes
+# (ex. uvicorn>=0.34,<1.0) faisaient backtracker pip sur 20+ versions.
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+pyyaml==6.0.3  # pin: wheel cp312 précompilé (évite build sdist Cython)
+python-jose[cryptography]==3.5.0
+passlib[bcrypt]==1.7.4
+jinja2==3.1.6
+python-multipart==0.0.32
+httpx==0.28.1
+websockets==17.1
 # MCP (Model Context Protocol) server — FastMCP 4.x (built on the official
 # ``mcp`` SDK v2). Exposes Docky's tools to external LLMs (voir
 # docs/mcp-server.md).
-fastmcp>=4.0,<5.0
+fastmcp==4.0.2
+
+# --- Sous-dépendances critiques (pins exacts → résolution rapide & déterministe) ---
+starlette==1.6.0
+pydantic==2.13.4
+pydantic_core==2.46.4
+typing_extensions==4.16.0
+anyio==4.14.2
+annotated-types==0.8.0
+h11==0.16.0
+httpcore==1.0.9
+certifi==2026.7.22
+idna==3.19
+click==8.4.2
+uvloop==0.22.1
+httptools==0.8.0
+watchfiles==1.2.0
+cryptography==50.0.0
+ecdsa==0.19.2
+rsa==4.9.1
+pyasn1==0.6.4
+bcrypt==5.0.0
+MarkupSafe==3.0.3
+mcp==2.1.1
+mcp-types==2.1.1
+sse-starlette==3.4.10

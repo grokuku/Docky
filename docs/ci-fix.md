@@ -1,5 +1,12 @@
 # Correctif CI : build PyYAML depuis le sdist (échec des tests GitHub Actions)
 
+> **Note (2026-09-06)** : le workflow de tests `.github/workflows/tests.yml` a été
+> **supprimé** (décision utilisateur : inutile dans le flux push → build → deploy
+> immédiat). Les tests tournent désormais **en local** via
+> `python -m pytest -q` (voir « Validation locale »). Les sections ci-dessous
+> sont conservées pour **historique** ; les pins des requirements restent en
+> place (ils s'appliquent aussi au build Docker).
+
 ## Symptôme
 
 L'étape « Install dependencies » du workflow `.github/workflows/tests.yml`
@@ -111,3 +118,89 @@ python -c "import yaml; yaml.safe_load(open('.github/workflows/tests.yml'))"
 
 → passe sans erreur. Les autres workflows (`release.yml`, `test-build.yml`)
 restent valides.
+
+---
+
+# Correctif CI : `resolution-too-deep` (backtracking pip sur les plages ouvertes)
+
+## Symptôme
+
+L'étape « Install dependencies » de `tests.yml` échouait avec :
+
+```
+ERROR: ResolutionTooDeep: 2000000 lines of C extension calls...
+```
+
+pip n'arrivait pas à résoudre le graphe de dépendances dans le budget de
+profondeur autorisé.
+
+## Cause exacte
+
+Les requirements utilisaient des **plages ouvertes** (`>=x,<y`) sur les
+dépendances de premier niveau :
+
+- `uvicorn[standard]>=0.34,<1.0`
+- `passlib[bcrypt]>=1.7,<2.0`
+- `python-jose[cryptography]>=3.3,<4.0`
+- `fastapi>=0.115,<1.0`, `httpx>=0.27,<1.0`, `fastmcp>=4.0,<5.0`, …
+
+Pour chaque plage, le résolveur pip doit **backtracker** : il évalue les
+versions candidates une à une (ex. uvicorn 0.34 → 0.52 → …), reconstruit le
+sous-graphe à chaque essai, et remonte en arrière dès qu'une combinaison
+échoue. Avec plusieurs plages ouvertes imbriquées (uvicorn, passlib,
+python-jose, fastmcp/mcp, …), le nombre de combinaisons explose →
+`resolution-too-deep`.
+
+## Correctif appliqué
+
+**Pins EXACTS** (`package==x.y.z`) pour toutes les dépendances de premier
+niveau **et leurs sous-dépendances critiques**, extraits de l'environnement
+testé (`.venv`, où les 542 tests passent) via `pip freeze`. Un graphe 100 %
+pinné ne laisse aucune liberté au résolveur → résolution immédiate et
+déterministe, sans backtracking.
+
+Fichiers réécrits :
+
+- `orchestrator/requirements.txt`
+- `agent/requirements.txt`
+- `requirements-dev.txt`
+
+Principaux pins :
+
+| Paquet | Pin |
+|---|---|
+| fastapi | 0.141.1 |
+| uvicorn[standard] | 0.52.4 |
+| pyyaml | 6.0.3 (wheel cp312) |
+| python-jose[cryptography] | 3.5.0 |
+| passlib[bcrypt] | 1.7.4 |
+| jinja2 | 3.1.6 |
+| python-multipart | 0.0.32 |
+| httpx | 0.28.1 |
+| websockets | 17.1 |
+| fastmcp | 4.0.2 |
+| docker | 7.2.0 |
+| pytest | 8.4.2 |
+| pytest-asyncio | 0.26.0 |
+| respx | 0.23.1 |
+
+Sous-dépendances critiques pinnées : starlette, pydantic, pydantic_core,
+typing_extensions, anyio, annotated-types, h11, httpcore, certifi, idna,
+click, uvloop, httptools, watchfiles, cryptography, ecdsa, rsa, pyasn1,
+bcrypt, MarkupSafe, mcp, mcp-types, sse-starlette, urllib3, requests, pluggy,
+iniconfig, packaging, exceptiongroup.
+
+## Validation locale
+
+- `pip install --dry-run --only-binary=:all: -r orchestrator/requirements.txt
+  -r agent/requirements.txt -r requirements-dev.txt` → résout en **~1,7 s**,
+  aucun backtracking, aucun `resolution-too-deep`.
+- `timeout 300 python -m pytest -q` → **542 passed, 0 échec** (aucune
+  régression).
+
+## Build Docker
+
+Cohérent : les Dockerfiles (`orchestrator/Dockerfile`, `agent/Dockerfile`)
+installent les mêmes `requirements.txt` → les pins s'appliquent aussi au build
+Docker. C'est voulu : images **reproductibles** (mêmes versions exactes en CI
+et en production). Aucune modification des Dockerfiles nécessaire.

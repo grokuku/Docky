@@ -24,11 +24,39 @@ import bcrypt
 import pytest
 import yaml
 
+# ---------------------------------------------------------------------------
+# Test-only speed-up: lower the bcrypt cost factor
+# ---------------------------------------------------------------------------
+# bcrypt at cost 12 costs ~70-100 ms per checkpw/hashpw call. With hundreds
+# of logins/rotations across the suite (rate_limit, csrf, password_rotation,
+# auth setup), that single cost dominates the runtime (~39% of it).
+#
+# This file is ONLY ever loaded by pytest — application code in production
+# never imports conftest — so patching ``bcrypt.gensalt`` here does not
+# affect production hashing in any way: ``app.config``,
+# ``app.auth.router``, ``app.routes.settings`` and
+# ``app.auth.password_policy`` still call ``bcrypt.gensalt()`` with its
+# default cost 12 when this wrapper is absent.
+#
+# The wrapper clamps any requested cost >= 12 down to 4 (bcrypt's minimum).
+# The cost is embedded in the resulting hash string ($2b$04$...), so
+# ``bcrypt.checkpw`` — including in unrelated assertions — keeps working:
+# hashes generated during tests verify exactly as before, just faster.
+_ORIG_GENSALT = bcrypt.gensalt
+_TEST_BCRYPT_ROUNDS = 4  # minimum bcrypt cost; production default stays 12
+
+
+def _test_gensalt(rounds: int = 12, prefix: bytes = b"2b") -> bytes:
+    return _ORIG_GENSALT(_TEST_BCRYPT_ROUNDS, prefix)
+
+
+bcrypt.gensalt = _test_gensalt  # type: ignore[assignment]
+
 # Mot de passe utilisé pour les comptes de test: "docky123".
-# Hash bcrypt (coût 12) GÉNÉRÉ dynamiquement UNE seule fois à l'import du
-# conftest (~70 ms par session pytest, pas par test) — le vrai hash n'est
-# plus codé en dur dans aucun fichier suivi du dépôt (voir
-# docs/password-rotation.md, section « Nettoyage secrets »).
+# Hash bcrypt GÉNÉRÉ dynamiquement UNE seule fois à l'import du conftest
+# (coût 4 en tests via le wrapper ci-dessus, un seul appel par session
+# pytest) — le vrai hash n'est plus codé en dur dans aucun fichier suivi
+# du dépôt (voir docs/password-rotation.md, section « Nettoyage secrets »).
 BCRYPT_DOCKY123 = bcrypt.hashpw(b"docky123", bcrypt.gensalt(12)).decode()
 
 # Doit rester le premier module-level side effect: tout import de app.* /
