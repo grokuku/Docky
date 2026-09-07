@@ -1,10 +1,13 @@
 /* ═══════════════════════════════════════════════════════════════════════════
- * Holaf UI — Brique HolafModal · version 0.1.0
+ * Holaf UI — Brique HolafModal · version 0.2.0
  * ─────────────────────────────────────────────────────────────────────────────
  * Modale autonome (zéro dépendance runtime) : overlay, pile d'overlays
  * document-level, helpers Promise (alert / confirm / prompt / busy), focus
  * trap, scroll-lock, aria (role=dialog, aria-modal, aria-labelledby), mobile
- * 92vw. Fichier DUAL : module ES (export) + global window.HolafModal — se
+ * 92vw. v0.2.0 — bibliothèque de thèmes : préréglages génériques (dark,
+ * light, midnight, slate), thèmes customs via le registre HolafModal.themes
+ * (register / get / list), thème global volatil HolafModal.setTheme().
+ * Fichier DUAL : module ES (export) + global window.HolafModal — se
  * charge via <script type="module"> ou `import { HolafModal }`.
  *
  * VOLONTAIREMENT ABSENT (ce sera la brique HolafWindow) : drag / resize de
@@ -20,7 +23,7 @@
 const HolafModal = (function () {
     "use strict";
 
-    const VERSION = "0.1.0";
+    const VERSION = "0.2.0";
 
     // ─── État global du module (partagé par toutes les modales) ──────────────
     // Pile des modales ouvertes : la DERNIÈRE entrée est le « sommet », la
@@ -59,6 +62,213 @@ const HolafModal = (function () {
         Object.keys(vars).forEach((k) => {
             if (k.indexOf("--") === 0) el.style.setProperty(k, String(vars[k]));
         });
+    }
+
+    // ─── Bibliothèque de thèmes ──────────────────────────────────────────────────────
+    // Un thème = un objet de variables CSS --hm-* (les mêmes clés que l'option
+    // `theme` de open()). Registre en mémoire + préréglages génériques enregistrés
+    // au chargement (dark / light / midnight / slate). Palettes volontairement
+    // NEUTRES : aucune couleur de projet en dur — la brique sert plusieurs
+    // projets, qui peuvent aussi déclarer leurs thèmes via themes.register.
+    const themeRegistry = Object.create(null);
+
+    // Ne conserve que les clés commençant par « -- » (même règle que applyVars) ;
+    // valeurs stringifiées.
+    function filterVars(vars) {
+        const out = {};
+        if (!vars || typeof vars !== "object") return out;
+        Object.keys(vars).forEach((k) => {
+            if (k.indexOf("--") === 0) out[k] = String(vars[k]);
+        });
+        return out;
+    }
+
+    // Enregistre (ou REMPLACE) un thème. Retourne la copie stockée.
+    function themesRegister(name, vars) {
+        if (typeof name !== "string" || !name.trim()) {
+            console.error("[HolafModal] themes.register : nom de thème invalide (chaîne non vide attendue).");
+            return null;
+        }
+        themeRegistry[name] = filterVars(vars);
+        return themeRegistry[name];
+    }
+
+    // Copie des variables du thème (le registre est protégé des mutations), null si inconnu.
+    function themesGet(name) {
+        const t = themeRegistry[name];
+        return t ? Object.assign({}, t) : null;
+    }
+
+    // Noms des thèmes enregistrés (préréglages + customs).
+    function themesList() {
+        return Object.keys(themeRegistry);
+    }
+
+    // Résout une spécification de thème — option `theme` de open() OU argument
+    // de setTheme — en objet de variables prêt pour applyVars :
+    //   - string           → nom d'un thème enregistré (warn si inconnu) ;
+    //   - objet --hm-*     → utilisé tel quel (comportement historique, inchangé) ;
+    //   - { preset, vars } → thème enregistré + surcharges (vars gagnent sur le
+    //                        preset, qui gagne sur les défauts de la brique).
+    function resolveThemeVars(spec) {
+        let base = null;
+        let overrides = null;
+        if (typeof spec === "string") {
+            base = themesGet(spec);
+            if (!base) {
+                console.warn(
+                    '[HolafModal] thème inconnu : "' + spec + '" — thèmes disponibles : ' +
+                    (themesList().join(", ") || "(aucun)")
+                );
+                return null; // repli gracieux : défauts CSS
+            }
+        } else if (spec && typeof spec === "object") {
+            if (typeof spec.preset === "string") {
+                base = themesGet(spec.preset);
+                if (!base) {
+                    console.warn(
+                        '[HolafModal] thème prédéfini inconnu : "' + spec.preset +
+                        '" — thèmes disponibles : ' + (themesList().join(", ") || "(aucun)")
+                    );
+                    // pas de base : on continue avec les seules surcharges
+                }
+                if (spec.vars && typeof spec.vars === "object") overrides = spec.vars;
+            } else {
+                return spec; // objet de variables brut — comportement historique
+            }
+        } else {
+            return null; // null / undefined / valeur exotique : aucun thème
+        }
+        if (!base) return overrides ? filterVars(overrides) : null;
+        if (!overrides) return base;
+        return Object.assign(base, overrides); // base = copie → fusion sûre
+    }
+
+    // ─── Préréglages génériques (enregistrés au chargement de la brique) ────
+    // Contraste des textes ≥ 4.5:1. PAS de --hm-width dans un preset : la
+    // largeur est gouvernée par size/width (un thème ne doit pas pouvoir
+    // casser les classes sm/md/lg/xl).
+    // dark : STRICTEMENT les valeurs par défaut du CSS injecté ci-dessous —
+    // theme:"dark" ≡ aucune option theme (rétrocompatibilité à l'identique).
+    themesRegister("dark", {
+        "--hm-bg": "#1e1e1e",
+        "--hm-bg-secondary": "#27272a",
+        "--hm-bg-input": "#1a1a1a",
+        "--hm-text": "#e4e4e7",
+        "--hm-text-secondary": "#a1a1aa",
+        "--hm-border": "#3f3f46",
+        "--hm-accent": "#6366f1",
+        "--hm-accent-hover": "#818cf8",
+        "--hm-accent-text": "#ffffff",
+        "--hm-danger": "#ef4444",
+        "--hm-danger-hover": "#dc2626",
+        "--hm-danger-text": "#ffffff",
+        "--hm-radius": "12px",
+        "--hm-overlay-bg": "rgba(0, 0, 0, 0.55)",
+        "--hm-font-size": "14px",
+        "--hm-shadow": "0 18px 50px rgba(0, 0, 0, 0.55)",
+        "--hm-busy-bg": "rgba(30, 30, 30, 0.82)",
+    });
+    // light : clair zinc, ombre adoucie, overlay allégé.
+    themesRegister("light", {
+        "--hm-bg": "#ffffff",
+        "--hm-bg-secondary": "#f4f4f5",
+        "--hm-bg-input": "#fafafa",
+        "--hm-text": "#18181b",
+        "--hm-text-secondary": "#52525b",
+        "--hm-border": "#d4d4d8",
+        "--hm-accent": "#4f46e5",
+        "--hm-accent-hover": "#6366f1",
+        "--hm-accent-text": "#ffffff",
+        "--hm-danger": "#dc2626",
+        "--hm-danger-hover": "#b91c1c",
+        "--hm-danger-text": "#ffffff",
+        "--hm-radius": "12px",
+        "--hm-overlay-bg": "rgba(24, 24, 27, 0.35)",
+        "--hm-font-size": "14px",
+        "--hm-shadow": "0 18px 50px rgba(24, 24, 27, 0.18)",
+        "--hm-busy-bg": "rgba(255, 255, 255, 0.82)",
+    });
+    // midnight : bleu nuit profond « layered », accent indigo doux (texte
+    // sombre sur le bouton primaire → contraste ~7:1).
+    themesRegister("midnight", {
+        "--hm-bg": "#10111d",
+        "--hm-bg-secondary": "#181a2c",
+        "--hm-bg-input": "#0c0d17",
+        "--hm-text": "#e2e4f0",
+        "--hm-text-secondary": "#9aa0c3",
+        "--hm-border": "#272a44",
+        "--hm-accent": "#818cf8",
+        "--hm-accent-hover": "#a5b4fc",
+        "--hm-accent-text": "#10111d",
+        "--hm-danger": "#ef4444",
+        "--hm-danger-hover": "#dc2626",
+        "--hm-danger-text": "#ffffff",
+        "--hm-radius": "12px",
+        "--hm-overlay-bg": "rgba(4, 5, 12, 0.65)",
+        "--hm-font-size": "14px",
+        "--hm-shadow": "0 18px 50px rgba(0, 0, 0, 0.6)",
+        "--hm-busy-bg": "rgba(16, 17, 29, 0.85)",
+    });
+    // slate : gris ardoise neutre, accent gris neutre (bouton primaire « soft »)
+    // — le plus polyvalent, lisible sur fond de page de n'importe quelle teinte.
+    themesRegister("slate", {
+        "--hm-bg": "#1f232b",
+        "--hm-bg-secondary": "#292e38",
+        "--hm-bg-input": "#191d24",
+        "--hm-text": "#e6e9ee",
+        "--hm-text-secondary": "#9aa3b2",
+        "--hm-border": "#3a4150",
+        "--hm-accent": "#94a3b8",
+        "--hm-accent-hover": "#b6c2d4",
+        "--hm-accent-text": "#1f232b",
+        "--hm-danger": "#ef4444",
+        "--hm-danger-hover": "#dc2626",
+        "--hm-danger-text": "#ffffff",
+        "--hm-radius": "12px",
+        "--hm-overlay-bg": "rgba(8, 10, 14, 0.55)",
+        "--hm-font-size": "14px",
+        "--hm-shadow": "0 18px 50px rgba(0, 0, 0, 0.5)",
+        "--hm-busy-bg": "rgba(31, 35, 43, 0.85)",
+    });
+
+    // ─── Thème global par défaut (VOLATIL — aucune persistance) ─────────────
+    // HolafModal.setTheme(...) s'applique à toutes les modales qui ne passent
+    // PAS d'option `theme` à open(). Résolution : open.theme (string | objet |
+    // { preset, vars }) > setTheme > défauts CSS. Chaque projet le règle une
+    // fois à l'init ; rien n'est écrit en localStorage (persister le choix de
+    // l'utilisateur est l'affaire du projet hôte, qui rejouera setTheme).
+    let globalThemeSpec = null;
+
+    function setTheme(spec) {
+        if (spec === null || spec === undefined) {
+            globalThemeSpec = null;
+            return;
+        }
+        if (typeof spec === "string") {
+            if (!themeRegistry[spec]) {
+                console.warn(
+                    '[HolafModal] setTheme : thème inconnu "' + spec + '" — thèmes disponibles : ' +
+                    (themesList().join(", ") || "(aucun)") +
+                    " (enregistrable via HolafModal.themes.register)"
+                );
+            }
+            globalThemeSpec = spec;
+            return;
+        }
+        if (typeof spec !== "object") {
+            console.error("[HolafModal] setTheme : attendu un nom de thème, un objet --hm-* ou { preset, vars }.");
+            return;
+        }
+        // Copie superficielle (+ vars) : les mutations externes n'affectent pas
+        // le thème global ; la résolution se fait à chaque open().
+        const copy = Object.assign({}, spec);
+        if (spec.vars && typeof spec.vars === "object") copy.vars = Object.assign({}, spec.vars);
+        globalThemeSpec = copy;
+    }
+
+    function clearTheme() {
+        globalThemeSpec = null;
     }
 
     // ─── CSS auto-injecté (une seule fois, id holaf-modal-style) ─────────────
@@ -239,11 +449,20 @@ body.holaf-modal-open { overflow: hidden; }
         const widthVar = toPx(opts.width);
         if (widthVar) el.style.setProperty("--hm-width", widthVar);
 
-        // Thème par instance : surcharge de variables --hm-* sur la racine
-        // (et l'overlay) de CETTE modale uniquement — jamais sur :root.
-        if (opts.theme) {
-            applyVars(overlay, opts.theme);
-            applyVars(el, opts.theme);
+        // ── Thème de CETTE modale : résolution
+        //   open.theme (string | objet --hm-* | { preset, vars })
+        //     > thème global (HolafModal.setTheme)
+        //     > défauts CSS de la brique (thème sombre).
+        // Les variables sont posées sur l'overlay ET la racine — jamais sur
+        // :root — donc chaque instance reste re-thémable indépendamment.
+        // `theme: null` (ou "") : aucun thème pour cette modale, même si un
+        // thème global est actif.
+        let themeSpec = opts.theme;
+        if (themeSpec === undefined) themeSpec = globalThemeSpec;
+        const themeVars = resolveThemeVars(themeSpec);
+        if (themeVars) {
+            applyVars(overlay, themeVars);
+            applyVars(el, themeVars);
         }
 
         // ── Header (titre en textContent — JAMAIS innerHTML) ─────────────────
@@ -482,6 +701,7 @@ body.holaf-modal-open { overflow: hidden; }
                 size: "sm",
                 content: messageNode(message),
                 buttons: [{ text: opts.okText || "OK", value: true, type: "primary", autoFocus: true }],
+                theme: opts.theme,
                 closeOnOverlay: false,
                 _onResolve: () => resolve(undefined),
             });
@@ -507,6 +727,7 @@ body.holaf-modal-open { overflow: hidden; }
                     },
                 ],
                 guard: opts.guard,
+                theme: opts.theme,
                 closeOnOverlay: false,
                 _onResolve: (v) => resolve(v === true),
             });
@@ -538,6 +759,7 @@ body.holaf-modal-open { overflow: hidden; }
                         onClick: () => input.value, // la valeur saisie remplace btn.value
                     },
                 ],
+                theme: opts.theme,
                 closeOnOverlay: false,
                 _onResolve: (v) => resolve(typeof v === "string" ? v : null),
             });
@@ -592,6 +814,19 @@ body.holaf-modal-open { overflow: hidden; }
         confirm: confirm,
         prompt: prompt,
         busy: busy,
+        // Thème global par défaut (volatil) : s'applique aux modales qui ne
+        // passent pas d'option `theme` — voir README section « Thèmes ».
+        setTheme: setTheme,
+        clearTheme: clearTheme,
+        // Registre de thèmes (préréglages + customs) :
+        //   themes.register(name, vars) — enregistre/remplace (retourne la copie stockée)
+        //   themes.get(name)            — copie des variables ou null
+        //   themes.list()               — noms enregistrés
+        themes: {
+            register: themesRegister,
+            get: themesGet,
+            list: themesList,
+        },
     };
 })();
 
