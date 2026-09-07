@@ -82,12 +82,8 @@ const SettingsApp = {
     },
 
     showToast(message, type = "info") {
-        const toast = document.getElementById("toast");
-        if (!toast) return;
-        toast.textContent = message;
-        toast.className = "toast " + type;
-        toast.classList.remove("hidden");
-        setTimeout(() => toast.classList.add("hidden"), 3000);
+        // Adaptateur fin vers la brique HolafToast (voir holaf-docky-toast.js).
+        return window.DockyToast.show(message, type);
     },
 
     escapeHtml(text) {

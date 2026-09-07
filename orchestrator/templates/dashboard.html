@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="/static/css/style.css">
     <script src="https://unpkg.com/lucide@latest"></script>
     <script type="module" src="/static/vendor/holaf/holaf-modal.js"></script>
+    <script type="module" src="/static/vendor/holaf/holaf-toast.js"></script>
     <script type="module" src="/static/js/holaf-docky-theme.js"></script>
 </head>
 <body class="app-body">
@@ -197,12 +198,10 @@
 
     <!-- WebUI choice modal (migré vers HolafModal — voir dashboard.js _renderWebUIModal) -->
 
-    <!-- Toast -->
-    <div id="toast" class="toast hidden"></div>
-
     <!-- Docky JS : façade (app.js) puis modules (scripts classiques synchrones,
          exécutés dans l'ordre, AVANT DOMContentLoaded -> window.DockyApp complet). -->
     <script src="/static/js/app.js"></script>
+    <script src="/static/js/holaf-docky-toast.js"></script>
     <script src="/static/js/api.js"></script>
     <script src="/static/js/events.js"></script>
     <script src="/static/js/dashboard.js"></script>

@@ -1681,41 +1681,17 @@ body {
 }
 
 /* ============================================================
-   Toast
+   Toast — brique HolafToast (holaf-toast)
+   ------------------------------------------------------------
+   L'ancien toast maison (#toast + .toast) a été remplacé par la
+   brique HolafToast (voir holaf-docky-toast.js). Le CSS de la
+   brique est auto-injecté (classes .holaf-toast-*).
+
+   Thème Docky : la brique (v0.2.0) expose un registre de thèmes
+   (--ht-*). L'adaptateur holaf-docky-toast.js enregistre le thème
+   "docky" et le pose comme thème GLOBAL (setTheme) — plus aucun
+   override CSS nécessaire ici.
    ============================================================ */
-
-.toast {
-    position: fixed;
-    bottom: 24px;
-    left: 50%;
-    transform: translateX(-50%);
-    padding: 12px 24px;
-    border-radius: var(--radius-sm);
-    font-size: 0.875rem;
-    z-index: 300;
-    box-shadow: var(--shadow);
-    transition: opacity 0.3s ease;
-    max-width: 90%;
-    text-align: center;
-}
-
-.toast.info {
-    background: var(--bg-tertiary);
-    color: var(--text-primary);
-    border: 1px solid var(--info);
-}
-
-.toast.success {
-    background: rgba(74, 222, 128, 0.15);
-    color: var(--success);
-    border: 1px solid var(--success);
-}
-
-.toast.error {
-    background: rgba(239, 68, 68, 0.15);
-    color: var(--danger);
-    border: 1px solid var(--danger);
-}
 
 /* ============================================================
    Chat LLM (Phase 4)
