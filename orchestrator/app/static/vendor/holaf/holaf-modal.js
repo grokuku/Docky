@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════════════════
- * Holaf UI — Brique HolafModal · version 0.2.0
+ * Holaf UI — Brique HolafModal · version 0.2.1
  * ─────────────────────────────────────────────────────────────────────────────
  * Modale autonome (zéro dépendance runtime) : overlay, pile d'overlays
  * document-level, helpers Promise (alert / confirm / prompt / busy), focus
@@ -7,6 +7,9 @@
  * 92vw. v0.2.0 — bibliothèque de thèmes : préréglages génériques (dark,
  * light, midnight, slate), thèmes customs via le registre HolafModal.themes
  * (register / get / list), thème global volatil HolafModal.setTheme().
+ * v0.2.1 — finition : opt-out `theme: ""` silencieux (≡ null), warning unique
+ * par nom de thème inconnu, themes.register renvoie une copie protégée,
+ * clés --hm-* racine d'un { preset, … } fusionnées dans les surcharges.
  * Fichier DUAL : module ES (export) + global window.HolafModal — se
  * charge via <script type="module"> ou `import { HolafModal }`.
  *
@@ -23,7 +26,7 @@
 const HolafModal = (function () {
     "use strict";
 
-    const VERSION = "0.2.0";
+    const VERSION = "0.2.1";
 
     // ─── État global du module (partagé par toutes les modales) ──────────────
     // Pile des modales ouvertes : la DERNIÈRE entrée est le « sommet », la
@@ -72,6 +75,20 @@ const HolafModal = (function () {
     // projets, qui peuvent aussi déclarer leurs thèmes via themes.register.
     const themeRegistry = Object.create(null);
 
+    // Noms de thèmes inconnus DÉJÀ avertis : chaque nom inconnu ne déclenche
+    // qu'UN SEUL console.warn, même si la résolution échoue à chaque open()
+    // (un thème global inconnu est ré-évalué à chaque ouverture — il ne faut
+    // pas re-warning à chaque fois). Le Set est réinitialisé quand le nom
+    // redevient valide (themes.register) ou par clearTheme().
+    const warnedUnknownThemes = new Set();
+
+    // Avertit pour un nom de thème inconnu — une seule fois par nom.
+    function warnUnknownThemeOnce(name, message) {
+        if (warnedUnknownThemes.has(name)) return;
+        warnedUnknownThemes.add(name);
+        console.warn(message);
+    }
+
     // Ne conserve que les clés commençant par « -- » (même règle que applyVars) ;
     // valeurs stringifiées.
     function filterVars(vars) {
@@ -83,14 +100,16 @@ const HolafModal = (function () {
         return out;
     }
 
-    // Enregistre (ou REMPLACE) un thème. Retourne la copie stockée.
+    // Enregistre (ou REMPLACE) un thème. Retourne une COPIE protégée (comme
+    // themes.get) : muter le retour ne corrompt pas le registre.
     function themesRegister(name, vars) {
         if (typeof name !== "string" || !name.trim()) {
             console.error("[HolafModal] themes.register : nom de thème invalide (chaîne non vide attendue).");
             return null;
         }
         themeRegistry[name] = filterVars(vars);
-        return themeRegistry[name];
+        warnedUnknownThemes.delete(name); // redevient valide → on oublie l'avertissement émis
+        return Object.assign({}, themeRegistry[name]);
     }
 
     // Copie des variables du thème (le registre est protégé des mutations), null si inconnu.
@@ -106,17 +125,26 @@ const HolafModal = (function () {
 
     // Résout une spécification de thème — option `theme` de open() OU argument
     // de setTheme — en objet de variables prêt pour applyVars :
+    //   - null/undefined/"" → aucun thème, SANS warning (opt-out silencieux) ;
     //   - string           → nom d'un thème enregistré (warn si inconnu) ;
     //   - objet --hm-*     → utilisé tel quel (comportement historique, inchangé) ;
     //   - { preset, vars } → thème enregistré + surcharges (vars gagnent sur le
     //                        preset, qui gagne sur les défauts de la brique).
+    //                        v0.2.1 : les clés --hm-* posées à la RACINE du spec
+    //                        (à côté de preset) ne sont plus ignorées — elles
+    //                        sont fusionnées dans les surcharges ; en cas de
+    //                        doublon, vars (champ officiel) garde la priorité.
     function resolveThemeVars(spec) {
+        // Opt-out explicite : "" est documenté comme équivalent de null
+        // (aucun thème, même global) — SANS avertissement.
+        if (spec === null || spec === undefined || spec === "") return null;
         let base = null;
         let overrides = null;
         if (typeof spec === "string") {
             base = themesGet(spec);
             if (!base) {
-                console.warn(
+                warnUnknownThemeOnce(
+                    spec,
                     '[HolafModal] thème inconnu : "' + spec + '" — thèmes disponibles : ' +
                     (themesList().join(", ") || "(aucun)")
                 );
@@ -132,12 +160,18 @@ const HolafModal = (function () {
                     );
                     // pas de base : on continue avec les seules surcharges
                 }
-                if (spec.vars && typeof spec.vars === "object") overrides = spec.vars;
+                // Surcharges = clés --hm-* racine PUIS vars (vars gagne sur la
+                // racine en cas de doublon). Objet frais : le spec externe n'est
+                // jamais muté, ni retenu par référence.
+                const rootVars = filterVars(spec);
+                overrides = (spec.vars && typeof spec.vars === "object")
+                    ? Object.assign(rootVars, spec.vars)
+                    : (Object.keys(rootVars).length > 0 ? rootVars : null);
             } else {
                 return spec; // objet de variables brut — comportement historique
             }
         } else {
-            return null; // null / undefined / valeur exotique : aucun thème
+            return null; // valeur exotique (nombre, booléen…) : aucun thème
         }
         if (!base) return overrides ? filterVars(overrides) : null;
         if (!overrides) return base;
@@ -247,7 +281,10 @@ const HolafModal = (function () {
         }
         if (typeof spec === "string") {
             if (!themeRegistry[spec]) {
-                console.warn(
+                // Warning émis UNE seule fois par nom : open() ré-évalue le
+                // thème global à chaque ouverture, il ne doit pas re-warning.
+                warnUnknownThemeOnce(
+                    spec,
                     '[HolafModal] setTheme : thème inconnu "' + spec + '" — thèmes disponibles : ' +
                     (themesList().join(", ") || "(aucun)") +
                     " (enregistrable via HolafModal.themes.register)"
@@ -269,6 +306,7 @@ const HolafModal = (function () {
 
     function clearTheme() {
         globalThemeSpec = null;
+        warnedUnknownThemes.clear(); // contexte global effacé → on re-avertira au besoin
     }
 
     // ─── CSS auto-injecté (une seule fois, id holaf-modal-style) ─────────────
@@ -819,7 +857,7 @@ body.holaf-modal-open { overflow: hidden; }
         setTheme: setTheme,
         clearTheme: clearTheme,
         // Registre de thèmes (préréglages + customs) :
-        //   themes.register(name, vars) — enregistre/remplace (retourne la copie stockée)
+        //   themes.register(name, vars) — enregistre/remplace (retourne une copie protégée)
         //   themes.get(name)            — copie des variables ou null
         //   themes.list()               — noms enregistrés
         themes: {

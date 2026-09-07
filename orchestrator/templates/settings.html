@@ -205,42 +205,7 @@
         </section>
     </div>
 
-    <!-- Agent form modal -->
-    <div id="agent-modal" class="modal hidden">
-        <div class="modal-content modal-small">
-            <div class="modal-header">
-                <h3 id="agent-modal-title"><i data-lucide="plus"></i> Ajouter un agent</h3>
-                <button class="btn btn-ghost btn-sm" onclick="SettingsApp.closeAgentForm()"><i data-lucide="x"></i></button>
-            </div>
-            <div class="modal-body modal-body-pad">
-                <div class="form-group">
-                    <label for="agent-name">Nom</label>
-                    <input type="text" id="agent-name" placeholder="Serveur Local" autocomplete="off">
-                </div>
-                <div class="form-group">
-                    <label for="agent-url">URL</label>
-                    <input type="text" id="agent-url" placeholder="http://docky-agent:8080" autocomplete="off">
-                </div>
-                <div class="form-group">
-                    <label for="agent-api-key">Clé API</label>
-                    <input type="text" id="agent-api-key" placeholder="••••••••" autocomplete="off" class="form-input input-masked">
-                    <p class="form-hint" id="agent-key-hint">Laisser vide pour ne pas changer.</p>
-                </div>
-                <div class="form-group">
-                    <label>Mappings de chemins (host → local)</label>
-                    <div id="path-mappings-list">
-                        <!-- Liste des mappings existants -->
-                    </div>
-                    <button type="button" class="btn btn-ghost btn-sm" onclick="SettingsApp.addPathMapping()">+ Ajouter un mapping</button>
-                    <p class="form-hint">Indiquez les correspondances entre les chemins de l'hôte et ceux visibles par l'agent (ex. /mnt/user/appdata → /mnt/user/appdata). L'orchestrateur appliquera ces mappings lors de l'import de stacks externes.</p>
-                </div>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-ghost" onclick="SettingsApp.closeAgentForm()">Annuler</button>
-                <button class="btn btn-primary" id="agent-save-btn" onclick="SettingsApp.submitAgentForm()">Enregistrer</button>
-            </div>
-        </div>
-    </div>
+    <!-- Agent form modal (migré vers HolafModal — voir settings.js showAgentForm) -->
 
     <!-- Toast -->
     <div id="toast" class="toast hidden"></div>

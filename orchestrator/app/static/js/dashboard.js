@@ -73,10 +73,9 @@ Object.assign(window.DockyApp, {
     },
 
     _openVersionMismatchModal() {
-        const modal = document.getElementById("version-mismatch-modal");
-        if (!modal) return;
-        const body = document.getElementById("version-mismatch-body");
-        // Build list of mismatched agents with versions
+        // Fenêtre n°5 du lot « 5 listes dynamiques » migrée vers HolafModal :
+        // remplace l'ancienne modale statique #version-mismatch-modal. Liste des
+        // agents/versions en désaccord, rendu identique.
         let html = '';
         for (const m of this._versionMismatches || []) {
             html += '<div class="version-mismatch-item">';
@@ -87,13 +86,25 @@ Object.assign(window.DockyApp, {
         if (!html) {
             html = '<p class="placeholder-hint">Aucune désynchronisation détectée.</p>';
         }
-        body.innerHTML = html;
-        modal.classList.remove("hidden");
+        const ctrl = HolafModal.open({
+            title: "⚠️ Versions désynchronisées",
+            content: html,
+            size: "sm",
+            buttons: [
+                { text: "Fermer", value: false, type: "cancel" },
+            ],
+            onClose: () => { this._versionMismatchModalCtrl = null; },
+        });
+        this._versionMismatchModalCtrl = ctrl;
     },
 
     closeVersionMismatch() {
-        const modal = document.getElementById("version-mismatch-modal");
-        if (modal) modal.classList.add("hidden");
+        // La fermeture est gérée par HolafModal (boutons / Échap). Stub conservé
+        // pour préserver l'API existante (handler global « Échap » de app.js).
+        if (this._versionMismatchModalCtrl) {
+            this._versionMismatchModalCtrl.close();
+            this._versionMismatchModalCtrl = null;
+        }
     },
 
 
@@ -1424,12 +1435,15 @@ Object.assign(window.DockyApp, {
 
     /**
      * Demande confirmation avant de supprimer un container (action destructif).
-     * Utilise une modale native ``window.confirm`` (repli simple et fiable).
+     * Pilote HolafModal.confirm (thème global « docky » hérité).
      */
-    confirmContainerDelete(id, agent) {
-        if (window.confirm('Supprimer ce container ?\n\nCette action est irréversible (docker rm -f).')) {
-            this.containerAction(id, 'delete', agent);
-        }
+    async confirmContainerDelete(id, agent) {
+        const ok = await HolafModal.confirm(
+            "Supprimer le container",
+            "Supprimer ce container ?\n\nCette action est irréversible (docker rm -f).",
+            { danger: true, confirmText: "Supprimer", cancelText: "Annuler" }
+        );
+        if (ok) this.containerAction(id, 'delete', agent);
     },
 
     // -------------------------------------------------------
@@ -1468,13 +1482,14 @@ Object.assign(window.DockyApp, {
             return;
         }
         this._renderWebUIModal(webui, agent);
-        const modal = document.getElementById('webui-modal');
-        if (modal) modal.classList.remove('hidden');
     },
 
     _renderWebUIModal(webui, agent) {
-        const body = document.getElementById('webui-body');
-        if (!body) return;
+        // Fenêtre n°3 du lot « 5 listes dynamiques » migrée vers HolafModal :
+        // remplace l'ancienne modale statique #webui-modal. Liste des adresses
+        // WebUI, liens cliquables (window.open noopener via target=_blank
+        // rel=noopener noreferrer), résolution des adresses relatives contre
+        // l'URL de l'agent conservée (_resolveWebUIUrl).
         let html = '<p style="margin:0 0 10px;color:var(--text-secondary);">Plusieurs accès Web disponibles :</p>';
         html += '<ul class="update-all-list">';
         for (const w of webui) {
@@ -1487,15 +1502,29 @@ Object.assign(window.DockyApp, {
         }
         html += '</ul>';
         html += '<p class="form-hint">Chaque lien s\'ouvre dans un nouvel onglet (noopener).</p>';
-        body.innerHTML = html;
-        if (typeof lucide !== 'undefined') {
-            lucide.createIcons();
-        }
+
+        const ctrl = HolafModal.open({
+            title: "🌐 Accès Web",
+            content: html,
+            size: "md",
+            width: 520,
+            buttons: [
+                { text: "Fermer", value: false, type: "cancel" },
+            ],
+            onOpen: () => { if (typeof lucide !== 'undefined') lucide.createIcons(); },
+            onClose: () => { this._webUIModalCtrl = null; },
+        });
+        this._webUIModalCtrl = ctrl;
     },
 
     closeWebUIModal() {
-        const modal = document.getElementById('webui-modal');
-        if (modal) modal.classList.add('hidden');
+        // La fermeture est gérée par HolafModal (boutons / Échap). Stub conservé
+        // pour préserver l'API existante : il ferme la modale ouverte via le
+        // handle stocké.
+        if (this._webUIModalCtrl) {
+            this._webUIModalCtrl.close();
+            this._webUIModalCtrl = null;
+        }
     },
 
     /** Bouton 🌐 pour un container (vide si aucun accès Web). */
@@ -1734,23 +1763,26 @@ Object.assign(window.DockyApp, {
 
     // Down = docker compose down (stop + suppression containers/réseau, volumes
     // conservés). Destructif → confirmation avant de lancer l'action.
+    // Pilote HolafModal : remplace l'ancienne modale statique #stack-down-modal
+    // (même titre/message/boutons/callback, thème global « docky » hérité).
     confirmStackDown(name, agent) {
         this._downTarget = { name, agent: agent || null };
-        const modal = document.getElementById('stack-down-modal');
-        if (!modal) {
-            // Repli : confirmation native si le modal est absent.
-            if (window.confirm('Down de la stack « ' + name + ' » ?\n\nStop + suppression des containers et du réseau (volumes conservés).')) {
-                this.stackAction(name, 'down', agent);
-            }
-            return;
-        }
-        document.getElementById('stack-down-name').textContent = name;
-        modal.classList.remove('hidden');
+        HolafModal.open({
+            title: "⏻ Down de la stack",
+            content: "<p>Es-tu sûr de vouloir faire un <strong>down</strong> de la stack <strong>" + this.escapeHtml(name) + "</strong> ?</p>"
+                + '<p class="form-hint danger-text">⚠ Arrête et supprime les containers et le réseau. Les volumes nommés sont conservés.</p>',
+            size: "sm",
+            buttons: [
+                { text: "Annuler", value: false, type: "cancel" },
+                { text: "Confirmer le down", value: true, type: "danger", onClick: () => this.confirmStackDownAction() },
+            ],
+            onClose: () => { this._downTarget = null; },
+        });
     },
 
     closeStackDownModal() {
-        const modal = document.getElementById('stack-down-modal');
-        if (modal) modal.classList.add('hidden');
+        // La fermeture est gérée par HolafModal (boutons / Échap). On ne fait
+        // que purger l'état cible pour préserver l'API existante.
         this._downTarget = null;
     },
 
@@ -1977,18 +2009,6 @@ Object.assign(window.DockyApp, {
         // Open console in a popup window so the user can keep it on another screen
         const url = `/popup/console?agent=${encodeURIComponent(agent || '')}&container=${encodeURIComponent(containerId)}&name=${encodeURIComponent(name || '')}`;
         window.open(url, `console-${containerId}`, 'width=900,height=650,scrollbars=yes,resizable=yes');
-        // Keep legacy state for backwards compat (modal helpers remain usable)
-        this.consoleContainerId = containerId;
-        this.consoleContainerAgent = agent;
-    },
-
-    closeConsole() {
-        if (this.consoleWs) {
-            try { this.consoleWs.close(); } catch (e) {}
-            this.consoleWs = null;
-        }
-        document.getElementById("console-modal").classList.add("hidden");
-        this.consoleContainerId = null;
     },
 
     // -------------------------------------------------------
@@ -2309,15 +2329,6 @@ Object.assign(window.DockyApp, {
             }
             this._updateAllList = list;
             this._renderUpdateAllModal(list);
-            const modal = document.getElementById('update-all-modal');
-            if (modal) {
-                modal.classList.remove('hidden');
-            } else {
-                // Repli : confirmation native si le modal est absent.
-                if (window.confirm('Mettre à jour ' + list.length + ' container(s) ?\n\n' + list.map(i => i.name + ' (@' + i.agent + ')').join('\n'))) {
-                    this.confirmUpdateAll();
-                }
-            }
         } catch (e) {
             this.showToast('Erreur lors de la recherche des mises à jour : ' + e.message, 'error');
         } finally {
@@ -2325,31 +2336,63 @@ Object.assign(window.DockyApp, {
         }
     },
 
+    // Fenêtre n°4 du lot « 5 listes dynamiques » migrée vers HolafModal :
+    // remplace l'ancienne modale statique #update-all-modal (et son repli
+    // HolafModal.confirm). Approche de re-rendu dynamique : on garde le handle
+    // retourné par HolafModal.open() (ctrl) dans this._updateAllModalCtrl. Le
+    // bouton « Mettre à jour » vit dans le footer de la brique (créé une seule
+    // fois) ; à chaque exclusion ✕ on re-rend le corps via ctrl.setContent() et
+    // on bascule son état disabled via ctrl.footer.querySelector('.holaf-modal-btn-primary').
+    // Le footer n'est PAS recréé par setContent() → le bouton persiste.
     _renderUpdateAllModal(list) {
-        const body = document.getElementById('update-all-body');
-        if (!body) return;
         if (!list) list = [];
-        const confirmBtn = document.getElementById('update-all-confirm-btn');
-        // État « vide » : tous les containers ont été exclus → on neutralise
-        // le bouton « Mettre à jour » et on affiche un message clair.
-        if (list.length === 0) {
-            body.innerHTML = '<p style="margin:0 0 10px;color:var(--text-secondary);">Aucun container à mettre à jour.</p>'
+        const empty = list.length === 0;
+
+        let html;
+        if (empty) {
+            html = '<p style="margin:0 0 10px;color:var(--text-secondary);">Aucun container à mettre à jour.</p>'
                 + '<p class="form-hint">Tous les containers ont été exclus de cette passe. Cliquez sur Annuler pour fermer.</p>';
-            if (confirmBtn) confirmBtn.disabled = true;
+        } else {
+            html = '<p style="margin:0 0 10px;color:var(--text-secondary);">' + list.length + ' container(s) à mettre à jour :</p>';
+            html += '<ul class="update-all-list">';
+            for (let i = 0; i < list.length; i++) {
+                const item = list[i];
+                const agent = item.agent ? ' <span class="update-all-agent">(@' + this.escapeHtml(item.agent) + ')</span>' : '';
+                html += '<li class="update-all-item"><span class="update-all-item-label">' + this.escapeHtml(item.name) + agent + '</span>'
+                    + '<button class="update-all-remove" type="button" title="Exclure ce container de la mise à jour" onclick="DockyApp.excludeFromUpdateAll(' + i + ')">✕</button></li>';
+            }
+            html += '</ul>';
+            html += '<p class="form-hint">Les images seront tirées puis les containers recréés un par un. Les agents masqués sont ignorés. Cliquez sur ✕ pour exclure un container de cette passe.</p>';
+        }
+
+        // Modale déjà ouverte → re-rendu du corps + bascule du bouton confirm.
+        if (this._updateAllModalCtrl) {
+            this._updateAllModalCtrl.setContent(html);
+            this._setUpdateAllConfirmDisabled(empty);
             return;
         }
-        let html = '<p style="margin:0 0 10px;color:var(--text-secondary);">' + list.length + ' container(s) à mettre à jour :</p>';
-        html += '<ul class="update-all-list">';
-        for (let i = 0; i < list.length; i++) {
-            const item = list[i];
-            const agent = item.agent ? ' <span class="update-all-agent">(@' + this.escapeHtml(item.agent) + ')</span>' : '';
-            html += '<li class="update-all-item"><span class="update-all-item-label">' + this.escapeHtml(item.name) + agent + '</span>'
-                + '<button class="update-all-remove" type="button" title="Exclure ce container de la mise à jour" onclick="DockyApp.excludeFromUpdateAll(' + i + ')">✕</button></li>';
-        }
-        html += '</ul>';
-        html += '<p class="form-hint">Les images seront tirées puis les containers recréés un par un. Les agents masqués sont ignorés. Cliquez sur ✕ pour exclure un container de cette passe.</p>';
-        body.innerHTML = html;
-        if (confirmBtn) confirmBtn.disabled = false;
+
+        const ctrl = HolafModal.open({
+            title: "⬆ Mettre à jour tous les containers",
+            content: html,
+            size: "md",
+            width: 620,
+            buttons: [
+                { text: "Annuler", value: false, type: "cancel" },
+                { text: "Mettre à jour", value: true, type: "primary", onClick: () => this.confirmUpdateAll() },
+            ],
+            onClose: () => { this._updateAllModalCtrl = null; this._updateAllList = null; },
+        });
+        this._updateAllModalCtrl = ctrl;
+        this._setUpdateAllConfirmDisabled(empty);
+    },
+
+    // Bascule l'état disabled du bouton « Mettre à jour » (footer de la brique).
+    _setUpdateAllConfirmDisabled(disabled) {
+        const ctrl = this._updateAllModalCtrl;
+        if (!ctrl || !ctrl.footer) return;
+        const btn = ctrl.footer.querySelector('.holaf-modal-btn-primary');
+        if (btn) btn.disabled = disabled;
     },
 
     // Exclusion d'un container de la passe « Update all » : on le retire de la
@@ -2365,8 +2408,12 @@ Object.assign(window.DockyApp, {
     },
 
     closeUpdateAllModal() {
-        const modal = document.getElementById('update-all-modal');
-        if (modal) modal.classList.add('hidden');
+        // La fermeture est gérée par HolafModal (boutons / Échap). Stub conservé
+        // pour préserver l'API existante (handler global « Échap » de app.js).
+        if (this._updateAllModalCtrl) {
+            this._updateAllModalCtrl.close();
+            this._updateAllModalCtrl = null;
+        }
         this._updateAllList = null;
     },
 

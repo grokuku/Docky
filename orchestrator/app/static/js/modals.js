@@ -14,26 +14,82 @@
 
 Object.assign(window.DockyApp, {
     // -------------------------------------------------------
-    // Activity modal (progression des commandes)
+    // Activity modal (progression des commandes) — migré vers HolafModal
+    // (fenêtre n°21). Approche « élément persistant » : le contenu (statut +
+    // sortie terminal) est un Node créé une seule fois et passé à
+    // HolafModal.open({ content }). À la fermeture, HolafModal DÉTACHE
+    // l'élément du DOM (close() supprime l'overlay) mais la référence JS
+    // persiste : le streaming continue d'écrire dans la sortie sans crash, et
+    // la consolidation des lignes de progression se fait par référence (plus
+    // de garde isConnected). À la réouverture, _openActivity réinitialise la
+    // sortie et rouvre une modale fraîche sur le même élément.
     // -------------------------------------------------------
 
-    _openActivity(title) {
-        const modal = document.getElementById("activity-modal");
-        if (!modal) return;
-        const titleEl = document.getElementById("activity-title");
-        if (titleEl) titleEl.textContent = title || "Exécution…";
-        const status = document.getElementById("activity-status");
-        if (status) {
-            status.textContent = "En cours…";
+    _getActivityContent() {
+        if (!this._activityContentEl) {
+            const container = document.createElement("div");
+            container.className = "activity-modal-body";
+            container.style.display = "flex";
+            container.style.flexDirection = "column";
+            container.style.flex = "1";
+            container.style.minHeight = "150px";
+
+            const status = document.createElement("div");
             status.className = "status-indicator status-running";
+            status.textContent = "En cours…";
+            this._activityStatusEl = status;
+
+            const output = document.createElement("div");
+            output.className = "terminal-output";
+            output.style.minHeight = "150px";
+            output.style.maxHeight = "45vh";
+            this._activityOutputEl = output;
+
+            container.appendChild(status);
+            container.appendChild(output);
+            this._activityContentEl = container;
         }
-        const output = document.getElementById("activity-output");
-        if (output) output.innerHTML = '<div class="terminal-empty">Exécution…</div>';
-        modal.classList.remove("hidden");
+        return this._activityContentEl;
+    },
+
+    _getActivityOutput() {
+        this._getActivityContent();
+        return this._activityOutputEl;
+    },
+
+    _getActivityStatus() {
+        this._getActivityContent();
+        return this._activityStatusEl;
+    },
+
+    _openActivity(title) {
+        const content = this._getActivityContent();
+        const output = this._activityOutputEl;
+        output.innerHTML = '<div class="terminal-empty">Exécution…</div>';
+        output.scrollTop = 0;
+        const status = this._activityStatusEl;
+        status.textContent = "En cours…";
+        status.className = "status-indicator status-running";
+        // Ouvre (ou ramène au premier plan) la modale HolafModal sur l'élément
+        // persistant. Anti-doublon par id : un second _openActivity pendant
+        // qu'elle est ouverte ramène au premier plan sans recréer.
+        const ctrl = HolafModal.open({
+            id: "activity-modal",
+            title: title || "Exécution…",
+            content: content,
+            width: 650,
+            buttons: [
+                { text: "Fermer", type: "cancel", onClick: () => { this.closeActivity(); } },
+            ],
+            onClose: () => {
+                this._activityModalCtrl = null;
+            },
+        });
+        this._activityModalCtrl = ctrl;
     },
 
     _appendActivity(text, type) {
-        const output = document.getElementById("activity-output");
+        const output = this._activityOutputEl;
         if (!output) return;
         const empty = output.querySelector(".terminal-empty");
         if (empty) empty.remove();
@@ -46,7 +102,7 @@ Object.assign(window.DockyApp, {
     },
 
     _scrollActivity() {
-        const output = document.getElementById("activity-output");
+        const output = this._activityOutputEl;
         if (output) output.scrollTop = output.scrollHeight;
     },
 
@@ -81,9 +137,11 @@ Object.assign(window.DockyApp, {
     // crée une nouvelle.
     _appendProgressLine(raw, lastProgressEl) {
         const text = this._cleanProgressLine(raw);
-        const output = document.getElementById("activity-output");
+        const output = this._activityOutputEl;
         if (!output) return null;
-        if (lastProgressEl && lastProgressEl.isConnected) {
+        // Consolidation par référence (plus de garde isConnected) : l'élément
+        // persistant reste valide même quand la modale est fermée (détachée).
+        if (lastProgressEl) {
             lastProgressEl.textContent = text;
             this._scrollActivity();
             return lastProgressEl;
@@ -93,12 +151,15 @@ Object.assign(window.DockyApp, {
     },
 
     _finishActivity(success, output) {
-        const status = document.getElementById("activity-status");
+        const status = this._activityStatusEl;
         if (status) {
             status.textContent = success ? "Terminé" : "Échec";
             status.className = "status-indicator " + (success ? "status-running" : "status-stopped");
         }
-        const outDiv = document.getElementById("activity-output");
+        // Si la modale a été fermée pendant le streaming, on ne la rouvre pas :
+        // on met seulement à jour l'état (élément persistant, invisible).
+        if (!this._activityModalCtrl) return;
+        const outDiv = this._activityOutputEl;
         if (!outDiv) return;
         // En mode streaming, les lignes ont déjà été affichées en direct : on
         // les conserve et on ajoute seulement une ligne de résumé.
@@ -218,8 +279,10 @@ Object.assign(window.DockyApp, {
     },
 
     closeActivity() {
-        const modal = document.getElementById("activity-modal");
-        if (modal) modal.classList.add("hidden");
+        if (this._activityModalCtrl) {
+            this._activityModalCtrl.close();
+            this._activityModalCtrl = null;
+        }
     },
 
     // -------------------------------------------------------
@@ -243,22 +306,15 @@ Object.assign(window.DockyApp, {
                 return;
             }
 
-            // Now show modal
+            // Now show modal (migré vers HolafModal — fenêtre n°20)
             this._editSpec = spec;
-            const modal = document.getElementById("container-edit-modal");
-            if (!modal) return;
-
-            document.getElementById("container-edit-title").textContent = `✏ ${this.escapeHtml(spec.name || containerId)}`;
-            modal.classList.remove("hidden");
-            this._renderContainerEditForm(spec);
+            this._renderContainerEditForm(spec, containerId);
         } catch(e) {
             this.showToast("Erreur: " + e.message, "error");
         }
     },
 
-    _renderContainerEditForm(spec) {
-        const body = document.getElementById("container-edit-body");
-        
+    _renderContainerEditForm(spec, containerId) {
         // WebUI section (en HAUT, avant les onglets Infos/Ports/Volumes/Env/Réseau)
         let html = '<div class="edit-section" id="edit-section-webui">';
         html += '<div class="edit-section-title">' + this.icon('globe') + ' Accès Web (WebUI)</div>';
@@ -367,12 +423,42 @@ Object.assign(window.DockyApp, {
         }
         html += '</div>'; // end network
         
-        if (typeof lucide !== 'undefined') {
-            lucide.createIcons();
-        }
-
-        body.innerHTML = html;
-        this._attachWebUIRowListener();
+        // Fenêtre n°20 migrée vers HolafModal : le formulaire riche à onglets
+        // est rendu dans la modale de la brique. Content = string HTML (contenu
+        // de confiance, mêmes échappements escapeHtml que l'ancien innerHTML) ;
+        // les IDs des champs (edit-container-name, edit-ports-body, …) sont
+        // conservés car applyContainerEdit lit les valeurs depuis le DOM du
+        // document — la modale y est rattachée, comme avant. Largeur « xl »
+        // (860px) adaptée au formulaire riche (tables ports/volumes/env +
+        // section WebUI en tête).
+        const ctrl = HolafModal.open({
+            id: "container-edit-modal",
+            title: `✏ ${spec.name || containerId || ''}`,
+            content: html,
+            size: "xl",
+            buttons: [
+                { text: "Annuler", value: false, type: "cancel" },
+                // close:false : la fermeture est décidée par applyContainerEdit
+                // (validation WebUI, confirm de recréation, POST, erreurs).
+                { text: "💾 Appliquer", type: "primary", close: false, onClick: () => { this.applyContainerEdit(); } },
+            ],
+            onOpen: () => {
+                // Icônes Lucide APRÈS injection du contenu (l'ancien code
+                // appelait createIcons avant innerHTML : les icônes du
+                // formulaire n'étaient jamais remplacées par les SVG).
+                if (typeof lucide !== 'undefined') lucide.createIcons();
+                this._attachWebUIRowListener();
+            },
+            onClose: () => {
+                // Purge de l'état d'édition, quel que soit le mode de fermeture
+                // (Annuler, ✕, Échap, fond, closeContainerEdit).
+                this._containerEditModalCtrl = null;
+                this._editSpec = null;
+                this._editContainerId = null;
+                this._editContainerAgent = null;
+            },
+        });
+        this._containerEditModalCtrl = ctrl;
     },
 
     /** Ligne [Libellé (optionnel)] [Adresse] [✕] de la section WebUI. */
@@ -412,7 +498,10 @@ Object.assign(window.DockyApp, {
      * toujours visible.
      */
     _switchEditTab(sectionId, btn) {
-        const body = document.getElementById('container-edit-body');
+        // Corps de la modale HolafModal ouverte (handle stocké à l'ouverture),
+        // avec repli sur le corps ancêtre du bouton d'onglet cliqué.
+        const body = (this._containerEditModalCtrl && this._containerEditModalCtrl.body)
+            || (btn && btn.closest('.holaf-modal-body'));
         if (!body) return;
         body.querySelectorAll('.edit-tab-panel').forEach(panel => {
             panel.classList.toggle('hidden', panel.id !== 'edit-section-' + sectionId);
@@ -493,7 +582,11 @@ Object.assign(window.DockyApp, {
         let html = '<div class="ctx-menu-group"><div class="ctx-menu-title">' + this.icon('cable') + ' Ports libres pour ' + containerPort + '</div></div>';
         html += '<div class="ctx-menu-group">';
         for (const p of proposals) {
-            html += '<button class="ctx-menu-item" type="button" onclick="DockyApp.closeHostPortContextMenu();DockyApp._setHostPort(\'' + p + '\')">'
+            // NB : _setHostPort AVANT closeHostPortContextMenu — l'ordre inverse
+            // (bug préexistant, présent depuis l'origine du menu) nullisait
+            // _hostPortMenuTarget dans close() avant que _setHostPort ne le
+            // lise : la proposition n'était jamais appliquée au champ.
+            html += '<button class="ctx-menu-item" type="button" onclick="DockyApp._setHostPort(\'' + p + '\');DockyApp.closeHostPortContextMenu()">'
                 + '<span class="ctx-menu-label">' + p + '</span>'
                 + '<span class="ctx-menu-port-arrow">→</span>'
                 + '<span class="ctx-menu-port-ctn">' + containerPort + '</span>'
@@ -623,7 +716,12 @@ Object.assign(window.DockyApp, {
         
         // Confirm if running
         if (this._editSpec && this._editSpec.status === 'running') {
-            if (!confirm("Ce container est en cours d'exécution et va être recréé. Continuer ?")) return;
+            const ok = await HolafModal.confirm(
+                "Recréer le container",
+                "Ce container est en cours d'exécution et va être recréé. Continuer ?",
+                { danger: true, confirmText: "Continuer", cancelText: "Annuler" }
+            );
+            if (!ok) return;
         }
         
         this.showToast("Application des modifications…", "info");
@@ -655,8 +753,14 @@ Object.assign(window.DockyApp, {
     },
 
     closeContainerEdit() {
-        const modal = document.getElementById("container-edit-modal");
-        if (modal) modal.classList.add("hidden");
+        // La fermeture est gérée par HolafModal (boutons / ✕ / Échap / fond).
+        // Stub conservé pour préserver l'API existante — notamment le handler
+        // global « Échap » de app.js : il ferme la modale ouverte via le handle
+        // stocké ; la purge d'état est faite par onClose de la modale.
+        if (this._containerEditModalCtrl) {
+            this._containerEditModalCtrl.close();
+            this._containerEditModalCtrl = null;
+        }
         this._editSpec = null;
         this._editContainerId = null;
         this._editContainerAgent = null;

@@ -44,7 +44,6 @@ window.DockyApp = {
     agentsRefreshTimer: 30000,
     selectedStackAgent: null,    // agent for the currently edited stack
     expandedStackAgent: null,    // agent for the currently expanded stack
-    consoleContainerAgent: null, // agent for the container whose console is open
 
     _pendingFetches: {},  // containerId -> true/false; 'update-'+id for update checks
 
@@ -58,10 +57,6 @@ window.DockyApp = {
     _versionCheckInterval: null,  // intervalle de check des versions (1h)
 
     // WebSockets
-    consoleWs: null,
-    consoleContainerId: null,
-    consoleHistory: [],
-
     // Events WebSocket
     _eventsWs: null,
     _eventsReconnectTimer: null,
@@ -205,12 +200,6 @@ window.DockyApp = {
         }
 
         // Close modals on backdrop click
-        const consoleModal = document.getElementById("console-modal");
-        if (consoleModal) {
-            consoleModal.addEventListener("click", (e) => {
-                if (e.target === consoleModal) this.closeConsole();
-            });
-        }
         const newStackModal = document.getElementById("new-stack-modal");
         if (newStackModal) {
             newStackModal.addEventListener("click", (e) => {
@@ -258,13 +247,7 @@ window.DockyApp = {
             });
         }
 
-        // Activity modal backdrop click
-        const activityModal = document.getElementById("activity-modal");
-        if (activityModal) {
-            activityModal.addEventListener("click", (e) => {
-                if (e.target === activityModal) this.closeActivity();
-            });
-        }
+        // Activity modal backdrop click : géré par HolafModal (closeOnOverlay).
 
         // Version mismatch modal backdrop click
         const versionMismatchModal = document.getElementById("version-mismatch-modal");
@@ -305,7 +288,6 @@ window.DockyApp = {
         // ESC to close modals
         document.addEventListener("keydown", (e) => {
             if (e.key === "Escape") {
-                this.closeConsole();
                 this.closeHistory();
                 this.closeNewStackModal();
                 this.closeDeleteStackModal();

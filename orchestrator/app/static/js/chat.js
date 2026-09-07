@@ -559,20 +559,38 @@ Object.assign(window.DockyApp, {
     // -------------------------------------------------------
 
     async openSoulEditor() {
-        const modal = document.getElementById("soul-modal");
-        if (!modal) return;
-        const textarea = document.getElementById("soul-editor");
-        if (textarea) {
-            textarea.value = "Chargement…";
-            textarea.disabled = true;
-        }
-        modal.classList.remove("hidden");
+        // Fenêtre n°4 migrée vers HolafModal : remplace l'ancienne modale
+        // statique #soul-modal (textarea SOUL.md + sauvegarde). Taille
+        // confortable (lg + largeur 720px) car l'existant était large
+        // (modal-soul 720px). ID #soul-editor conservé (saveSoul() le lit).
+        const content = '<p class="form-hint" style="margin-bottom:10px;">Instructions de personnalité/contexte du LLM. Ce contenu est injecté dans le system prompt.</p>'
+            + '<textarea id="soul-editor" class="modal-textarea" rows="18" spellcheck="false"></textarea>';
+
+        HolafModal.open({
+            title: "📄 SOUL.md",
+            content: content,
+            size: "lg",
+            width: 720,
+            buttons: [
+                { text: "Annuler", value: false, type: "cancel" },
+                { text: "Sauvegarder", value: true, type: "primary", onClick: () => this.saveSoul() },
+            ],
+            onOpen: () => {
+                const textarea = document.getElementById("soul-editor");
+                if (textarea) {
+                    textarea.value = "Chargement…";
+                    textarea.disabled = true;
+                }
+            },
+        });
 
         const data = await this.apiFetch("/api/soul");
         if (data === null) {
+            const textarea = document.getElementById("soul-editor");
             if (textarea) textarea.value = "";
             return;
         }
+        const textarea = document.getElementById("soul-editor");
         if (textarea) {
             textarea.value = data.content || "";
             textarea.disabled = false;
@@ -580,8 +598,8 @@ Object.assign(window.DockyApp, {
     },
 
     closeSoulEditor() {
-        const modal = document.getElementById("soul-modal");
-        if (modal) modal.classList.add("hidden");
+        // La fermeture est gérée par HolafModal (boutons / Échap). Stub conservé
+        // pour préserver l'API existante (Échap global dans app.js).
     },
 
     async saveSoul() {

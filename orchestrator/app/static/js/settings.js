@@ -269,39 +269,62 @@ const SettingsApp = {
     },
 
     showAgentForm(agent) {
-        const modal = document.getElementById("agent-modal");
-        const title = document.getElementById("agent-modal-title");
-        const nameInput = document.getElementById("agent-name");
-        const urlInput = document.getElementById("agent-url");
-        const keyInput = document.getElementById("agent-api-key");
-        const keyHint = document.getElementById("agent-key-hint");
+        // Fenêtre n°5 migrée vers HolafModal : remplace l'ancienne modale
+        // statique #agent-modal. Formulaire agent en mode ADD (agent null) et
+        // EDIT (agent fourni). Content dynamique (string) ; les handlers de
+        // mappings (add/remove) sont des onclick inline dans le DOM de la
+        // modale (fonctionnels), le pré-remplissage EDIT et le rendu des
+        // mappings se font via onOpen. IDs conservés (agent-name, agent-url,
+        // agent-api-key, agent-key-hint, path-mappings-list) car
+        // submitAgentForm()/collectPathMappings() les lisent depuis le DOM.
+        const isEdit = !!agent;
+        this.editingAgentName = isEdit ? agent.name : null;
 
-        if (agent) {
-            this.editingAgentName = agent.name;
-            title.innerHTML = '<i data-lucide="pen-square"></i> Éditer l\'agent';
-            nameInput.value = agent.name || "";
-            urlInput.value = agent.url || "";
-            keyInput.value = "";
-            keyInput.placeholder = agent.api_key || "••••••••";
-            if (keyHint) keyHint.textContent = "Laisser vide pour ne pas changer.";
-            this.renderPathMappings(agent.path_mappings || []);
-        } else {
-            this.editingAgentName = null;
-            title.innerHTML = '<i data-lucide="plus"></i> Ajouter un agent';
-            nameInput.value = "";
-            urlInput.value = "";
-            keyInput.value = "";
-            keyInput.placeholder = "••••••••";
-            if (keyHint) keyHint.textContent = "Clé API de l'agent.";
-            this.renderPathMappings([]);
-        }
-        modal.classList.remove("hidden");
-        if (typeof lucide !== 'undefined') lucide.createIcons();
+        const content = '<div class="form-group">'
+            + '<label for="agent-name">Nom</label>'
+            + '<input type="text" id="agent-name" placeholder="Serveur Local" autocomplete="off">'
+            + '</div>'
+            + '<div class="form-group">'
+            + '<label for="agent-url">URL</label>'
+            + '<input type="text" id="agent-url" placeholder="http://docky-agent:8080" autocomplete="off">'
+            + '</div>'
+            + '<div class="form-group">'
+            + '<label for="agent-api-key">Clé API</label>'
+            + '<input type="text" id="agent-api-key" placeholder="••••••••" autocomplete="off" class="form-input input-masked">'
+            + '<p class="form-hint" id="agent-key-hint">' + (isEdit ? "Laisser vide pour ne pas changer." : "Clé API de l'agent.") + '</p>'
+            + '</div>'
+            + '<div class="form-group">'
+            + '<label>Mappings de chemins (host → local)</label>'
+            + '<div id="path-mappings-list"></div>'
+            + '<button type="button" class="btn btn-ghost btn-sm" onclick="SettingsApp.addPathMapping()">+ Ajouter un mapping</button>'
+            + '<p class="form-hint">Indiquez les correspondances entre les chemins de l\'hôte et ceux visibles par l\'agent (ex. /mnt/user/appdata → /mnt/user/appdata). L\'orchestrateur appliquera ces mappings lors de l\'import de stacks externes.</p>'
+            + '</div>';
+
+        HolafModal.open({
+            title: isEdit ? "✏️ Éditer l'agent" : "➕ Ajouter un agent",
+            content: content,
+            size: "md",
+            buttons: [
+                { text: "Annuler", value: false, type: "cancel" },
+                { text: "Enregistrer", value: true, type: "primary", onClick: () => this.submitAgentForm() },
+            ],
+            onOpen: () => {
+                if (isEdit) {
+                    document.getElementById("agent-name").value = agent.name || "";
+                    document.getElementById("agent-url").value = agent.url || "";
+                    document.getElementById("agent-api-key").value = "";
+                    document.getElementById("agent-api-key").placeholder = agent.api_key || "••••••••";
+                }
+                this.renderPathMappings(isEdit ? (agent.path_mappings || []) : []);
+                if (typeof lucide !== 'undefined') lucide.createIcons();
+            },
+            onClose: () => { this.editingAgentName = null; },
+        });
     },
 
     closeAgentForm() {
-        const modal = document.getElementById("agent-modal");
-        if (modal) modal.classList.add("hidden");
+        // La fermeture est gérée par HolafModal (boutons / Échap). Stub conservé
+        // pour préserver l'API existante.
         this.editingAgentName = null;
     },
 
@@ -544,13 +567,14 @@ const SettingsApp = {
     },
 
     async regenerateMcpKey() {
-        if (!window.confirm(
+        const ok = await HolafModal.confirm(
+            "Régénérer la clé API MCP",
             "Régénérer la clé API MCP ?\n\n" +
             "Cette action invalide immédiatement tous les clients MCP connectés. " +
-            "Ils devront se reconnecter avec la nouvelle clé."
-        )) {
-            return;
-        }
+            "Ils devront se reconnecter avec la nouvelle clé.",
+            { danger: true, confirmText: "Régénérer", cancelText: "Annuler" }
+        );
+        if (!ok) return;
         const data = await this.apiPost("/api/settings/mcp/regenerate");
         if (!data) return;
         if (data.success) {
@@ -717,13 +741,14 @@ const SettingsApp = {
     },
 
     async clearDockerhub() {
-        if (!window.confirm(
+        const ok = await HolafModal.confirm(
+            "Désactiver Docker Hub",
             "Désactiver l'authentification Docker Hub ?\n\n" +
             "Les agents en ligne seront déconnectés (docker logout) et les " +
-            "identifiants supprimés de la configuration."
-        )) {
-            return;
-        }
+            "identifiants supprimés de la configuration.",
+            { danger: true, confirmText: "Désactiver", cancelText: "Annuler" }
+        );
+        if (!ok) return;
         const data = await this.apiPost("/api/settings/dockerhub/clear");
         if (!data) return;
         if (data.success) {

@@ -719,36 +719,75 @@ Object.assign(window.DockyApp, {
     DEFAULT_COMPOSE_TEMPLATE: 'version: "3.8"\n\nservices:\n  # Ajoute tes services ici\n',
 
     openNewStackModal() {
-        const modal = document.getElementById("new-stack-modal");
-        modal.classList.remove("hidden");
-        document.getElementById("new-stack-name").value = "";
-        document.getElementById("new-stack-compose").value = this.DEFAULT_COMPOSE_TEMPLATE;
-        document.getElementById("new-stack-env").value = "";
+        // Fenêtre n°1 migrée vers HolafModal : remplace l'ancienne modale
+        // statique #new-stack-modal (mêmes champs/callbacks, IDs conservés —
+        // createStack() lit les valeurs depuis le DOM de la modale ouverte).
+        const content = '<div class="form-group">'
+            + '<label for="new-stack-agent">Agent cible</label>'
+            + '<select id="new-stack-agent" class="form-input" style="width: 100%;">'
+            + '<option value="">-- Choisir un agent --</option></select>'
+            + '</div>'
+            + '<div class="form-group">'
+            + '<label for="new-stack-name">Nom de la stack</label>'
+            + '<input type="text" id="new-stack-name" placeholder="ma-stack" autocomplete="off">'
+            + '<p class="form-hint">Alphanumérique, tirets et underscores uniquement.</p>'
+            + '</div>'
+            + '<div class="form-group">'
+            + '<label for="new-stack-compose">docker-compose.yml</label>'
+            + '<textarea id="new-stack-compose" class="modal-textarea" rows="10" spellcheck="false"></textarea>'
+            + '</div>'
+            + '<div class="form-group">'
+            + '<label for="new-stack-env">.env (optionnel)</label>'
+            + '<textarea id="new-stack-env" class="modal-textarea" rows="4" spellcheck="false"></textarea>'
+            + '</div>';
 
-        // Peupler le sélecteur d'agent cible
-        const agentSelect = document.getElementById("new-stack-agent");
-        if (agentSelect) {
-            agentSelect.innerHTML = '<option value="">-- Choisir un agent --</option>';
-            for (const agent of this.agentsList) {
-                const aName = agent.name || agent;
-                const opt = document.createElement("option");
-                opt.value = aName;
-                opt.textContent = aName + (agent.status === "online" ? " 🟢" : " 🔴");
-                agentSelect.appendChild(opt);
-            }
-            // Valeur par défaut : l'agent de la stack en cours d'édition, sinon le premier agent
-            let defaultAgent = this.selectedStackAgent;
-            if (!defaultAgent || !this.agentsList.some(a => (a.name || a) === defaultAgent)) {
-                defaultAgent = this.agentsList.length ? (this.agentsList[0].name || this.agentsList[0]) : "";
-            }
-            agentSelect.value = defaultAgent;
-        }
+        HolafModal.open({
+            title: "➕ Nouvelle stack",
+            content: content,
+            size: "md",
+            buttons: [
+                { text: "Annuler", value: false, type: "cancel" },
+                { text: "Créer la stack", value: true, type: "primary", onClick: () => this.createStack() },
+            ],
+            onOpen: () => {
+                document.getElementById("new-stack-name").value = "";
+                document.getElementById("new-stack-compose").value = this.DEFAULT_COMPOSE_TEMPLATE;
+                document.getElementById("new-stack-env").value = "";
 
-        setTimeout(() => document.getElementById("new-stack-name").focus(), 50);
+                // Peupler le sélecteur d'agent cible
+                const agentSelect = document.getElementById("new-stack-agent");
+                if (agentSelect) {
+                    agentSelect.innerHTML = '<option value="">-- Choisir un agent --</option>';
+                    for (const agent of this.agentsList) {
+                        const aName = agent.name || agent;
+                        const opt = document.createElement("option");
+                        opt.value = aName;
+                        opt.textContent = aName + (agent.status === "online" ? " 🟢" : " 🔴");
+                        agentSelect.appendChild(opt);
+                    }
+                    // Valeur par défaut : l'agent de la stack en cours d'édition, sinon le premier agent
+                    let defaultAgent = this.selectedStackAgent;
+                    if (!defaultAgent || !this.agentsList.some(a => (a.name || a) === defaultAgent)) {
+                        defaultAgent = this.agentsList.length ? (this.agentsList[0].name || this.agentsList[0]) : "";
+                    }
+                    agentSelect.value = defaultAgent;
+                }
+
+                // Entrée = créer (comportement historique conservé)
+                const nameInput = document.getElementById("new-stack-name");
+                if (nameInput) {
+                    nameInput.addEventListener("keydown", (e) => {
+                        if (e.key === "Enter") { e.preventDefault(); this.createStack(); }
+                    });
+                }
+                setTimeout(() => document.getElementById("new-stack-name").focus(), 50);
+            },
+        });
     },
 
     closeNewStackModal() {
-        document.getElementById("new-stack-modal").classList.add("hidden");
+        // La fermeture est gérée par HolafModal (boutons / Échap). Stub conservé
+        // pour préserver l'API existante (Échap global dans app.js).
     },
 
     // -------------------------------------------------------
@@ -756,30 +795,58 @@ Object.assign(window.DockyApp, {
     // -------------------------------------------------------
 
     openImportModal() {
-        const modal = document.getElementById("import-modal");
-        if (modal) modal.classList.remove("hidden");
-        const src = document.getElementById("import-source-path");
-        const name = document.getElementById("import-stack-name");
-        if (src) src.value = "";
-        if (name) name.value = "";
+        // Fenêtre n°2 migrée vers HolafModal : remplace l'ancienne modale
+        // statique #import-modal (mêmes champs/callbacks, IDs conservés —
+        // doImport() lit les valeurs depuis le DOM de la modale ouverte).
+        // L'étape preview séparée est migrée vers HolafModal (showImportPreview).
+        const content = '<p class="form-hint" style="margin-bottom:12px;">Importe une stack depuis un dossier externe (ex : Dockge). Le docker-compose.yml et le .env seront copiés. Les chemins relatifs seront convertis en chemins absolus.</p>'
+            + '<div class="form-group">'
+            + '<label for="import-agent">Agent cible</label>'
+            + '<select id="import-agent" class="form-input" style="width: 100%;">'
+            + '<option value="">-- Choisir un agent --</option></select>'
+            + '</div>'
+            + '<div class="form-group">'
+            + '<label for="import-source-path">Chemin source (dossier de la stack)</label>'
+            + '<input type="text" id="import-source-path" placeholder="/opt/stacks/myapp" autocomplete="off">'
+            + '</div>'
+            + '<div class="form-group">'
+            + '<label for="import-stack-name">Nom de la stack (optionnel, utilise le nom du dossier par défaut)</label>'
+            + '<input type="text" id="import-stack-name" placeholder="myapp" autocomplete="off">'
+            + '</div>';
 
-        // Peupler le sélecteur d'agent
-        const agentSelect = document.getElementById("import-agent");
-        if (agentSelect) {
-            agentSelect.innerHTML = '<option value="">-- Choisir un agent --</option>';
-            for (const agent of this.agentsList) {
-                const aName = agent.name || agent;
-                const opt = document.createElement("option");
-                opt.value = aName;
-                opt.textContent = aName + (agent.status === "online" ? " 🟢" : " 🔴");
-                // Pas de sélection par défaut en mode multi-sélection
-                agentSelect.appendChild(opt);
-            }
-        }
+        HolafModal.open({
+            title: "📥 Importer une stack",
+            content: content,
+            size: "md",
+            buttons: [
+                { text: "Annuler", value: false, type: "cancel" },
+                { text: "Importer", value: true, type: "primary", onClick: () => this.doImport() },
+            ],
+            onOpen: () => {
+                const src = document.getElementById("import-source-path");
+                const name = document.getElementById("import-stack-name");
+                if (src) src.value = "";
+                if (name) name.value = "";
 
-        setTimeout(() => {
-            if (src) src.focus();
-        }, 50);
+                // Peupler le sélecteur d'agent
+                const agentSelect = document.getElementById("import-agent");
+                if (agentSelect) {
+                    agentSelect.innerHTML = '<option value="">-- Choisir un agent --</option>';
+                    for (const agent of this.agentsList) {
+                        const aName = agent.name || agent;
+                        const opt = document.createElement("option");
+                        opt.value = aName;
+                        opt.textContent = aName + (agent.status === "online" ? " 🟢" : " 🔴");
+                        // Pas de sélection par défaut en mode multi-sélection
+                        agentSelect.appendChild(opt);
+                    }
+                }
+
+                setTimeout(() => {
+                    if (src) src.focus();
+                }, 50);
+            },
+        });
     },
 
     openImportModalForStack(stackName) {
@@ -789,8 +856,8 @@ Object.assign(window.DockyApp, {
     },
 
     closeImportModal() {
-        const modal = document.getElementById("import-modal");
-        if (modal) modal.classList.add("hidden");
+        // La fermeture est gérée par HolafModal (boutons / Échap). Stub conservé
+        // pour préserver l'API existante (Échap global dans app.js).
     },
 
     importExternal(sourcePath, stackName, agent) {
@@ -839,43 +906,52 @@ Object.assign(window.DockyApp, {
         // Stocker les infos pour la confirmation
         this._importPreview = { sourcePath, stackName, agent };
 
-        const modal = document.getElementById('import-preview-modal');
-        const contentEl = document.getElementById('import-preview-content');
-        const conversionsEl = document.getElementById('import-preview-conversions');
-        const warningsEl = document.getElementById('import-preview-warnings');
+        // Fenêtre n°1 du lot « 5 listes dynamiques » migrée vers HolafModal :
+        // remplace l'ancienne modale statique #import-preview-modal. Le contenu
+        // (conversions, warnings, compose converti) est construit en string HTML
+        // (contenu de confiance) et rendu via `content`. Le bouton « Confirmer
+        // l'import » appelle confirmImport() (comportement identique).
+        const content = previewData.preview || previewData.converted_compose || '';
+        const conversions = previewData.conversions || [];
+        const warnings = previewData.warnings || [];
 
-        // Afficher le compose converti
-        if (contentEl) contentEl.textContent = previewData.preview || previewData.converted_compose || '';
-
-        // Afficher les conversions
-        if (conversionsEl) {
-            if (previewData.conversions && previewData.conversions.length > 0) {
-                conversionsEl.innerHTML = '<div style="color: var(--text-secondary); margin-bottom: 8px;">Chemins convertis (' + previewData.conversions.length + '):</div>' +
-                    previewData.conversions.map(c => '<div style="color: #4fc3f7; font-family: monospace; font-size: 12px; padding: 2px 0;">' + this.escapeHtml(c) + '</div>').join('');
-                conversionsEl.style.display = 'block';
-            } else {
-                conversionsEl.innerHTML = '<div style="color: var(--text-secondary);">Aucune conversion nécessaire (chemins déjà absolus)</div>';
-                conversionsEl.style.display = 'block';
-            }
+        let html = '';
+        if (conversions.length > 0) {
+            html += '<div style="color: var(--text-secondary); margin-bottom: 8px;">Chemins convertis (' + conversions.length + '):</div>'
+                + conversions.map(c => '<div style="color: #4fc3f7; font-family: monospace; font-size: 12px; padding: 2px 0;">' + this.escapeHtml(c) + '</div>').join('');
+        } else {
+            html += '<div style="color: var(--text-secondary);">Aucune conversion nécessaire (chemins déjà absolus)</div>';
+        }
+        html += '<div style="margin-bottom: 8px; color: var(--text-secondary);">docker-compose.yml converti:</div>'
+            + '<pre style="background: #0d1117; color: #c9d1d9; padding: 12px; border-radius: 6px; font-family: monospace; font-size: 12px; max-height: 300px; overflow-y: auto; white-space: pre-wrap;">' + this.escapeHtml(content) + '</pre>';
+        if (warnings.length > 0) {
+            html += '<div style="color: #ff9800; margin-bottom: 8px;">⚠️ Avertissements:</div>'
+                + warnings.map(w => '<div style="color: #ff9800; font-size: 12px; padding: 2px 0;">' + this.escapeHtml(w) + '</div>').join('');
         }
 
-        // Afficher les warnings
-        if (warningsEl) {
-            if (previewData.warnings && previewData.warnings.length > 0) {
-                warningsEl.innerHTML = '<div style="color: #ff9800; margin-bottom: 8px;">⚠️ Avertissements:</div>' +
-                    previewData.warnings.map(w => '<div style="color: #ff9800; font-size: 12px; padding: 2px 0;">' + this.escapeHtml(w) + '</div>').join('');
-                warningsEl.style.display = 'block';
-            } else {
-                warningsEl.style.display = 'none';
-            }
-        }
-
-        if (modal) modal.classList.remove('hidden');
+        const ctrl = HolafModal.open({
+            title: "📋 Preview de l'import",
+            content: html,
+            size: "md",
+            width: 700,
+            buttons: [
+                { text: "Annuler", value: false, type: "cancel" },
+                { text: "Confirmer l'import", value: true, type: "primary", onClick: () => this.confirmImport() },
+            ],
+            onClose: () => { this._importPreview = null; this._importPreviewModalCtrl = null; },
+        });
+        this._importPreviewModalCtrl = ctrl;
     },
 
     closeImportPreview() {
-        const modal = document.getElementById('import-preview-modal');
-        if (modal) modal.classList.add('hidden');
+        // La fermeture est gérée par HolafModal (boutons / Échap). Stub conservé
+        // pour préserver l'API existante (confirmImport l'appelle) : il ferme la
+        // modale ouverte via le handle stocké.
+        if (this._importPreviewModalCtrl) {
+            this._importPreviewModalCtrl.close();
+            this._importPreviewModalCtrl = null;
+        }
+        this._importPreview = null;
     },
 
     async confirmImport() {
@@ -1046,12 +1122,26 @@ Object.assign(window.DockyApp, {
 
     openDeleteStackModal(name) {
         this.deleteTargetStack = name;
-        document.getElementById("delete-stack-name").textContent = name;
-        document.getElementById("delete-stack-modal").classList.remove("hidden");
+        // Fenêtre n°2 migrée vers HolafModal : remplace l'ancienne modale
+        // statique #delete-stack-modal (même contenu/comportement, thème
+        // global « docky » hérité, pas d'option theme inline).
+        HolafModal.open({
+            title: "🗑 Supprimer la stack",
+            content: "<p>Es-tu sûr de vouloir supprimer la stack <strong>" + this.escapeHtml(name) + "</strong> ?</p>"
+                + '<p class="form-hint danger-text">⚠ Tous les fichiers seront perdus. Cette action est irréversible.</p>',
+            size: "sm",
+            buttons: [
+                { text: "Annuler", value: false, type: "cancel" },
+                { text: "Confirmer la suppression", value: true, type: "danger", onClick: () => this.confirmDeleteStack() },
+            ],
+            onClose: () => { this.deleteTargetStack = null; },
+        });
     },
 
     closeDeleteStackModal() {
-        document.getElementById("delete-stack-modal").classList.add("hidden");
+        // La fermeture est gérée par HolafModal (boutons / Échap). On ne fait
+        // que purger l'état cible pour préserver l'API existante (Échap
+        // global dans app.js, flux de confirmation).
         this.deleteTargetStack = null;
     },
 
@@ -1099,14 +1189,43 @@ Object.assign(window.DockyApp, {
             return;
         }
         this.permsTargetFile = this.currentFile;
-        document.getElementById("perms-filename").textContent = this.currentFile;
-        document.getElementById("perms-mode").value = "644";
-        document.getElementById("perms-modal").classList.remove("hidden");
-        setTimeout(() => document.getElementById("perms-mode").focus(), 50);
+        // Fenêtre n°3 migrée vers HolafModal : remplace l'ancienne modale
+        // statique #perms-modal (1 champ permissions, validation conservée dans
+        // applyPermissions(), ID #perms-mode conservé).
+        const content = '<p>Fichier : <strong id="perms-filename"></strong></p>'
+            + '<div class="form-group">'
+            + '<label for="perms-mode">Mode (octal)</label>'
+            + '<input type="text" id="perms-mode" placeholder="644" autocomplete="off">'
+            + '<p class="form-hint">Ex: 644 (lecture/écriture), 600 (privé), 755 (exécutable).</p>'
+            + '</div>';
+
+        HolafModal.open({
+            title: "🔒 Permissions du fichier",
+            content: content,
+            size: "sm",
+            buttons: [
+                { text: "Annuler", value: false, type: "cancel" },
+                { text: "Appliquer", value: true, type: "primary", onClick: () => this.applyPermissions() },
+            ],
+            onOpen: () => {
+                document.getElementById("perms-filename").textContent = this.currentFile;
+                document.getElementById("perms-mode").value = "644";
+                // Entrée = appliquer (comportement historique conservé)
+                const modeInput = document.getElementById("perms-mode");
+                if (modeInput) {
+                    modeInput.addEventListener("keydown", (e) => {
+                        if (e.key === "Enter") { e.preventDefault(); this.applyPermissions(); }
+                    });
+                }
+                setTimeout(() => document.getElementById("perms-mode").focus(), 50);
+            },
+            onClose: () => { this.permsTargetFile = null; },
+        });
     },
 
     closePermsModal() {
-        document.getElementById("perms-modal").classList.add("hidden");
+        // La fermeture est gérée par HolafModal (boutons / Échap). Stub conservé
+        // pour préserver l'API existante (Échap global dans app.js).
         this.permsTargetFile = null;
     },
 
@@ -1152,12 +1271,23 @@ Object.assign(window.DockyApp, {
             return;
         }
 
-        const modal = document.getElementById("history-modal");
-        if (!modal) return;
-        modal.classList.remove("hidden");
-
-        document.getElementById("history-title").textContent = `📋 Historique — ${name}`;
-        document.getElementById("history-body").innerHTML = '<p class="placeholder-hint">Chargement…</p>';
+        // Fenêtre n°2 du lot « 5 listes dynamiques » migrée vers HolafModal :
+        // remplace l'ancienne modale statique #history-modal. Le contenu est
+        // chargé de façon asynchrone puis injecté via le handle retourné par
+        // open() (ctrl.setContent) — re-rendu dynamique dans la modale ouverte.
+        // Les handlers (_selectHistory/_previewHistory/_restoreHistory) lisent
+        // le DOM de la modale (présente dans le document) comme avant.
+        const ctrl = HolafModal.open({
+            title: `📋 Historique — ${name}`,
+            content: '<p class="placeholder-hint">Chargement…</p>',
+            size: "md",
+            width: 700,
+            buttons: [
+                { text: "Fermer", value: false, type: "cancel" },
+            ],
+            onClose: () => { this._historyModalCtrl = null; },
+        });
+        this._historyModalCtrl = ctrl;
 
         try {
             const resp = await fetch(`/api/stacks/${encodeURIComponent(name)}/history?agent=${encodeURIComponent(agent)}`);
@@ -1165,7 +1295,7 @@ Object.assign(window.DockyApp, {
             const history = data.history || [];
 
             if (history.length === 0) {
-                document.getElementById("history-body").innerHTML = '<p class="placeholder-hint">Aucun historique disponible</p>';
+                ctrl.setContent('<p class="placeholder-hint">Aucun historique disponible</p>');
                 return;
             }
 
@@ -1184,23 +1314,27 @@ Object.assign(window.DockyApp, {
             html += '</div>';
             html += '<div id="history-preview" class="history-preview" style="display:none;"></div>';
 
-            document.getElementById("history-body").innerHTML = html;
+            ctrl.setContent(html);
 
             if (typeof lucide !== 'undefined') {
                 lucide.createIcons();
             }
 
             // Auto-select first
-            const first = document.querySelector('.history-item');
+            const first = ctrl.body.querySelector('.history-item');
             if (first) this._selectHistory(first.dataset.hash);
         } catch(e) {
-            document.getElementById("history-body").innerHTML = `<p class="placeholder-hint">Erreur: ${this.escapeHtml(e.message)}</p>`;
+            ctrl.setContent(`<p class="placeholder-hint">Erreur: ${this.escapeHtml(e.message)}</p>`);
         }
     },
 
     closeHistory() {
-        const modal = document.getElementById("history-modal");
-        if (modal) modal.classList.add("hidden");
+        // La fermeture est gérée par HolafModal (boutons / Échap). Stub conservé
+        // pour préserver l'API existante (handler global « Échap » de app.js).
+        if (this._historyModalCtrl) {
+            this._historyModalCtrl.close();
+            this._historyModalCtrl = null;
+        }
     },
 
     async _selectHistory(hash) {
@@ -1247,7 +1381,12 @@ Object.assign(window.DockyApp, {
         const agent = this.selectedStackAgent;
         if (!name || !agent || !hash) return;
 
-        if (!confirm(`Restaurer la stack ${name} vers la version ${hash.slice(0, 8)} ? Le compose actuel sera écrasé.`)) return;
+        const ok = await HolafModal.confirm(
+            "Restaurer l'historique",
+            `Restaurer la stack ${name} vers la version ${hash.slice(0, 8)} ? Le compose actuel sera écrasé.`,
+            { danger: true, confirmText: "Restaurer", cancelText: "Annuler" }
+        );
+        if (!ok) return;
 
         this.showToast("Restauration en cours…", "info");
         try {

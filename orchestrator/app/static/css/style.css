@@ -1581,12 +1581,6 @@ body {
     overflow: hidden;
 }
 
-.modal-console {
-    width: 90%;
-    max-width: 800px;
-    height: 60vh;
-}
-
 .modal-header {
     display: flex;
     align-items: center;
@@ -1610,13 +1604,18 @@ body {
     min-height: 0;
 }
 
-/* Console modal: inner elements (terminal-output, console-input-area)
-   already carry their own padding, so avoid double-padding here. */
-.modal-console .modal-body {
-    padding: 0;
-}
-
 /* Terminal output */
+
+/* Activity modal (HolafModal) : corps sans padding, statut + sortie terminal. */
+#activity-modal .holaf-modal-body {
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+}
+#activity-modal .activity-modal-body .status-indicator {
+    align-self: flex-start;
+    margin: 12px 16px 0;
+}
 
 .terminal-output {
     flex: 1;
@@ -1679,38 +1678,6 @@ body {
 }
 .terminal-line.terminal-summary.error {
     color: #f87171;
-}
-
-/* Console input */
-
-.console-input-area {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 10px 18px;
-    background: #0d1117;
-    border-top: 1px solid var(--border-color);
-    flex-shrink: 0;
-}
-
-#console-prompt {
-    color: var(--success);
-    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
-    font-size: 0.8125rem;
-}
-
-#console-input {
-    flex: 1;
-    background: transparent;
-    border: none;
-    color: var(--text-primary);
-    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
-    font-size: 0.8125rem;
-    outline: none;
-}
-
-#console-input::placeholder {
-    color: var(--text-muted);
 }
 
 /* ============================================================
@@ -2133,11 +2100,6 @@ body {
 
     .ports-panel {
         width: calc(100% - 32px);
-    }
-
-    .modal-console {
-        width: 95%;
-        height: 80vh;
     }
 
     .stack-card-header {
@@ -3072,6 +3034,13 @@ body {
     box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
     padding: 4px;
     font-size: 0.8rem;
+}
+
+/* Le menu « ports libres » (clic droit sur un port hôte) s'ouvre depuis la
+   modale d'édition de container (HolafModal : overlays z-index ≥ 100001) —
+   il doit s'afficher AU-DESSUS de la modale. */
+#host-port-context-menu {
+    z-index: 110000;
 }
 
 .container-context-menu .ctx-menu-group {
