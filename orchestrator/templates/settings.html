@@ -6,6 +6,7 @@
     <title>Docky 🐳 - Settings</title>
     <link rel="stylesheet" href="/static/css/style.css">
     <script src="https://unpkg.com/lucide@latest"></script>
+    <script type="module" src="/static/vendor/holaf/holaf-modal.js"></script>
 </head>
 <body class="app-body settings-page">
     <!-- Top bar -->
@@ -236,24 +237,6 @@
             <div class="modal-footer">
                 <button class="btn btn-ghost" onclick="SettingsApp.closeAgentForm()">Annuler</button>
                 <button class="btn btn-primary" id="agent-save-btn" onclick="SettingsApp.submitAgentForm()">Enregistrer</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Delete confirm modal -->
-    <div id="delete-agent-modal" class="modal hidden">
-        <div class="modal-content modal-small">
-            <div class="modal-header">
-                <h3>🗑 Supprimer l'agent</h3>
-                <button class="btn btn-ghost btn-sm" onclick="SettingsApp.closeDeleteAgent()"><i data-lucide="x"></i></button>
-            </div>
-            <div class="modal-body modal-body-pad">
-                <p>Supprimer l'agent <strong id="delete-agent-name"></strong> ?</p>
-                <p class="form-hint danger-text">⚠ Cette action est irréversible.</p>
-            </div>
-            <div class="modal-footer">
-                <button class="btn btn-ghost" onclick="SettingsApp.closeDeleteAgent()">Annuler</button>
-                <button class="btn btn-danger" onclick="SettingsApp.confirmDeleteAgent()">Confirmer</button>
             </div>
         </div>
     </div>

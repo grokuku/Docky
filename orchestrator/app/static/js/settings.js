@@ -393,21 +393,31 @@ const SettingsApp = {
 
     deleteAgent(name) {
         this.pendingDeleteAgent = name;
-        const el = document.getElementById("delete-agent-name");
-        if (el) el.textContent = name;
-        document.getElementById("delete-agent-modal").classList.remove("hidden");
+        // Pilote HolafModal : remplace l'ancienne modale statique #delete-agent-modal
+        // par une modale HolafModal.open() (même contenu/comportement).
+        HolafModal.open({
+            title: "🗑 Supprimer l'agent",
+            content: "<p>Supprimer l'agent <strong>" + this.escapeHtml(name) + "</strong> ?</p>"
+                + '<p class="form-hint danger-text">⚠ Cette action est irréversible.</p>',
+            size: "sm",
+            buttons: [
+                { text: "Annuler", value: false, type: "cancel" },
+                { text: "Confirmer", value: true, type: "danger", onClick: () => this.confirmDeleteAgent() },
+            ],
+            onClose: () => { this.pendingDeleteAgent = null; },
+        });
     },
 
     closeDeleteAgent() {
-        const modal = document.getElementById("delete-agent-modal");
-        if (modal) modal.classList.add("hidden");
+        // La fermeture est gérée par HolafModal (boutons / Échap). On ne fait
+        // que purger l'état cible pour préserver l'API existante.
         this.pendingDeleteAgent = null;
     },
 
     async confirmDeleteAgent() {
         if (!this.pendingDeleteAgent) return;
         const name = this.pendingDeleteAgent;
-        this.closeDeleteAgent();
+        this.pendingDeleteAgent = null;
         const data = await this.apiDelete("/api/settings/agents/" + encodeURIComponent(name));
         if (!data) return;
         if (data.success) {
