@@ -38,6 +38,14 @@ logger = logging.getLogger(__name__)
 # Docker Compose project (i.e. standalone containers).
 STANDALONE_STACK_NAME = "Standalone"
 
+# Refusal message returned when editing a container of an external (non-Docky)
+# Compose stack.  Enriched with guidance for stacks that were imported: they
+# must be re-deployed from Docky so Docky can take over their containers.
+EXTERNAL_STACK_EDIT_REFUSED = (
+    "Les stacks externes ne peuvent pas être éditées. "
+    "Si cette stack a été importée, déployez-la depuis Docky pour reprendre les containers."
+)
+
 # ---------------------------------------------------------------------------
 # Streaming command execution
 # ---------------------------------------------------------------------------
@@ -329,20 +337,14 @@ def _container_compose_context(c):
     preserved for ``_resolve_stack_compose`` and ``_git_save``.
     """
     labels = c.attrs.get("Config", {}).get("Labels", {}) or {}
-    project = labels.get("com.docker.compose.project") or ""
     service = labels.get("com.docker.compose.service") or ""
-    if not project or not service:
+    if not service:
         return None, None, None
 
-    stacks_dir = Path(get_data_dir()) / "stacks"
-    dir_name = None
-    if stacks_dir.is_dir():
-        for entry in stacks_dir.iterdir():
-            if entry.is_dir() and entry.name.lower() == project.lower():
-                dir_name = entry.name
-                break
-    if dir_name is None:
+    resolved = _resolve_managed_stack(labels)
+    if resolved is None:
         return None, None, None
+    dir_name = resolved[0]
 
     compose_file, _cwd = _resolve_stack_compose(dir_name)
     if compose_file is None or not Path(compose_file).exists():
@@ -707,7 +709,16 @@ def _get_container_full_spec(container_id: str) -> Optional[Dict[str, Any]]:
 
     # Stack (from compose labels)
     project = raw_labels.get("com.docker.compose.project", "")
-    managed = bool(project and (get_data_dir() / "stacks" / project).exists())
+    # Docker lowercases the label but the managed directory may keep its
+    # original casing; resolve the real folder so `stack` re-uses the exact
+    # name (case-insensitive, no second folder created downstream).  A stack
+    # whose compose file lives in /data/stacks/ (working_dir/config_files
+    # labels) is also recognised even when a `name:` override makes the
+    # project label differ from the folder name.
+    resolved = _resolve_managed_stack(raw_labels)
+    managed = resolved is not None
+    if resolved is not None:
+        project = resolved[0]
 
     return {
         "name": c.name.lstrip("/"),
@@ -1007,6 +1018,107 @@ def exec_resize(container_id: str, exec_id: str, height: int, width: int):
 # ---------------------------------------------------------------------------
 # Stacks
 # ---------------------------------------------------------------------------
+
+
+def _find_managed_stack_dir(project: str) -> Optional[Path]:
+    """Return the **real** on-disk path of the managed stack directory whose
+    name matches *project* case-insensitively, or ``None`` when no unique,
+    unambiguous match exists.
+
+    Docker always lowercases the ``com.docker.compose.project`` label while the
+    directory Docky created may keep its original casing (e.g. ``MyApp``
+    directory vs the ``myapp`` label).  A case-sensitive lookup would then
+    wrongly report the stack as external or, worse, re-create a second
+    directory with a mismatched case during the compose write / ``git save``.
+    Returning the real path lets every caller reuse the exact folder.
+
+    If the on-disk listing contains several directories that differ only by
+    case (e.g. ``MyApp`` *and* ``myapp``), the match is ambiguous and ``None``
+    is returned so callers treat the stack as not managed instead of guessing.
+    """
+    if not project:
+        return None
+    stacks_dir = get_stacks_dir()
+    if not stacks_dir.is_dir():
+        return None
+    matches: list = []
+    exact = None
+    for entry in stacks_dir.iterdir():
+        if not entry.is_dir():
+            continue
+        if entry.name.lower() != project.lower():
+            continue
+        matches.append(entry)
+        if entry.name == project:
+            exact = entry
+    if exact is not None:
+        return exact
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def _resolve_managed_stack(container_labels) -> Optional[tuple]:
+    """Return ``(stack_name, dir_path)`` when a container belongs to a
+    Docky-managed stack, else ``None``.
+
+    A stack is considered **managed** when EITHER:
+
+    1. the compose ``com.docker.compose.project`` label matches a directory in
+       ``get_stacks_dir()`` case-insensitively (the recent case fix — Docker
+       lowercases the label while the directory may keep its original casing),
+       **or**
+    2. the compose ``working_dir`` / ``config_files`` labels point **inside**
+       ``get_stacks_dir()/<folder>`` (path-normalised).  This covers stacks
+       whose compose file declares a ``name:`` override (or a
+       ``COMPOSE_PROJECT_NAME`` env) so the project label no longer matches the
+       folder name, even though the compose file still lives in Docky's managed
+       directory (e.g. imported then deployed from Docky).
+
+    The returned ``stack_name`` is the **real** on-disk folder name (original
+    casing) so callers reuse the exact directory — no second folder is ever
+    created downstream.
+    """
+    if not container_labels:
+        return None
+
+    project = container_labels.get("com.docker.compose.project") or ""
+    working_dir = container_labels.get("com.docker.compose.project.working_dir") or ""
+    config_files = container_labels.get("com.docker.compose.project.config_files") or ""
+
+    # 1. Project label matches a managed directory (case-insensitive).
+    if project:
+        managed_path = _find_managed_stack_dir(project)
+        if managed_path is not None:
+            return managed_path.name, str(managed_path)
+
+    # 2. working_dir / config_files point inside a managed directory.
+    stacks_dir = get_stacks_dir()
+    if not stacks_dir.is_dir():
+        return None
+    stacks_resolved = stacks_dir.resolve()
+    candidates: List[str] = []
+    if working_dir:
+        candidates.append(working_dir)
+    if config_files:
+        for f in config_files.split(","):
+            f = f.strip()
+            if f:
+                candidates.append(str(Path(f).parent))
+    for cand in candidates:
+        try:
+            cand_path = Path(cand).resolve()
+        except OSError:
+            continue
+        if cand_path == stacks_resolved:
+            continue  # points at the stacks root, not a specific folder
+        if stacks_resolved in cand_path.parents:
+            rel = cand_path.relative_to(stacks_resolved)
+            folder = rel.parts[0]
+            folder_path = stacks_resolved / folder
+            if folder_path.is_dir():
+                return folder, str(folder_path)
+    return None
 
 
 def _managed_stack_names() -> set:
@@ -1456,14 +1568,13 @@ async def update_container(container_id: str, spec: Dict[str, Any]) -> Dict[str,
     attrs = c.attrs
 
     # Check if external stack
-    project = (attrs.get("Config", {}).get("Labels") or {}).get("com.docker.compose.project", "")
-    if project:
-        stacks_dir = Path(get_data_dir()) / 'stacks'
-        managed = (stacks_dir / project).exists()
-        if not managed:
-            return {"success": False, "error": "Les stacks externes ne peuvent pas être éditées"}
+    labels = attrs.get("Config", {}).get("Labels") or {}
+    resolved = _resolve_managed_stack(labels)
+    if resolved is not None:
         # Managed stack → modify compose file
-        return await _update_compose_container(project, container_id, spec, client)
+        return await _update_compose_container(resolved[0], container_id, spec, client)
+    if labels.get("com.docker.compose.project"):
+        return {"success": False, "error": EXTERNAL_STACK_EDIT_REFUSED}
 
     # Standalone container → recreate
     return await _recreate_container(c, container_id, spec, client, attrs)

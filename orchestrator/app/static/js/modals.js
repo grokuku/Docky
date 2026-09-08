@@ -304,7 +304,7 @@ Object.assign(window.DockyApp, {
 
             // Check if container is managed
             if (spec.managed === false) {
-                this.showToast("Les containers externes ne peuvent pas être édités", "warning");
+                this.showToast("Les containers externes ne peuvent pas être édités. Si cette stack a été importée, déployez-la depuis Docky pour reprendre les containers.", "warning");
                 return;
             }
 
