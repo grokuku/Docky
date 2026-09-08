@@ -16,64 +16,29 @@ const SettingsApp = {
     // Utilities
     // -------------------------------------------------------
 
-    /** Lecture brute d'un cookie (parser simple, tolerant aux espaces). */
-    getCookie(name) {
-        if (typeof document === "undefined" || !document.cookie) return null;
-        const parts = document.cookie.split(/;\s*/);
-        for (let i = 0; i < parts.length; i++) {
-            const eq = parts[i].indexOf("=");
-            if (eq === -1) continue;
-            if (parts[i].slice(0, eq) === name) {
-                const raw = parts[i].slice(eq + 1);
-                try { return decodeURIComponent(raw); } catch (e) { return raw; }
-            }
-        }
-        return null;
-    },
-
     async apiFetch(url, options = {}) {
-        const method = (options.method || "GET").toUpperCase();
-        const isSafeMethod = method === "GET" || method === "HEAD" || method === "OPTIONS";
-        const headers = { ...(options.headers || {}) };
-        // Double-submit cookie : toute requête mutante doit porter le
-        // X-CSRF-Token lu depuis le cookie csrf_token (voir docs/csrf-protection.md).
-        // La page settings ne charge pas api.js (wrapper global window.fetch),
-        // donc on ajoute l'en-tête ici, de façon autonome.
-        if (!isSafeMethod && !headers["X-CSRF-Token"]) {
-            const token = this.getCookie("csrf_token");
-            if (token) headers["X-CSRF-Token"] = token;
-        }
-        try {
-            const resp = await fetch(url, {
-                ...options,
-                headers,
-                credentials: "same-origin",
-            });
-            if (resp.status === 401) {
-                window.location.href = "/login";
-                return null;
-            }
-            return await resp.json();
-        } catch (e) {
-            console.error("API error:", e);
-            this.showToast("Erreur réseau: " + e.message, "error");
-            return null;
-        }
+        // Délègue à l'adaptateur HolafFetch (voir holaf-docky-fetch.js).
+        // Supprime la DUPLICATION : la page settings n'a plus sa propre
+        // implémentation maison (fetch + CSRF manuel + 401 + toast) — la
+        // config commune Docky est portée par l'adaptateur : auth CSRF
+        // (cookie csrf_token, lu frais à chaque requête), 401 → /login,
+        // timeout 30 s, JSON vérifié avant parsing, erreurs typées.
+        // Contrat inchangé : données | null, toast avec le message
+        // (err.message contient désormais body.detail via la brique v0.1.1).
+        return window.DockyFetch.apiRequest(url, options);
     },
 
     async apiPost(url, body) {
         return this.apiFetch(url, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body || {}),
+            body: body || {},   // la brique sérialise en JSON + Content-Type
         });
     },
 
     async apiPut(url, body) {
         return this.apiFetch(url, {
             method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body || {}),
+            body: body || {},   // la brique sérialise en JSON + Content-Type
         });
     },
 
@@ -206,8 +171,13 @@ const SettingsApp = {
         } else {
             modelSelect.innerHTML = '<option value="">Aucun modèle trouvé</option>';
             modelSelect.disabled = false;
-            const err = (data && data.error) ? data.error : "Aucun modèle trouvé.";
-            this.showToast(err, "error");
+            // data === null : l'adaptateur a déjà toasté l'erreur HTTP — on ne
+            // re-toaste pas (règle « une seule notification par erreur »). On
+            // n'affiche un toast que si le serveur a répondu sans modèle.
+            if (data) {
+                const err = data.error ? data.error : "Aucun modèle trouvé.";
+                this.showToast(err, "error");
+            }
         }
     },
 

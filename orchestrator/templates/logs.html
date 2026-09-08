@@ -230,6 +230,13 @@
     </div>
     <div id="copy-toast" class="copy-toast"></div>
 
+    <!-- HolafFetch (brique, module différé) + adaptateur DockyFetch : les
+         fetch de la popup passent par l'adaptateur (auth CSRF, 401 → /login,
+         timeout 30 s). L'adaptateur lit window.HolafFetch au moment de l'appel,
+         donc l'ordre de chargement n'a pas d'importance. -->
+    <script type="module" src="/static/vendor/holaf/holaf-fetch.js"></script>
+    <script src="/static/js/holaf-docky-fetch.js"></script>
+
     <script>
         // ── Helpers ──────────────────────────────────────────────
 
@@ -825,16 +832,7 @@
                     ? `/api/stacks/${encodeURIComponent(this.stack)}/logs?agent=${agent}&tail=2000`
                     : `/api/containers/${encodeURIComponent(this.container)}/logs?agent=${agent}&tail=2000`;
                 try {
-                    const resp = await fetch(url, { credentials: "same-origin" });
-                    if (resp.status === 401) {
-                        window.location.href = "/login";
-                        return;
-                    }
-                    const data = await resp.json();
-                    if (!resp.ok) {
-                        this.setStatus("erreur: " + (data.detail || data.error || ("HTTP " + resp.status)));
-                        return;
-                    }
+                    const data = await window.DockyFetch.request(url, {});
                     if (this.paused || this.viewMode !== "terminal") return;
                     const items = data.lines || [];
                     // Message texte de chaque ligne (REST = objets {message, stream})
@@ -877,7 +875,12 @@
                         this.polledFingerprints.splice(0, this.polledFingerprints.length - 2000);
                     }
                 } catch (e) {
-                    // Erreurs de polling silencieuses (le filet reste actif).
+                    // Erreurs de polling : silencieuses pour les erreurs réseau
+                    // (le filet reste actif) ; les erreurs HTTP affichent le
+                    // statut (comportement conservé de l'ancien !resp.ok).
+                    if (e && e.status && e.status !== 0) {
+                        this.setStatus("erreur: " + (e.message || ("HTTP " + e.status)));
+                    }
                 }
             },
 
@@ -957,16 +960,7 @@
                     ? `/api/stacks/${stack}/logs?agent=${agent}&tail=${tail}`
                     : `/api/containers/${container}/logs?agent=${agent}&tail=${tail}`;
                 try {
-                    const resp = await fetch(url, { credentials: "same-origin" });
-                    if (resp.status === 401) {
-                        window.location.href = "/login";
-                        return;
-                    }
-                    const data = await resp.json();
-                    if (!resp.ok) {
-                        this.setStatus("erreur: " + (data.detail || data.error || ("HTTP " + resp.status)));
-                        return;
-                    }
+                    const data = await window.DockyFetch.request(url, {});
                     this.render(data.lines || []);
                     this.setStatus(this.paused ? "en pause" : `mis à jour ${new Date().toLocaleTimeString()}`);
                 } catch (e) {

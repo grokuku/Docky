@@ -48,29 +48,14 @@ Object.assign(window.DockyApp, {
         this.showChatLoading(true);
 
         try {
-            const resp = await fetch("/api/chat", {
+            // Migré vers DockyFetch (adaptateur HolafFetch) : auth CSRF + 401 →
+            // /login gérés par l'adaptateur. Le flux LLM est long (120-180 s) :
+            // timeout étendu à 180 s pour ne pas couper la réponse du serveur.
+            const data = await window.DockyFetch.request("/api/chat", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ message, history: historyToSend }),
-                credentials: "same-origin",
+                body: { message, history: historyToSend },
+                timeout: 180000,
             });
-            if (resp.status === 401) {
-                window.location.href = "/login";
-                return;
-            }
-            const data = await resp.json();
-
-            if (resp.status === 400 && data.detail && data.detail.toLowerCase().includes("not configured")) {
-                this.chatLLMConfigured = false;
-                this.setChatInputEnabled(false);
-                this.renderChatMessage("system", "LLM non configuré. Va dans Settings pour configurer l'endpoint.");
-                return;
-            }
-            if (!resp.ok) {
-                const err = data.detail || ("Erreur " + resp.status);
-                this.renderChatMessage("error", err);
-                return;
-            }
 
             // Tool calls indicator
             if (data.tool_calls && data.tool_calls.length > 0) {
@@ -103,7 +88,18 @@ Object.assign(window.DockyApp, {
                 }
             }
         } catch (e) {
-            this.renderChatMessage("error", "Erreur réseau: " + e.message);
+            // « LLM non configuré » : le serveur répond 400 {detail: "LLM is not
+            // configured…"} — conservé tel quel (message précis existant).
+            if (e.status === 400 && e.data && e.data.detail && e.data.detail.toLowerCase().includes("not configured")) {
+                this.chatLLMConfigured = false;
+                this.setChatInputEnabled(false);
+                this.renderChatMessage("system", "LLM non configuré. Va dans Settings pour configurer l'endpoint.");
+                return;
+            }
+            const err = e.status === 0
+                ? "Erreur réseau: " + e.message
+                : (e.message || ("Erreur " + e.status));
+            this.renderChatMessage("error", err);
         } finally {
             this.chatBusy = false;
             this.setChatInputEnabled(true);
@@ -403,24 +399,21 @@ Object.assign(window.DockyApp, {
         btn.textContent = "Exécution…";
 
         try {
-            const resp = await fetch("/api/chat/validate-exec", {
+            const data = await window.DockyFetch.request("/api/chat/validate-exec", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ container_id: containerId, command: command }),
-                credentials: "same-origin",
+                body: { container_id: containerId, command: command },
             });
-            if (resp.status === 401) {
-                window.location.href = "/login";
-                return;
-            }
-            const data = await resp.json();
-            if (resp.ok && data.success) {
+            if (data.success) {
                 this.renderChatMessage("system", this.icon('check') + " Commande exécutée.\nSortie:\n" + (data.output || "(vide)"));
             } else {
                 this.renderChatMessage("error", "Échec de l'exécution: " + (data.detail || data.output || "erreur inconnue"));
             }
         } catch (e) {
-            this.renderChatMessage("error", "Erreur réseau: " + e.message);
+            if (e.status === 0) {
+                this.renderChatMessage("error", "Erreur réseau: " + e.message);
+            } else {
+                this.renderChatMessage("error", "Échec de l'exécution: " + (e.message || (e.data && e.data.detail) || "erreur inconnue"));
+            }
         } finally {
             // Remove the validation box
             const box = btn.closest(".chat-validation");
@@ -445,24 +438,21 @@ Object.assign(window.DockyApp, {
         btn.textContent = "Exécution…";
 
         try {
-            const resp = await fetch("/api/chat/validate-exec?agent=" + encodeURIComponent(agentName), {
+            const data = await window.DockyFetch.request("/api/chat/validate-exec?agent=" + encodeURIComponent(agentName), {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ type: "clean" }),
-                credentials: "same-origin",
+                body: { type: "clean" },
             });
-            if (resp.status === 401) {
-                window.location.href = "/login";
-                return;
-            }
-            const data = await resp.json();
-            if (resp.ok && data.success) {
+            if (data.success) {
                 this.renderChatMessage("system", this.icon('check') + " Nettoyage effectué.\nSortie:\n" + (data.output || "(vide)"));
             } else {
                 this.renderChatMessage("error", "Échec du nettoyage: " + (data.detail || data.output || "erreur inconnue"));
             }
         } catch (e) {
-            this.renderChatMessage("error", "Erreur réseau: " + e.message);
+            if (e.status === 0) {
+                this.renderChatMessage("error", "Erreur réseau: " + e.message);
+            } else {
+                this.renderChatMessage("error", "Échec du nettoyage: " + (e.message || (e.data && e.data.detail) || "erreur inconnue"));
+            }
         } finally {
             // Remove the validation box
             const box = btn.closest(".chat-validation");
@@ -606,27 +596,22 @@ Object.assign(window.DockyApp, {
         const textarea = document.getElementById("soul-editor");
         if (!textarea) return;
         const content = textarea.value;
-        const resp = await fetch("/api/soul", {
-            method: "PUT",
-            headers: { "Content-Type": "text/plain" },
-            body: content,
-            credentials: "same-origin",
-        });
-        if (resp.status === 401) {
-            window.location.href = "/login";
-            return;
-        }
-        if (resp.ok) {
-            const data = await resp.json().catch(() => ({}));
+        try {
+            // PUT corps brut (text/plain) : la brique ne sérialise pas une
+            // string en JSON (isRawBody) — on garde le Content-Type text/plain.
+            const data = await window.DockyFetch.request("/api/soul", {
+                method: "PUT",
+                headers: { "Content-Type": "text/plain" },
+                body: content,
+            });
             if (data.success !== false) {
                 this.showToast("SOUL.md sauvegardé", "success");
                 this.closeSoulEditor();
             } else {
                 this.showToast("Erreur sauvegarde SOUL.md", "error");
             }
-        } else {
-            const data = await resp.json().catch(() => ({}));
-            this.showToast("Erreur: " + (data.detail || resp.statusText), "error");
+        } catch (e) {
+            this.showToast("Erreur: " + (e.message || (e.data && e.data.detail) || "erreur"), "error");
         }
     },
 });

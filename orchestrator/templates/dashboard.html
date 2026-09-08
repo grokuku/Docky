@@ -8,6 +8,7 @@
     <script src="https://unpkg.com/lucide@latest"></script>
     <script type="module" src="/static/vendor/holaf/holaf-modal.js"></script>
     <script type="module" src="/static/vendor/holaf/holaf-toast.js"></script>
+    <script type="module" src="/static/vendor/holaf/holaf-fetch.js"></script>
     <script type="module" src="/static/js/holaf-docky-theme.js"></script>
 </head>
 <body class="app-body">
@@ -202,6 +203,9 @@
          exécutés dans l'ordre, AVANT DOMContentLoaded -> window.DockyApp complet). -->
     <script src="/static/js/app.js"></script>
     <script src="/static/js/holaf-docky-toast.js"></script>
+    <!-- Adaptateur HolafFetch AVANT api.js (apiFetch l'utilise ; la brique,
+         en module différé, est lue au moment de l'appel — voir en-tête). -->
+    <script src="/static/js/holaf-docky-fetch.js"></script>
     <script src="/static/js/api.js"></script>
     <script src="/static/js/events.js"></script>
     <script src="/static/js/dashboard.js"></script>

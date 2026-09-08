@@ -30,17 +30,14 @@ Object.assign(window.DockyApp, {
 
     async loadVersion() {
         try {
-            const resp = await fetch("/api/version", { credentials: "same-origin" });
-            if (resp.status === 401) {
-                window.location.href = "/login";
-                return;
-            }
-            const data = await resp.json();
+            const data = await window.DockyFetch.request("/api/version", { timeout: 10000 });
             if (data && data.version) {
                 const badge = document.getElementById("version-badge");
                 if (badge) badge.textContent = "v" + data.version;
             }
         } catch (e) {
+            // 401 : la redirection /login est déjà déclenchée par l'adaptateur.
+            if (e.status === 401) return;
             console.error("Failed to load version:", e);
         }
     },
@@ -224,7 +221,7 @@ Object.assign(window.DockyApp, {
         // précédente.
         const [stacksResp, containersResp] = await Promise.all([
             this.apiFetch("/api/stacks?agent=all"),
-            fetch('/api/containers?agent=all', { credentials: "same-origin" })
+            window.DockyFetch.request('/api/containers?agent=all', { timeout: 10000 }).catch(() => null)
         ]);
 
         if (stacksResp === null) return;
@@ -232,20 +229,7 @@ Object.assign(window.DockyApp, {
 
         // Parse containers
         let containersData = [];
-        if (containersResp) {
-            if (containersResp.status === 401) {
-                window.location.href = "/login";
-                return;
-            }
-            if (containersResp.status === 200) {
-                try {
-                    containersData = await containersResp.json();
-                    if (!Array.isArray(containersData)) containersData = [];
-                } catch (e) {
-                    containersData = [];
-                }
-            }
-        }
+        if (Array.isArray(containersResp)) containersData = containersResp;
         this._allContainersCache = containersData;
 
         // Skip re-render if nothing changed (sauf si un refresh forcé est demandé)
@@ -1345,12 +1329,16 @@ Object.assign(window.DockyApp, {
 
         try {
             const url = '/api/containers/' + encodeURIComponent(containerId) + '/stats' + this.agentQuery(agent);
-            const resp = await fetch(url, { credentials: 'same-origin' });
-            if (resp.status === 401) return;
-            const data = await resp.json();
+            // DockyFetch (brique HolafFetch) avec timeout 10 s : un agent qui
+            // ne répond plus n'immobilise plus la requête indéfiniment — c'est
+            // la correction des « stats gelées » (avant : fetch sans timeout,
+            // _pendingFetches restait true et le container n'était plus
+            // rafraîchi). 401 → redirection /login via le hook de l'adaptateur.
+            const data = await window.DockyFetch.request(url, { timeout: 10000 });
             this.renderStats(containerId, data);
         } catch (e) {
-            // Ignorer les erreurs (réseau, annulation…)
+            // Ignorer les erreurs (réseau, timeout, annulation…) : le
+            // prochain cycle de polling retentera (logique conservée).
         } finally {
             this._pendingFetches[containerId] = false;
         }
@@ -1423,7 +1411,11 @@ Object.assign(window.DockyApp, {
                 const output = result ? (result.output || result.error || JSON.stringify(result)) : "Pas de réponse";
                 this._finishActivity(success, output);
                 if (success) this.showToast(`Container ${action} OK`, "success");
-                else this.showToast(`Échec ${action} container`, "error");
+                // result === null : l'adaptateur a déjà toasté l'erreur HTTP —
+                // on ne re-toaste pas (règle « une seule notification par
+                // erreur »). On n'affiche « Échec » que si le serveur a répondu
+                // avec success=false.
+                else if (result) this.showToast(`Échec ${action} container`, "error");
             } catch(e) {
                 this._finishActivity(false, e.message);
                 this.showToast("Erreur: " + e.message, "error");
@@ -1873,29 +1865,32 @@ Object.assign(window.DockyApp, {
 
         try {
             const url = '/api/containers/' + encodeURIComponent(containerId) + '/update-check' + this.agentQuery(agent);
-            const resp = await fetch(url, { credentials: 'same-origin' });
-            if (resp.status === 401) return;
-            if (resp.status === 404) {
-                // Défense supplémentaire, pas la cause principale : le backend
-                // répond 404 quand le container n'existe plus (par ex. après un
-                // update-image réussi qui a recréé le container avec un NOUVEL
-                // id). En pratique le badge fantôme est déjà purgé via le chemin
-                // 200-with-false + _pruneUpdateCache au re-render ; on ne fait ici
-                // que retirer l'entrée du cache et resynchroniser le compteur pour
-                // rester cohérent si un vrai 404 arrivait.
-                delete this._updateCheckCache[cacheKey];
-                const newCount = this._countCachedUpdates();
-                if (newCount !== this._updateAvailableCount) {
-                    this._updateAvailableCount = newCount;
-                    this.updateStatsBar();
-                }
-                return;
-            }
+            // DockyFetch (brique HolafFetch) avec timeout 10 s : un agent qui
+            // ne répond plus n'immobilise plus le check (avant : fetch sans
+            // timeout, _pendingFetches restait true et le badge n'était plus
+            // rafraîchi). L'adaptateur lève la HolafFetchError — on y accède
+            // au statut via err.status.
             let data = null;
             try {
-                data = await resp.json();
-            } catch (e) {
-                data = null;
+                data = await window.DockyFetch.request(url, { timeout: 10000 });
+            } catch (err) {
+                if (err && err.status === 404) {
+                    // Défense supplémentaire, pas la cause principale : le backend
+                    // répond 404 quand le container n'existe plus (par ex. après un
+                    // update-image réussi qui a recréé le container avec un NOUVEL
+                    // id). En pratique le badge fantôme est déjà purgé via le chemin
+                    // 200-with-false + _pruneUpdateCache au re-render ; on ne fait ici
+                    // que retirer l'entrée du cache et resynchroniser le compteur pour
+                    // rester cohérent si un vrai 404 arrivait.
+                    delete this._updateCheckCache[cacheKey];
+                    const newCount = this._countCachedUpdates();
+                    if (newCount !== this._updateAvailableCount) {
+                        this._updateAvailableCount = newCount;
+                        this.updateStatsBar();
+                    }
+                    return;
+                }
+                throw err; // réseau / timeout / autre HTTP : garder l'état affiché
             }
             if (!data || typeof data !== 'object') {
                 // Réponse inattendue (HTML d'erreur, etc.) : ne pas planter ni
@@ -1959,9 +1954,23 @@ Object.assign(window.DockyApp, {
 
         try {
             const url = '/api/stacks/' + encodeURIComponent(stackName) + '/update-check' + this.agentQuery(agent);
-            const resp = await fetch(url, { credentials: 'same-origin' });
-            if (resp.status === 401) return;
-            const data = await resp.json();
+            // DockyFetch (brique HolafFetch) avec timeout 10 s (même raison
+            // que checkUpdate : pas de check immobilisé par un agent muet).
+            let data = null;
+            try {
+                data = await window.DockyFetch.request(url, { timeout: 10000 });
+            } catch (err) {
+                if (err && err.status === 404) {
+                    // Stack disparue : on garde l'état affiché et on ne
+                    // pollue PAS le cache avec le corps du 404 (comportement
+                    // plus sain que l'ancien code, qui mettait en cache le
+                    // corps d'erreur). NB : le compteur global ne compte que
+                    // les containers (clés 'c:'), pas de resync nécessaire ici.
+                    delete this._updateCheckCache[cacheKey];
+                    return;
+                }
+                throw err; // réseau / timeout / autre HTTP : garder l'état affiché
+            }
 
             // Cache mis à jour en premier : les badges seront rendus dans le bon état
             // dès le prochain rendu, sans disparition/reapparition.
@@ -2292,11 +2301,7 @@ Object.assign(window.DockyApp, {
             const results = await Promise.all(staleRecheck.map(async ({ c, agent }) => {
                 try {
                     const url = '/api/containers/' + encodeURIComponent(c.id) + '/update-check' + this.agentQuery(agent);
-                    const resp = await fetch(url, { credentials: 'same-origin' });
-                    if (resp.status === 401) { window.location.href = '/login'; return null; }
-                    if (resp.status !== 200) return null;
-                    let data = null;
-                    try { data = await resp.json(); } catch (e) { data = null; }
+                    const data = await window.DockyFetch.request(url, { timeout: 10000 });
                     if (data && typeof data === 'object') {
                         // Maintient le cache d'affichage cohérent + fraîcheur taguée
                         // (même chemin que checkUpdate, anti-incohérence de badge).
@@ -2306,6 +2311,7 @@ Object.assign(window.DockyApp, {
                         ? { id: c.id, name: c.name, agent }
                         : null;
                 } catch (e) {
+                    // 401 : la redirection /login est déjà déclenchée par l'adaptateur.
                     return null;
                 }
             }));

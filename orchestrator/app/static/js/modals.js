@@ -204,7 +204,11 @@ Object.assign(window.DockyApp, {
     async _streamAction(url) {
         let resp;
         try {
-            resp = await fetch(url, { method: "POST", credentials: "same-origin" });
+            // SSE long : raw:true (flux ReadableStream) + timeout:0 (le flux peut
+            // durer > 30 s sans être coupé). L'auth CSRF et le 401 → /login sont
+            // gérés par l'adaptateur (on.status). Un éventuel opts.signal externe
+            // est relayé par la brique (abort du flux raw toujours opérant).
+            resp = await window.DockyFetch.request(url, { method: "POST", raw: true, timeout: 0 });
         } catch (e) {
             throw new Error("Erreur réseau : " + e.message);
         }
@@ -296,9 +300,7 @@ Object.assign(window.DockyApp, {
 
         // Fetch spec first (without showing modal)
         try {
-            const resp = await fetch(`/api/containers/${encodeURIComponent(containerId)}/edit-spec?agent=${encodeURIComponent(agent || '')}`);
-            if (!resp.ok) throw new Error("Erreur " + resp.status);
-            const spec = await resp.json();
+            const spec = await window.DockyFetch.request(`/api/containers/${encodeURIComponent(containerId)}/edit-spec?agent=${encodeURIComponent(agent || '')}`);
 
             // Check if container is managed
             if (spec.managed === false) {
@@ -548,9 +550,12 @@ Object.assign(window.DockyApp, {
         }
 
         // Récupère les ports utilisés (tous les agents). null = agent injoignable.
+        // {silent: true} : le message « Agent injoignable… » est plus précis que
+        // le toast générique de l'adaptateur — on supprime celui-ci pour ne
+        // garder qu'UNE notification (règle « une seule notification par erreur »).
         let usedPorts = new Set();
         try {
-            const data = await this.apiFetch("/api/ports?agent=all");
+            const data = await this.apiFetch("/api/ports?agent=all", { silent: true });
             if (data === null) {
                 this.showToast("Agent injoignable : impossible de récupérer les ports utilisés", "error");
                 return;
@@ -727,12 +732,10 @@ Object.assign(window.DockyApp, {
         this.showToast("Application des modifications…", "info");
         
         try {
-            const resp = await fetch(`/api/containers/${encodeURIComponent(this._editContainerId)}/update?agent=${encodeURIComponent(this._editContainerAgent || '')}`, {
+            const result = await window.DockyFetch.request(`/api/containers/${encodeURIComponent(this._editContainerId)}/update?agent=${encodeURIComponent(this._editContainerAgent || '')}`, {
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(spec),
+                body: spec,
             });
-            const result = await resp.json();
             
             if (!result.success) {
                 this.showToast("Erreur : " + (result.error || "Échec"), "error");

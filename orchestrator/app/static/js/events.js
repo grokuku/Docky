@@ -71,9 +71,14 @@ Object.assign(window.DockyApp, {
         this.stopHeartbeat();
         this._heartbeatInterval = setInterval(async () => {
             try {
-                await fetch('/api/presence/heartbeat', {
+                // Heartbeat de présence : DockyFetch silencieux — pas de toast,
+                // PAS de redirection 401 (noRedirect401) : un 401 ici ne doit
+                // jamais déloger l'utilisateur (le polling du dashboard gère
+                // déjà la session expirée).
+                await window.DockyFetch.request('/api/presence/heartbeat', {
                     method: 'POST',
-                    credentials: 'same-origin'
+                    timeout: 10000,
+                    noRedirect401: true
                 });
             } catch(e) {
                 // Silently fail

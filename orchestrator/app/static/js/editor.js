@@ -235,29 +235,23 @@ Object.assign(window.DockyApp, {
 
         let batchOk = false;
         try {
-            const batchResp = await fetch(batchUrl, { credentials: "same-origin" });
+            const batchData = await window.DockyFetch.request(batchUrl, { timeout: 30000 });
             if (isStale()) return;
-            if (batchResp.status === 401) {
-                window.location.href = "/login";
-                return;
-            }
-            if (batchResp.ok) {
-                const batchData = await batchResp.json();
-                if (isStale()) return;
-                if (batchData && batchData.files && batchData.files.length > 0) {
-                    // Build stackFiles and fileContents from batch data
-                    this.stackFiles = batchData.files.map(f => ({
-                        name: f.filename,
-                        size: f.size || 0,
-                        is_dir: false
-                    }));
-                    for (const f of batchData.files) {
-                        this._setEditorFileContent(f.filename, f.content || "");
-                    }
-                    batchOk = true;
+            if (batchData && batchData.files && batchData.files.length > 0) {
+                // Build stackFiles and fileContents from batch data
+                this.stackFiles = batchData.files.map(f => ({
+                    name: f.filename,
+                    size: f.size || 0,
+                    is_dir: false
+                }));
+                for (const f of batchData.files) {
+                    this._setEditorFileContent(f.filename, f.content || "");
                 }
+                batchOk = true;
             }
         } catch (e) {
+            // 401 : la redirection /login est déjà déclenchée par l'adaptateur.
+            if (e.status === 401) return;
             console.warn("Batch load failed, falling back to sequential:", e);
         }
 
@@ -278,7 +272,9 @@ Object.assign(window.DockyApp, {
             }
             // Load all file contents sequentially (legacy path)
             for (const f of this.stackFiles) {
-                const resp = await fetch("/api/stacks/" + encodeURIComponent(name) + "/files/" + encodeURIComponent(f.name) + agentParam, { credentials: "same-origin" });
+                // raw:true — l'endpoint renvoie le contenu en text/plain ; on
+                // lit le corps brut (la brique ne parse que du JSON).
+                const resp = await window.DockyFetch.request("/api/stacks/" + encodeURIComponent(name) + "/files/" + encodeURIComponent(f.name) + agentParam, { timeout: 30000, raw: true });
                 if (isStale()) return;
                 if (resp.ok) {
                     const text = await resp.text();
@@ -568,20 +564,22 @@ Object.assign(window.DockyApp, {
         const stackName = atIdx > 0 ? this.selectedStack.substring(0, atIdx) : this.selectedStack;
         const content = this.fileContents[this.currentFile];
         const agentParam = this.agentQuery(this.selectedStackAgent);
-        const resp = await fetch("/api/stacks/" + encodeURIComponent(stackName) + "/files/" + encodeURIComponent(this.currentFile) + agentParam, {
-            method: "PUT",
-            headers: { "Content-Type": "text/plain" },
-            body: content,
-            credentials: "same-origin",
-        });
-        if (resp.status === 401) { window.location.href = "/login"; return; }
-        if (resp.ok) {
+        try {
+            // body string → passé tel quel (isRawBody), Content-Type text/plain
+            // préservé par la brique.
+            await window.DockyFetch.request("/api/stacks/" + encodeURIComponent(stackName) + "/files/" + encodeURIComponent(this.currentFile) + agentParam, {
+                method: "PUT",
+                headers: { "Content-Type": "text/plain" },
+                body: content,
+                timeout: 30000,
+            });
             this.savedContents[this.currentFile] = content;
             this.updateModifiedIndicators();
             this.showToast("Fichier sauvegardé : " + this.currentFile, "success");
-        } else {
-            const data = await resp.json().catch(() => ({}));
-            this.showToast("Erreur sauvegarde : " + (data.detail || resp.statusText), "error");
+        } catch (err) {
+            // 401 : la redirection /login est déjà déclenchée par l'adaptateur.
+            if (err.status === 401) return;
+            this.showToast("Erreur sauvegarde : " + (err.data && err.data.detail || err.message), "error");
         }
     },
 
@@ -597,14 +595,19 @@ Object.assign(window.DockyApp, {
         let allOk = true;
         for (const fname of Object.keys(this.fileContents)) {
             if (this.isModified(fname)) {
-                const resp = await fetch("/api/stacks/" + encodeURIComponent(stackName) + "/files/" + encodeURIComponent(fname) + agentParam, {
-                    method: "PUT",
-                    headers: { "Content-Type": "text/plain" },
-                    body: this.fileContents[fname],
-                    credentials: "same-origin",
-                });
-                if (!resp.ok) allOk = false;
-                else this.savedContents[fname] = this.fileContents[fname];
+                try {
+                    await window.DockyFetch.request("/api/stacks/" + encodeURIComponent(stackName) + "/files/" + encodeURIComponent(fname) + agentParam, {
+                        method: "PUT",
+                        headers: { "Content-Type": "text/plain" },
+                        body: this.fileContents[fname],
+                        timeout: 30000,
+                    });
+                    this.savedContents[fname] = this.fileContents[fname];
+                } catch (err) {
+                    // 401 : la redirection /login est déjà déclenchée par l'adaptateur.
+                    if (err.status === 401) return;
+                    allOk = false;
+                }
             }
         }
         if (!allOk) {
@@ -637,14 +640,13 @@ Object.assign(window.DockyApp, {
         const stackName = atIdx > 0 ? this.selectedStack.substring(0, atIdx) : this.selectedStack;
         const agentParam = this.agentQuery(this.selectedStackAgent);
         // Un .env vide via le mécanisme standard save_stack_file (PUT /files/.env)
-        const resp = await fetch("/api/stacks/" + encodeURIComponent(stackName) + "/files/.env" + agentParam, {
-            method: "PUT",
-            headers: { "Content-Type": "text/plain" },
-            body: "",
-            credentials: "same-origin",
-        });
-        if (resp.status === 401) { window.location.href = "/login"; return; }
-        if (resp.ok) {
+        try {
+            await window.DockyFetch.request("/api/stacks/" + encodeURIComponent(stackName) + "/files/.env" + agentParam, {
+                method: "PUT",
+                headers: { "Content-Type": "text/plain" },
+                body: "",
+                timeout: 30000,
+            });
             this.showToast("Fichier .env créé", "success");
             // Ajoute le fichier à la liste et ouvre l'édition, sans re-fetch global
             // (pour ne pas perdre les modifications non sauvegardées des autres onglets).
@@ -655,9 +657,10 @@ Object.assign(window.DockyApp, {
             this.currentFile = ".env";
             if (!this._composeEditMode) this.toggleComposeEdit();
             this.renderEditor();
-        } else {
-            const data = await resp.json().catch(() => ({}));
-            this.showToast("Erreur création .env : " + (data.detail || data.error || resp.statusText), "error");
+        } catch (err) {
+            // 401 : la redirection /login est déjà déclenchée par l'adaptateur.
+            if (err.status === 401) return;
+            this.showToast("Erreur création .env : " + (err.data && err.data.detail || err.message), "error");
         }
     },
 
@@ -675,7 +678,12 @@ Object.assign(window.DockyApp, {
         if (!filesData || !filesData.files) {
             // Annuler la bascule en cas d'échec
             this._showAllStackFiles = !this._showAllStackFiles;
-            this.showToast("Impossible de recharger la liste des fichiers", "error");
+            // filesData === null : l'adaptateur a déjà toasté l'erreur HTTP —
+            // on ne re-toaste pas (règle « une seule notification par erreur »).
+            // On n'affiche un toast que si le serveur a répondu sans liste.
+            if (filesData) {
+                this.showToast("Impossible de recharger la liste des fichiers", "error");
+            }
             return;
         }
         this.stackFiles = filesData.files;
@@ -689,7 +697,9 @@ Object.assign(window.DockyApp, {
                 loadedFiles.push(f);
                 continue;
             }
-            const resp = await fetch("/api/stacks/" + encodeURIComponent(stackName) + "/files/" + encodeURIComponent(f.name) + agentParam, { credentials: "same-origin" });
+            // raw:true — l'endpoint renvoie le contenu en text/plain ; on lit le
+            // corps brut (la brique ne parse que du JSON).
+            const resp = await window.DockyFetch.request("/api/stacks/" + encodeURIComponent(stackName) + "/files/" + encodeURIComponent(f.name) + agentParam, { timeout: 30000, raw: true });
             if (resp.ok) {
                 const text = await resp.text();
                 this._setEditorFileContent(f.name, text);
@@ -880,24 +890,21 @@ Object.assign(window.DockyApp, {
         this.showToast('Génération de la preview...', "info");
 
         try {
-            const resp = await fetch('/api/stacks/import?agent=' + encodeURIComponent(agent), {
+            const data = await window.DockyFetch.request('/api/stacks/import?agent=' + encodeURIComponent(agent), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ source_path: sourcePath, stack_name: stackName, dry_run: true }),
-                credentials: 'same-origin',
+                body: { source_path: sourcePath, stack_name: stackName, dry_run: true },
+                timeout: 60000,
             });
-            if (resp.status === 401) {
-                window.location.href = "/login";
-                return;
-            }
-            const data = await resp.json().catch(() => ({}));
 
-            if (resp.ok && data.success) {
+            if (data.success) {
                 this.showImportPreview(sourcePath, stackName, agent, data);
             } else {
                 this.showToast(data.detail || data.error || "Erreur lors de la preview", "error");
             }
         } catch (e) {
+            // 401 : la redirection /login est déjà déclenchée par l'adaptateur.
+            if (e.status === 401) return;
             this.showToast('Erreur: ' + e.message, "error");
         }
     },
@@ -962,19 +969,14 @@ Object.assign(window.DockyApp, {
         this.showToast('Import en cours...', "info");
 
         try {
-            const resp = await fetch('/api/stacks/import?agent=' + encodeURIComponent(agent), {
+            const data = await window.DockyFetch.request('/api/stacks/import?agent=' + encodeURIComponent(agent), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ source_path: sourcePath, stack_name: stackName, dry_run: false }),
-                credentials: 'same-origin',
+                body: { source_path: sourcePath, stack_name: stackName, dry_run: false },
+                timeout: 60000,
             });
-            if (resp.status === 401) {
-                window.location.href = "/login";
-                return;
-            }
-            const data = await resp.json().catch(() => ({}));
 
-            if (resp.ok && data.success) {
+            if (data.success) {
                 let msg = 'Stack « ' + (data.name || stackName) + ' » importée avec succès';
                 if (data.conversions && data.conversions.length > 0) {
                     msg += ' (' + data.conversions.length + ' chemin(s) converti(s))';
@@ -989,6 +991,8 @@ Object.assign(window.DockyApp, {
                 this.showToast(data.detail || data.error || "Erreur lors de l'import", "error");
             }
         } catch (e) {
+            // 401 : la redirection /login est déjà déclenchée par l'adaptateur.
+            if (e.status === 401) return;
             this.showToast('Erreur: ' + e.message, "error");
         }
     },
@@ -1002,19 +1006,14 @@ Object.assign(window.DockyApp, {
         this.showToast('Import en cours...', "info");
 
         try {
-            const resp = await fetch('/api/stacks/import?agent=' + encodeURIComponent(agent), {
+            const data = await window.DockyFetch.request('/api/stacks/import?agent=' + encodeURIComponent(agent), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ source_path: sourcePath, stack_name: stackName }),
-                credentials: 'same-origin',
+                body: { source_path: sourcePath, stack_name: stackName },
+                timeout: 60000,
             });
-            if (resp.status === 401) {
-                window.location.href = "/login";
-                return;
-            }
-            const data = await resp.json().catch(() => ({}));
 
-            if (resp.ok && data.success) {
+            if (data.success) {
                 let msg = 'Stack « ' + (data.name || stackName) + ' » importée avec succès';
                 if (data.conversions && data.conversions.length > 0) {
                     msg += ' (' + data.conversions.length + ' chemin(s) converti(s))';
@@ -1028,6 +1027,8 @@ Object.assign(window.DockyApp, {
                 this.showToast(data.detail || data.error || "Erreur lors de l'import", "error");
             }
         } catch (e) {
+            // 401 : la redirection /login est déjà déclenchée par l'adaptateur.
+            if (e.status === 401) return;
             this.showToast('Erreur: ' + e.message, "error");
         }
     },
@@ -1048,22 +1049,17 @@ Object.assign(window.DockyApp, {
         }
 
         try {
-            const resp = await fetch(
+            const data = await window.DockyFetch.request(
                 "/api/stacks/import?agent=" + encodeURIComponent(agent),
                 {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ source_path: sourcePath, stack_name: stackName }),
-                    credentials: "same-origin",
+                    body: { source_path: sourcePath, stack_name: stackName },
+                    timeout: 60000,
                 }
             );
-            if (resp.status === 401) {
-                window.location.href = "/login";
-                return;
-            }
-            const data = await resp.json().catch(() => ({}));
 
-            if (resp.ok && data.success) {
+            if (data.success) {
                 let msg = 'Stack « ' + (data.name || stackName || sourcePath) + ' » importée avec succès';
                 if (data.conversions && data.conversions.length > 0) {
                     msg += '\n\nChemins convertis (' + data.conversions.length + '):\n' + data.conversions.slice(0, 5).join('\n');
@@ -1079,6 +1075,8 @@ Object.assign(window.DockyApp, {
                 this.showToast(data.detail || data.error || "Erreur lors de l'import", "error");
             }
         } catch (e) {
+            // 401 : la redirection /login est déjà déclenchée par l'adaptateur.
+            if (e.status === 401) return;
             this.showToast("Erreur: " + e.message, "error");
         }
     },
@@ -1098,21 +1096,21 @@ Object.assign(window.DockyApp, {
             return;
         }
         const agentParam = this.agentQuery(agent);
-        const resp = await fetch("/api/stacks" + agentParam, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name, compose, env }),
-            credentials: "same-origin",
-        });
-        if (resp.status === 401) { window.location.href = "/login"; return; }
-        if (resp.ok) {
+        try {
+            await window.DockyFetch.request("/api/stacks" + agentParam, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: { name, compose, env },
+                timeout: 30000,
+            });
             this.closeNewStackModal();
             this.showToast("Stack créée : " + name, "success");
             await this.refreshStacks();
             this.loadEditor(name, agent, true);
-        } else {
-            const data = await resp.json().catch(() => ({}));
-            this.showToast("Erreur création : " + (data.detail || resp.statusText), "error");
+        } catch (err) {
+            // 401 : la redirection /login est déjà déclenchée par l'adaptateur.
+            if (err.status === 401) return;
+            this.showToast("Erreur création : " + (err.data && err.data.detail || err.message), "error");
         }
     },
 
@@ -1157,12 +1155,11 @@ Object.assign(window.DockyApp, {
             agent = raw.substring(atIdx + 1);
         }
         const agentParam = this.agentQuery(agent);
-        const resp = await fetch("/api/stacks/" + encodeURIComponent(stackName) + agentParam, {
-            method: "DELETE",
-            credentials: "same-origin",
-        });
-        if (resp.status === 401) { window.location.href = "/login"; return; }
-        if (resp.ok) {
+        try {
+            await window.DockyFetch.request("/api/stacks/" + encodeURIComponent(stackName) + agentParam, {
+                method: "DELETE",
+                timeout: 30000,
+            });
             this.closeDeleteStackModal();
             this.showToast("Stack supprimée : " + stackName, "success");
             if (this.selectedStack === raw) {
@@ -1173,9 +1170,10 @@ Object.assign(window.DockyApp, {
             const selector = document.getElementById("stack-selector");
             if (selector) selector.value = "";
             await this.refreshStacks();
-        } else {
-            const data = await resp.json().catch(() => ({}));
-            this.showToast("Erreur suppression : " + (data.detail || resp.statusText), "error");
+        } catch (err) {
+            // 401 : la redirection /login est déjà déclenchée par l'adaptateur.
+            if (err.status === 401) return;
+            this.showToast("Erreur suppression : " + (err.data && err.data.detail || err.message), "error");
         }
     },
 
@@ -1239,19 +1237,19 @@ Object.assign(window.DockyApp, {
         const atIdx = this.selectedStack.indexOf('@');
         const stackName = atIdx > 0 ? this.selectedStack.substring(0, atIdx) : this.selectedStack;
         const agentParam = this.agentQuery(this.selectedStackAgent);
-        const resp = await fetch("/api/stacks/" + encodeURIComponent(stackName) + "/files/" + encodeURIComponent(this.permsTargetFile) + "/permissions" + agentParam, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ mode }),
-            credentials: "same-origin",
-        });
-        if (resp.status === 401) { window.location.href = "/login"; return; }
-        if (resp.ok) {
+        try {
+            await window.DockyFetch.request("/api/stacks/" + encodeURIComponent(stackName) + "/files/" + encodeURIComponent(this.permsTargetFile) + "/permissions" + agentParam, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: { mode },
+                timeout: 15000,
+            });
             this.closePermsModal();
             this.showToast("Permissions appliquées : " + mode, "success");
-        } else {
-            const data = await resp.json().catch(() => ({}));
-            this.showToast("Erreur : " + (data.detail || resp.statusText), "error");
+        } catch (err) {
+            // 401 : la redirection /login est déjà déclenchée par l'adaptateur.
+            if (err.status === 401) return;
+            this.showToast("Erreur : " + (err.data && err.data.detail || err.message), "error");
         }
     },
 
@@ -1290,8 +1288,7 @@ Object.assign(window.DockyApp, {
         this._historyModalCtrl = ctrl;
 
         try {
-            const resp = await fetch(`/api/stacks/${encodeURIComponent(name)}/history?agent=${encodeURIComponent(agent)}`);
-            const data = await resp.json();
+            const data = await window.DockyFetch.request(`/api/stacks/${encodeURIComponent(name)}/history?agent=${encodeURIComponent(agent)}`, { timeout: 15000 });
             const history = data.history || [];
 
             if (history.length === 0) {
@@ -1358,8 +1355,7 @@ Object.assign(window.DockyApp, {
         previewDiv.style.display = 'block';
 
         try {
-            const resp = await fetch(`/api/stacks/${encodeURIComponent(name)}/history/${hash}?agent=${encodeURIComponent(agent)}`);
-            const data = await resp.json();
+            const data = await window.DockyFetch.request(`/api/stacks/${encodeURIComponent(name)}/history/${hash}?agent=${encodeURIComponent(agent)}`, { timeout: 15000 });
             const content = data.content || '(fichier non disponible)';
 
             previewDiv.innerHTML = `
@@ -1390,8 +1386,7 @@ Object.assign(window.DockyApp, {
 
         this.showToast("Restauration en cours…", "info");
         try {
-            const resp = await fetch(`/api/stacks/${encodeURIComponent(name)}/history/restore/${hash}?agent=${encodeURIComponent(agent)}`, { method: 'POST' });
-            const result = await resp.json();
+            const result = await window.DockyFetch.request(`/api/stacks/${encodeURIComponent(name)}/history/restore/${hash}?agent=${encodeURIComponent(agent)}`, { method: 'POST', timeout: 60000 });
             if (result.success) {
                 this.showToast("✓ Stack restaurée", "success");
                 this.closeHistory();

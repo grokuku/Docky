@@ -1,12 +1,17 @@
 /* ═══════════════════════════════════════════════════════════════════════════
- * Holaf UI — Brique HolafToast · version 0.2.0
+ * Holaf UI — Brique HolafToast · version 0.2.1
  * ─────────────────────────────────────────────────────────────────────────────
  * Notifications flottantes (toasts) autonomes, zéro dépendance runtime :
  * 4 types (info/success/warning/error) avec icône, empilement par position
  * (6 positions, conteneur créé à la demande, max 5 visibles), auto-dismiss
- * avec barre de progression animée, PAUSE au survol (timer ET barre), bouton
- * ✕, actions cliquables, aria-live (polite / assertive pour error), mobile
- * pleine largeur en bas, prefers-reduced-motion respecté.
+ * avec barre de progression animée en temps réel, PAUSE au survol (timer ET
+ * barre), bouton ✕, actions cliquables, aria-live (polite / assertive pour
+ * error), mobile pleine largeur en bas, prefers-reduced-motion respecté.
+ *
+ * v0.2.1 — correction barre de progression : elle reste désormais ANIMÉE en
+ * temps réel (la durée est calée sur le timer d'auto-dismiss), au lieu d'un
+ * scaleX figé qui n'avançait jamais. Pause au survol via animation-play-state
+ * (classe paused) au lieu d'un scaleX inline. Rétrocompatible.
  *
  * v0.2.0 — thèmes (registre + presets dark/light/midnight/slate, miroir de
  * HolafModal), positions alternatives (top/bottom-center), configure() pour
@@ -24,7 +29,7 @@
 const HolafToast = (function () {
     "use strict";
 
-    const VERSION = "0.2.0";
+    const VERSION = "0.2.1";
 
     // ─── Constantes du module ────────────────────────────────────────────────
     const CSS_ID = "holaf-toast-style";
@@ -396,9 +401,27 @@ const HolafToast = (function () {
     transform-origin: left center;
     transform: scaleX(1);
     opacity: 0.85;
+    /* Barre ANIMÉE en temps réel : la durée est posée inline (ms) par le JS,
+     * la barre part pleine (scaleX(1)) et se vide (scaleX(0)) en duration.
+     * animation gère le nom + la courbe temporelle ; la durée vient du style
+     * inline (prioritaire) pour rester synchro avec le timer d'auto-dismiss. */
+    animation: holaf-toast-progress linear;
+}
+/* Au survol, on gèle la barre à sa position courante via play-state:paused
+ * (l'animation CSS se met naturellement en pause, contrairement à l'ancien
+ * scaleX inline figé — temps de barre et timer restant restent synchrones). */
+.holaf-toast__progress--paused {
+    animation-play-state: paused;
+}
+@keyframes holaf-toast-progress {
+    from { transform: scaleX(1); }
+    to   { transform: scaleX(0); }
 }
 
 /* Animations (désactivées si prefers-reduced-motion). */
+/* prefers-reduced-motion : la barre reste VISIBLE mais statique (pleine, sans
+ * animation) — le timer en JS ferme toujours le toast ; seule l'illusion de
+ * mouvements est supprimée. On garde un repère visuel stable et non animé. */
 @keyframes holaf-toast-slide-in {
     from { opacity: 0; transform: translateY(-10px); }
     to   { opacity: 1; transform: translateY(0); }
@@ -409,7 +432,7 @@ const HolafToast = (function () {
 }
 @media (prefers-reduced-motion: reduce) {
     .holaf-toast, .holaf-toast--closing { animation: none; }
-    .holaf-toast__progress { transition: none; }
+    .holaf-toast__progress { animation: none; }
 }
 
 /* Mobile : pleine largeur en bas (les 6 positions convergent). */
@@ -567,30 +590,30 @@ const HolafToast = (function () {
         el.appendChild(closeBtn);
 
         // ── Barre de progression (durée restante) ──
+        // Animation CSS pilotée par le temps : `animation-duration` = durée du
+        // toast (inline, prioritaire), la barre se vide en temps réel de
+        // scaleX(1) → scaleX(0). Au survol on la gèle via la classe paused ;
+        // duration 0 (persistant) = pas de barre. En prefers-reduced-motion la
+        // barre reste affichée pleine et statique (voir CSS).
         let progressEl = null;
         if (duration > 0) {
             progressEl = document.createElement("div");
             progressEl.className = "holaf-toast__progress";
+            progressEl.style.animationDuration = duration + "ms";
             el.appendChild(progressEl);
         }
 
         // ── Timer d'auto-dismiss avec pause au survol ──
         // On gère nous-mêmes le temps restant (remaining) plutôt qu'une
         // animation CSS seule : au survol on annule le timer ET on gèle la
-        // barre (scaleX calculé), au départ on réarme pour le reste.
+        // barre (classe paused → animation-play-state, position conservée),
+        // au départ on réarme pour le reste et on relance l'animation.
         const toast = { el, timer: null, remaining: duration, startedAt: 0, closed: false };
 
         function clearTimer() {
             if (toast.timer !== null) {
                 clearTimeout(toast.timer);
                 toast.timer = null;
-            }
-        }
-
-        function applyProgress() {
-            // Met à jour la barre selon la fraction de temps restant.
-            if (progressEl && duration > 0) {
-                progressEl.style.transform = "scaleX(" + (toast.remaining / duration) + ")";
             }
         }
 
@@ -605,11 +628,14 @@ const HolafToast = (function () {
             clearTimer();
             toast.remaining -= Date.now() - toast.startedAt;
             if (toast.remaining < 0) toast.remaining = 0;
-            applyProgress();
+            // Gel de la barre à sa position courante (l'animation reprend au
+            // même point au mouseleave, en synchro avec le timer ré-armé).
+            if (progressEl) progressEl.classList.add("holaf-toast__progress--paused");
         }
 
         function resume() {
             if (duration <= 0 || toast.closed) return;
+            if (progressEl) progressEl.classList.remove("holaf-toast__progress--paused");
             armTimer();
         }
 

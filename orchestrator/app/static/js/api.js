@@ -45,46 +45,12 @@ Object.assign(window.DockyApp, {
     // -------------------------------------------------------
 
     async apiFetch(url, options = {}) {
-        const method = (options.method || "GET").toUpperCase();
-        const isSafeMethod = method === "GET" || method === "HEAD" || method === "OPTIONS";
-
-        const doFetch = async () => {
-            const resp = await fetch(url, {
-                ...options,
-                headers: { ...(options.headers || {}) },
-                credentials: "same-origin",
-            });
-            if (resp.status === 401) {
-                window.location.href = "/login";
-                return null;
-            }
-            return await resp.json();
-        };
-
-        try {
-            return await doFetch();
-        } catch (e) {
-            // Retry unique, uniquement pour les méthodes sûres (GET/HEAD/OPTIONS),
-            // et seulement sur une erreur réseau (TypeError), jamais sur AbortError
-            // ni sur une réponse HTTP d'erreur (4xx/5xx).
-            const isNetworkError = e instanceof TypeError && e.name !== "AbortError";
-            if (isSafeMethod && isNetworkError) {
-                console.warn("apiFetch: network error on " + method + ", retrying once in 500ms:", e.message);
-                await new Promise(resolve => setTimeout(resolve, 500));
-                try {
-                    const data = await doFetch();
-                    console.warn("apiFetch: retry succeeded");
-                    return data;
-                } catch (e2) {
-                    console.error("API error (after retry):", e2);
-                    this.showToast("Erreur réseau: " + e2.message, "error");
-                    return null;
-                }
-            }
-            console.error("API error:", e);
-            this.showToast("Erreur réseau: " + e.message, "error");
-            return null;
-        }
+        // Délègue à l'adaptateur HolafFetch (voir holaf-docky-fetch.js) :
+        // config commune Docky (auth CSRF cookie csrf_token, timeout 30 s,
+        // 401 → /login, retry réseau ×1 500 ms sur méthodes sûres). Contrat
+        // public inchangé : données | null, toast avec le message d'erreur
+        // (err.message contient désormais body.detail via la brique v0.1.1).
+        return window.DockyFetch.apiRequest(url, options);
     },
 
     async apiPost(url) {
@@ -120,57 +86,3 @@ Object.assign(window.DockyApp, {
         return `<i data-lucide="${name}" class="${className}"></i>`;
     },
 });
-
-/* ============================================================
-   Protection CSRF — wrapper global de window.fetch (double-submit).
-   ---------------------------------------------------------------
-   Installé UNE seule fois au chargement de ce module : toute
-   requête mutante (POST/PUT/PATCH/DELETE…) émise via fetch() — y
-   compris apiFetch/apiPost ci-dessus et les fetch() directs des
-   autres modules (dashboard.js, editor.js, chat.js, modals.js,
-   settings.js, events.js) — reçoit automatiquement l'en-tête
-   X-CSRF-Token lu depuis le cookie csrf_token. Le serveur compare
-   cookie et en-tête (app.auth.csrf). Les méthodes sûres (GET/HEAD/
-   OPTIONS) ne sont jamais modifiées. En cas d'imprévu JS, la
-   requête part telle quelle : le serveur répondra 403 {detail:
-   "CSRF"} et l'utilisateur rechargera la page (nouveau token).
-   ============================================================ */
-(function installCsrfFetchWrapper() {
-    if (typeof window.fetch !== "function") return;
-    if (window.fetch.__dockyCsrfWrapped) return; // idempotent
-
-    const originalFetch = window.fetch.bind(window);
-    const SAFE_METHODS = { GET: true, HEAD: true, OPTIONS: true, TRACE: true };
-
-    const wrapped = function (input, init) {
-        try {
-            const method = String(
-                (init && init.method) ||
-                (input && input.method) ||
-                "GET"
-            ).toUpperCase();
-
-            if (!SAFE_METHODS[method]) {
-                const token = window.DockyApp && typeof window.DockyApp.csrfToken === "function"
-                    ? window.DockyApp.csrfToken()
-                    : null;
-                if (token) {
-                    init = init ? Object.assign({}, init) : {};
-                    const headers = new Headers(
-                        init.headers || (input instanceof Request ? input.headers : undefined)
-                    );
-                    if (!headers.has("X-CSRF-Token")) {
-                        headers.set("X-CSRF-Token", token);
-                    }
-                    init.headers = headers;
-                }
-            }
-        } catch (e) {
-            // Ne JAMAIS faire échouer la requête appelante à cause du CSRF :
-            // sans en-tête le serveur répond 403 {detail:"CSRF"}, détectable.
-        }
-        return originalFetch(input, init);
-    };
-    wrapped.__dockyCsrfWrapped = true;
-    window.fetch = wrapped;
-})();

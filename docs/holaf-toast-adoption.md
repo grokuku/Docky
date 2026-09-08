@@ -10,10 +10,21 @@ pinnée dans `holaf-manifest.json`). Elle remplace l'ancien toast maison
 `showToast(message, type)` — seule l'**implémentation** est remplacée par un
 **adaptateur fin** vers la brique.
 
-**Version installée : v0.2.0** (4 types `info`/`success`/`warning`/`error`,
-empilement par position, auto-dismiss avec barre de progression, pause au
-survol, bouton ✕, actions cliquables, `aria-live`, **registre de thèmes**
-`--ht-*` + `setTheme`/`configure`, **6 positions** dont `top/bottom-center`).
+**Version installée : v0.2.1** (4 types `info`/`success`/`warning`/`error`,
+empilement par position, auto-dismiss avec barre de progression **animée en
+temps réel**, pause au survol, bouton ✕, actions cliquables, `aria-live`,
+**registre de thèmes** `--ht-*` + `setTheme`/`configure`, **6 positions** dont
+`top/bottom-center`).
+
+## Changelog
+
+- **v0.2.1** (upgrade) — correction de la barre de progression : elle reste
+désormais **animée en temps réel** (la durée est calée sur le timer
+d'auto-dismiss), au lieu d'un `scaleX` figé qui n'avançait jamais. Pause au
+survol via `animation-play-state` (classe `paused`) au lieu d'un `scaleX`
+inline. **Rétrocompatible** : l'API (`show`/`themes`/`setTheme`/`configure`)
+et le comportement historique sont inchangés — l'adaptateur Docky n'a eu
+**aucune modification** pour cette montée de version.
 
 ## Stratégie retenue : adaptateur fin
 
@@ -137,13 +148,15 @@ cd /projects/holaf-lib && ./scripts/holaf upgrade toast /projects/Docky/orchestr
 ## Vérification
 
 - La copie servie est strictement identique à la lib
-  (`diff js/holaf-toast.js` → aucun écart).
+  (`diff js/holaf-toast.js` → aucun écart), version **v0.2.1**
+  (`HolafToast.version === "0.2.1"`).
 - Smoke HTTP : `/static/vendor/holaf/holaf-toast.js` 200,
   `/static/js/holaf-docky-toast.js` 200, `/dashboard` 200, `/settings` 200
   (authentifié).
 - Headless Chromium : déclenchement de 2 toasts via l'adaptateur (success +
   error) → rendu correct (classes `holaf-toast--success/error`), empilement
   (2 toasts sur la même position), rôles aria (`status`/`alert`), auto-dismiss
-  après 3000 ms, thème Docky appliqué via le **registre** (`--ht-*` calculés =
-  palette docky, **sans** `!important`), positions alternatives (`top-center` +
-  `bottom-left`).
+  après 3000 ms, thème Docky appliqué via le **registre** (`--ht-bg #1d1d36`,
+  `--ht-fg #f0f0f8` calculés sur le toast, **sans** `!important`), barre de
+  progression animée en temps réel (v0.2.1), positions alternatives
+  (`top-center` + `bottom-left`).
