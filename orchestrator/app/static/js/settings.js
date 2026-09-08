@@ -559,179 +559,220 @@ const SettingsApp = {
     },
 
     // -------------------------------------------------------
-    // Docker Hub
+    // Registres (multi-registres)
     // -------------------------------------------------------
 
     /**
-     * Calcule l'état du pill de statut Docker Hub à partir de l'état backend
-     * CONFIRMÉ (jamais de la valeur locale du formulaire).
+     * Calcule l'état du pill d'un registre configuré à partir de l'état
+     * backend CONFIRMÉ (jamais de la valeur locale du formulaire).
      *
-     * Logique à 3 états (+1 raffinement quand le résultat de poussée est
-     * connu, c.-à-d. en réponse à un PUT/clear) :
-     *  - "online"     (vert)  « Activé »   : enabled && has_token — config
-     *    complète ; poussée confirmée sur tous les agents en ligne, ou
-     *    résultat de poussée inconnu (chargement initial) ;
-     *  - "partial"    (ambre) « Partiel »  : enabled && has_token, mais la
-     *    poussée n'a pas pu être confirmée partout (agent hors ligne — il
-     *    rattrapera à sa reconnexion — ou erreur) ;
-     *  - "incomplete" (ambre) « Incomplet » : enabled mais has_token=false —
-     *    la config ne peut pas fonctionner sans token ;
-     *  - "offline"    (gris)  « Désactivé » : enabled=false.
+     *  - "online"  (vert)  « Activé »   : has_token et poussée confirmée sur
+     *    tous les agents en ligne (ou résultat de poussée inconnu) ;
+     *  - "partial" (ambre) « Partiel »  : has_token mais poussée non confirmée
+     *    partout (agent hors ligne — il rattrapera à sa reconnexion — ou erreur) ;
+     *  - "warning" (ambre) « Incomplet » : pas de token stocké.
      */
-    dockerhubPillState(enabled, hasToken, push) {
-        if (!enabled) return { cls: "status-offline", text: "Désactivé" };
-        if (!hasToken) return { cls: "status-warning", text: "Incomplet" };
-        if (push && typeof push.total === "number" && push.total > 0) {
-            const errCount = push.errors ? Object.keys(push.errors).length : 0;
-            if ((typeof push.pushed === "number" && push.pushed < push.total) || errCount > 0) {
-                return { cls: "status-partial", text: "Partiel" };
-            }
+    registryPillState(reg) {
+        if (!reg.has_token) return { cls: "status-warning", text: "Incomplet" };
+        const ps = reg.push_status || {};
+        const statuses = Object.values(ps);
+        if (statuses.length > 0) {
+            const errCount = statuses.filter((s) => s !== "ok").length;
+            if (errCount > 0) return { cls: "status-partial", text: "Partiel" };
         }
         return { cls: "status-online", text: "Activé" };
     },
 
-    /**
-     * Met à jour le pill de statut de la carte Docker Hub. Appelé au
-     * chargement (GET) et immédiatement après chaque sauvegarde/désactivation
-     * — toujours à partir de l'état confirmé par le backend (payload du GET,
-     * ou réponse du PUT/clear qui porte désormais l'état persisté), jamais
-     * d'une valeur locale du formulaire.
-     */
-    renderDockerhubStatus(enabled, hasToken, push) {
-        const status = document.getElementById("dockerhub-status");
-        if (!status) return;
-        const pill = this.dockerhubPillState(enabled, hasToken, push);
-        status.className = "status-indicator " + pill.cls;
-        status.textContent = pill.text;
-        // Détail de la poussée en tooltip quand le résultat par agent est
-        // connu et que la config est active (pour un clear le toast le dit).
-        if (enabled && push && typeof push.total === "number" && push.total > 0) {
-            const errNames = Object.keys(push.errors || {});
-            status.title = "Poussé sur " + (push.pushed || 0) + "/" + push.total + " agent(s)" +
-                (errNames.length > 0 ? " — " + errNames.join(", ") : "");
+    renderRegistryStatus(reg) {
+        const pill = this.registryPillState(reg);
+        const ps = reg.push_status || {};
+        const errNames = Object.keys(ps).filter((a) => ps[a] !== "ok");
+        return '<span class="status-indicator ' + pill.cls + '" title="'
+            + (errNames.length ? "Poussée incomplète : " + errNames.join(", ") : "")
+            + '">' + pill.text + '</span>';
+    },
+
+    renderRegistries() {
+        const container = document.getElementById("registries-list");
+        if (!container) return;
+        const configured = this.registries || [];
+        const configuredUrls = new Set(configured.map((r) => r.url));
+        const discovered = (this.discovered || []).filter((u) => !configuredUrls.has(u));
+
+        let html = '';
+        if (configured.length === 0 && discovered.length === 0) {
+            html = '<p class="placeholder-hint">Aucun registre configuré. Cliquez sur « Ajouter un registre » ou « Scanner ».</p>';
         } else {
-            status.title = "";
+            if (configured.length > 0) {
+                html += '<div class="registries-section-label">Configurés</div>';
+                html += configured.map((r) => {
+                    return '<div class="registry-row" data-url="' + this.escapeHtml(r.url) + '">'
+                        + '<div class="registry-row-info">'
+                        + '<span class="registry-row-url">' + this.escapeHtml(r.url) + '</span>'
+                        + '<span class="registry-row-user">' + this.escapeHtml(r.username || "—") + '</span>'
+                        + '</div>'
+                        + this.renderRegistryStatus(r)
+                        + '<div class="registry-row-actions">'
+                        + '<button class="btn btn-ghost btn-sm" onclick="SettingsApp.authenticateRegistry(\'' + this.escapeHtml(r.url) + '\')">S\'authentifier</button>'
+                        + '<button class="btn btn-danger btn-sm" onclick="SettingsApp.deleteRegistry(\'' + this.escapeHtml(r.url) + '\')">Déconnecter</button>'
+                        + '</div>'
+                        + '</div>';
+                }).join("");
+            }
+            if (discovered.length > 0) {
+                html += '<div class="registries-section-label">Découverts</div>';
+                html += discovered.map((u) => {
+                    return '<div class="registry-discovered" onclick="SettingsApp.showRegistryForm(\'' + this.escapeHtml(u) + '\')" title="Cliquer pour s\'authentifier">'
+                        + '<span class="registry-discovered-url">' + this.escapeHtml(u) + '</span>'
+                        + '<span class="registry-discovered-hint">Découvert</span>'
+                        + '</div>';
+                }).join("");
+            }
         }
+        container.innerHTML = html;
     },
 
-    /**
-     * Applique au formulaire + au pill un état backend confirmé : payload du
-     * GET (chargement initial) ou réponse du PUT/clear (état persisté +,
-     * pour ces derniers, les résultats de poussée par agent). Source unique
-     * de vérité = le serveur ; aucune valeur locale n'est réinjectée.
-     */
-    applyDockerhubState(data, push) {
-        this.dockerhubHasToken = !!data.has_token;
-        const enabledInput = document.getElementById("dockerhub-enabled");
-        if (enabledInput) enabledInput.checked = !!data.enabled;
-        const username = document.getElementById("dockerhub-username");
-        if (username) username.value = data.username || "";
-        const token = document.getElementById("dockerhub-token");
-        if (token) {
-            token.value = "";
-            token.placeholder = data.has_token ? "•••••••• (configuré)" : "••••••••";
-        }
-        this.renderDockerhubStatus(!!data.enabled, !!data.has_token, push);
-    },
-
-    async loadDockerhubSettings() {
-        const data = await this.apiFetch("/api/settings/dockerhub");
+    async loadRegistries() {
+        const data = await this.apiFetch("/api/settings/registries");
         if (!data) return;
-        // Au chargement, le résultat de poussée n'est pas connu du GET : le
-        // pill reflète la config (Activé / Incomplet / Désactivé). Les agents
-        // hors ligne rattrapent la config à leur reconnexion.
-        this.applyDockerhubState(data);
+        this.registries = Array.isArray(data.registries) ? data.registries : [];
+        this.discovered = Array.isArray(data.discovered) ? data.discovered : [];
+        this.applyTailscaleState(data.tailscale);
+        this.renderRegistries();
     },
 
-    async saveDockerhubSettings() {
-        const enabledEl = document.getElementById("dockerhub-enabled");
-        const usernameEl = document.getElementById("dockerhub-username");
-        const tokenEl = document.getElementById("dockerhub-token");
-        if (!enabledEl || !usernameEl || !tokenEl) return;
+    async scanRegistries() {
+        this.showToast("Scan des registres en cours…", "info");
+        const data = await this.apiFetch("/api/settings/registries?refresh=1");
+        if (!data) return;
+        this.registries = Array.isArray(data.registries) ? data.registries : [];
+        this.discovered = Array.isArray(data.discovered) ? data.discovered : [];
+        this.renderRegistries();
+        this.showToast("Scan terminé.", "success");
+    },
 
-        const enabled = enabledEl.checked;
-        const username = usernameEl.value.trim();
-        const token = tokenEl.value;
+    showRegistryForm(url) {
+        // url = registre à authentifier (pré-rempli) ou null (ajout manuel).
+        const isAuth = !!url;
+        const content = '<div class="form-group">'
+            + '<label for="registry-url">URL du registre</label>'
+            + '<input type="text" id="registry-url" placeholder="ghcr.io" autocomplete="off">'
+            + '<p class="form-hint">Ex. docker.io, ghcr.io, registry.gitlab.com, localhost:5000.</p>'
+            + '</div>'
+            + '<div class="form-group">'
+            + '<label for="registry-username">Nom d\'utilisateur</label>'
+            + '<input type="text" id="registry-username" placeholder="moncompte" autocomplete="off">'
+            + '</div>'
+            + '<div class="form-group">'
+            + '<label for="registry-token">Token / mot de passe</label>'
+            + '<input type="password" id="registry-token" placeholder="••••••••" autocomplete="new-password" class="form-input input-masked">'
+            + '<p class="form-hint">Laisser vide pour ne pas changer.</p>'
+            + '</div>';
 
-        if (enabled && !username) {
-            this.showToast("Veuillez saisir le nom d'utilisateur Docker Hub.", "error");
-            return;
-        }
-        if (enabled && !token && !this.dockerhubHasToken) {
-            this.showToast("Veuillez saisir un access token Docker Hub.", "error");
+        HolafModal.open({
+            title: isAuth ? "🔐 S'authentifier sur " + url : "➕ Ajouter un registre",
+            content: content,
+            size: "md",
+            buttons: [
+                { text: "Annuler", value: false, type: "cancel" },
+                { text: "Enregistrer", value: true, type: "primary", onClick: () => this.submitRegistryForm() },
+            ],
+            onOpen: () => {
+                document.getElementById("registry-url").value = url || "";
+                if (typeof lucide !== 'undefined') lucide.createIcons();
+            },
+        });
+    },
+
+    authenticateRegistry(url) {
+        this.showRegistryForm(url);
+    },
+
+    async submitRegistryForm() {
+        const url = document.getElementById("registry-url").value.trim();
+        const username = document.getElementById("registry-username").value.trim();
+        const token = document.getElementById("registry-token").value;
+        if (!url) {
+            this.showToast("L'URL du registre est requise.", "error");
             return;
         }
         // Validation ASCII côté client (le backend renvoie sinon une 400).
         const asciiOnly = (s) => !/[^\x00-\x7F]/.test(s);
-        if (!asciiOnly(username)) {
-            this.showToast("Le nom d'utilisateur ne doit contenir que des caractères ASCII.", "error");
+        if (!asciiOnly(url) || !asciiOnly(username) || (token && !asciiOnly(token))) {
+            this.showToast("URL, nom d'utilisateur et token doivent être en ASCII.", "error");
             return;
         }
-        if (token && !asciiOnly(token)) {
-            this.showToast("Le token ne doit contenir que des caractères ASCII.", "error");
-            return;
-        }
-
-        const data = await this.apiPut("/api/settings/dockerhub", {
-            enabled,
-            username,
-            token,
+        const data = await this.apiPut("/api/settings/registries", {
+            url, username, token,
         });
         if (!data) return;
         if (data.success) {
-            let msg;
+            let msg = "Registre " + url + " sauvegardé.";
             if (data.total > 0) {
-                msg = "Poussé sur " + data.pushed + "/" + data.total + " agents" +
-                    (data.pushed < data.total ? " — les agents hors ligne recevront la config à leur reconnexion." : ".");
-            } else {
-                msg = "Configuration Docker Hub sauvegardée (aucun agent en ligne).";
+                msg = "Poussé sur " + data.pushed + "/" + data.total + " agents"
+                    + (data.pushed < data.total ? " — les agents hors ligne recevront la config à leur reconnexion." : ".");
             }
             const errNames = Object.keys(data.errors || {});
-            if (errNames.length > 0) {
-                msg += " Erreurs : " + errNames.join(", ") + ".";
-            }
+            if (errNames.length > 0) msg += " Erreurs : " + errNames.join(", ") + ".";
             this.showToast(msg, errNames.length > 0 ? "info" : "success");
-            // Le PUT renvoie l'état persisté (enabled/has_token confirmés) et
-            // les résultats de poussée par agent : le pill et le formulaire
-            // sont mis à jour immédiatement depuis CETTE réponse confirmée —
-            // pas de valeur locale réinjectée, pas de GET de rattrapage qui
-            // pourrait écraser le pill (notamment l'état « Partiel »).
-            this.applyDockerhubState(data, {
-                pushed: data.pushed,
-                total: data.total,
-                errors: data.errors,
-            });
+            this.loadRegistries();
         } else {
             this.showToast(data.detail || "Erreur lors de la sauvegarde.", "error");
         }
     },
 
-    async clearDockerhub() {
-        const ok = await HolafModal.confirm(
-            "Désactiver Docker Hub",
-            "Désactiver l'authentification Docker Hub ?\n\n" +
-            "Les agents en ligne seront déconnectés (docker logout) et les " +
-            "identifiants supprimés de la configuration.",
-            { danger: true, confirmText: "Désactiver", cancelText: "Annuler" }
-        );
-        if (!ok) return;
-        const data = await this.apiPost("/api/settings/dockerhub/clear");
+    deleteRegistry(url) {
+        HolafModal.confirm(
+            "Déconnecter " + url,
+            "Déconnecter le registre " + url + " ?\n\n" +
+            "Les agents en ligne seront déconnectés (docker logout) et le " +
+            "registre retiré de la configuration.",
+            { danger: true, confirmText: "Déconnecter", cancelText: "Annuler" }
+        ).then((ok) => {
+            if (!ok) return;
+            this.confirmDeleteRegistry(url);
+        });
+    },
+
+    async confirmDeleteRegistry(url) {
+        const data = await this.apiDelete("/api/settings/registries/" + encodeURIComponent(url));
         if (!data) return;
         if (data.success) {
-            let msg = "Docker Hub désactivé.";
-            if (data.total > 0) {
-                msg += " Déconnecté sur " + data.pushed + "/" + data.total + " agents.";
-            }
+            let msg = "Registre " + url + " déconnecté.";
+            if (data.total > 0) msg += " Déconnecté sur " + data.pushed + "/" + data.total + " agents.";
             this.showToast(msg, "success");
-            // La réponse du clear porte l'état persisté confirmé
-            // (enabled=false, credentials effacés) : l'UI s'aligne dessus.
-            this.applyDockerhubState(data, {
-                pushed: data.pushed,
-                total: data.total,
-                errors: data.errors,
-            });
+            this.loadRegistries();
         } else {
-            this.showToast(data.detail || "Erreur lors de la désactivation.", "error");
+            this.showToast(data.detail || "Erreur lors de la déconnexion.", "error");
+        }
+    },
+
+    // -------------------------------------------------------
+    // Tailscale placeholder (persisté, AUCUN effet — à venir)
+    // -------------------------------------------------------
+
+    applyTailscaleState(ts) {
+        ts = ts || {};
+        const enabled = document.getElementById("tailscale-enabled");
+        const host = document.getElementById("tailscale-host");
+        if (enabled) enabled.checked = !!ts.enabled;
+        if (host) host.value = ts.host || "";
+    },
+
+    async saveTailscale() {
+        const enabled = document.getElementById("tailscale-enabled");
+        const host = document.getElementById("tailscale-host");
+        const data = await this.apiPut("/api/settings/registries", {
+            tailscale: {
+                enabled: enabled ? enabled.checked : false,
+                host: host ? host.value.trim() : "",
+            },
+        });
+        if (!data) return;
+        if (data.success) {
+            this.showToast("Préférence Tailscale sauvegardée (à venir).", "success");
+        } else {
+            this.showToast(data.detail || "Erreur lors de la sauvegarde.", "error");
         }
     },
 
@@ -744,12 +785,18 @@ const SettingsApp = {
         this.loadAgents();
         this.loadGitHistorySettings();
         this.loadMcpSettings();
-        this.loadDockerhubSettings();
+        this.loadRegistries();
     },
 };
 
 document.addEventListener("DOMContentLoaded", () => {
     SettingsApp.init();
+    // Placeholder Tailscale : persister la préférence (checkbox + adresse
+    // tailnet) sans aucun effet — à venir.
+    const tsEnabled = document.getElementById("tailscale-enabled");
+    const tsHost = document.getElementById("tailscale-host");
+    if (tsEnabled) tsEnabled.addEventListener("change", () => SettingsApp.saveTailscale());
+    if (tsHost) tsHost.addEventListener("blur", () => SettingsApp.saveTailscale());
     if (typeof lucide !== 'undefined') {
         lucide.createIcons();
     }

@@ -69,6 +69,22 @@ class AgentManager:
         # poussé par agent (anti-spam de reconnexion) + pushes en cours.
         self._dockerhub_pushed: Dict[str, str] = {}
         self._dockerhub_push_inflight: set = set()
+        # Registres multi-registres (voir docs/registries-auth.md) :
+        #   - _registry_pushed: url -> {agent: sha256(token)} (anti-spam par
+        #     registre×agent) ;
+        #   - _registry_push_inflight: {(url, agent)} pushes en cours ;
+        #   - _registry_push_status: url -> {agent: "ok"|"offline"|"error"}
+        #     (état de poussée renvoyé au frontend, GET /api/settings/registries) ;
+        #   - _registries_scan_cache: cache TTL ~5 min du scan agrégé des
+        #     registres découverts sur les agents.
+        self._registry_pushed: Dict[str, Dict[str, str]] = {}
+        self._registry_push_inflight: set = set()
+        self._registry_push_status: Dict[str, Dict[str, str]] = {}
+        # Registres supprimés alors qu'un agent était hors ligne : url -> set
+        # d'agents à déconnecter à leur reconnexion (voir
+        # :meth:`maybe_push_registries_on_online`).
+        self._registry_pending_logout: Dict[str, set] = {}
+        self._registries_scan_cache: Dict[str, Any] = {"data": None, "timestamp": 0}
         # Broadcast callback injected by app.routes.api (breaks the latent
         # app.agent_manager.client <-> app.routes.api import cycle).
         self.broadcast_agent_event = None
@@ -170,7 +186,7 @@ class AgentManager:
                     agent["status"] = "online"
                     agent["last_check"] = time.time()
                     if not was_online:
-                        await self.maybe_push_dockerhub_on_online(name)
+                        await self.maybe_push_registries_on_online(name)
                     return True
         except Exception as exc:
             logger.warning("ping_agent failed for '%s': %s", name, exc)
@@ -1004,6 +1020,235 @@ class AgentManager:
                 )
         finally:
             self._dockerhub_push_inflight.discard(agent_name)
+
+    # ------------------------------------------------------------------
+    # Registres (multi-registres)
+    # ------------------------------------------------------------------
+
+    def _find_registry(self, registry_url: str) -> Optional[Dict[str, Any]]:
+        """Return the configured registry entry matching *registry_url* (or None)."""
+        settings = load_settings()
+        for reg in settings.get("registries", []) or []:
+            if reg.get("url") == registry_url:
+                return reg
+        return None
+
+    def registry_push_status(self, registry_url: str) -> Dict[str, str]:
+        """Return the per-agent push status map for a registry.
+
+        ``{agent_name: "ok" | "offline" | "error"}`` — the last recorded
+        outcome of pushing this registry's credentials to each agent. Used by
+        ``GET /api/settings/registries`` to drive the frontend pill.
+        """
+        return dict(self._registry_push_status.get(registry_url, {}))
+
+    async def push_registry_to_agent(self, agent_name: str, registry_url: str) -> Dict[str, Any]:
+        """Push one registry's credentials to one agent.
+
+        POSTs ``/agent/registry/login`` with ``{registry, username, token}``.
+        On success records the SHA-256 hash of the token per registre×agent
+        (anti-spam, see :meth:`maybe_push_registries_on_online`) and the push
+        status. The token is never logged.
+        """
+        reg = self._find_registry(registry_url)
+        if not reg:
+            return {"success": False, "error": "Registre non configuré"}
+        username = reg.get("username", "") or ""
+        token = reg.get("token", "") or ""
+        if not username or not token:
+            return {"success": False, "error": "Configuration registre incomplète"}
+        try:
+            data = await self._request(
+                agent_name,
+                "POST",
+                "/agent/registry/login",
+                json={"registry": registry_url, "username": username, "token": token},
+                timeout=30,
+            )
+            if isinstance(data, dict) and data.get("success"):
+                self._registry_pushed.setdefault(registry_url, {})[agent_name] = hashlib.sha256(
+                    token.encode("utf-8")
+                ).hexdigest()
+                self._registry_push_status.setdefault(registry_url, {})[agent_name] = "ok"
+                logger.info(
+                    "Registre %s: config poussée vers l'agent '%s'", registry_url, agent_name
+                )
+                return {"success": True}
+            message = ""
+            if isinstance(data, dict):
+                message = data.get("message") or data.get("error") or ""
+            self._registry_push_status.setdefault(registry_url, {})[agent_name] = "error"
+            return {"success": False, "error": message or "Réponse inattendue de l'agent"}
+        except Exception as e:
+            logger.warning("Push registre %s vers '%s' échoué: %s", registry_url, agent_name, e)
+            self._registry_push_status.setdefault(registry_url, {})[agent_name] = "error"
+            return {"success": False, "error": str(e)}
+
+    async def push_registry_all(self, registry_url: str) -> Dict[str, Dict[str, Any]]:
+        """Push one registry's credentials to every online agent.
+
+        Returns a ``{agent_name: {"success": bool, ...}}`` map (offline agents
+        get ``{"success": False, "offline": True}``). A registry without a
+        token has nothing to push → empty map (the frontend pill then shows
+        « Incomplet »).
+        """
+        reg = self._find_registry(registry_url)
+        if not reg or not reg.get("token"):
+            return {}
+        results: Dict[str, Dict[str, Any]] = {}
+        for name, agent in self.agents.items():
+            if agent.get("status") != "online":
+                results[name] = {"success": False, "offline": True}
+                self._registry_push_status.setdefault(registry_url, {})[name] = "offline"
+                continue
+            results[name] = await self.push_registry_to_agent(name, registry_url)
+        return results
+
+    async def logout_registry_to_agent(self, agent_name: str, registry_url: str) -> Dict[str, Any]:
+        """Ask one agent to log out of one registry (``docker logout``).
+
+        POSTs ``/agent/registry/logout`` with ``{registry}``. Clears the
+        recorded anti-spam hash and push status for this registre×agent.
+        """
+        try:
+            data = await self._request(
+                agent_name,
+                "POST",
+                "/agent/registry/logout",
+                json={"registry": registry_url},
+                timeout=30,
+            )
+            if isinstance(data, dict) and data.get("success"):
+                self._registry_pushed.get(registry_url, {}).pop(agent_name, None)
+                self._registry_push_status.get(registry_url, {}).pop(agent_name, None)
+                pending = self._registry_pending_logout.get(registry_url)
+                if pending:
+                    pending.discard(agent_name)
+                    if not pending:
+                        self._registry_pending_logout.pop(registry_url, None)
+                logger.info(
+                    "Registre %s: déconnexion demandée à l'agent '%s'", registry_url, agent_name
+                )
+                return {"success": True}
+            message = ""
+            if isinstance(data, dict):
+                message = data.get("message") or data.get("error") or ""
+            return {"success": False, "error": message or "Réponse inattendue de l'agent"}
+        except Exception as e:
+            logger.warning("Logout registre %s vers '%s' échoué: %s", registry_url, agent_name, e)
+            return {"success": False, "error": str(e)}
+
+    async def logout_registry_all(self, registry_url: str) -> Dict[str, Dict[str, Any]]:
+        """Ask every online agent to log out of one registry.
+
+        Returns a ``{agent_name: {"success": bool, ...}}`` map (offline agents
+        get ``{"success": False, "offline": True}`` — they will be logged out
+        at their next reconnection via :meth:`maybe_push_registries_on_online`).
+        """
+        results: Dict[str, Dict[str, Any]] = {}
+        for name, agent in self.agents.items():
+            if agent.get("status") != "online":
+                results[name] = {"success": False, "offline": True}
+                # L'agent est hors ligne : il sera déconnecté à sa reconnexion.
+                self._registry_pending_logout.setdefault(registry_url, set()).add(name)
+                continue
+            results[name] = await self.logout_registry_to_agent(name, registry_url)
+        return results
+
+    async def maybe_push_registries_on_online(self, agent_name: str):
+        """Push every configured registry when an agent (re)becomes online.
+
+        Called by the event layer (``_connect_agent_events``) and by
+        :meth:`ping_agent` when an agent transitions to online. Anti-spam per
+        registre×agent: a registry is only pushed when it has credentials AND
+        the sha-256 of its token differs from the last one pushed to this
+        agent (or was never pushed). A registry removed while the agent was
+        offline is logged out once at reconnection.
+        """
+        agent = self.agents.get(agent_name)
+        if not agent or agent.get("status") != "online":
+            return
+        # Registres supprimés pendant que cet agent était hors ligne : pousser
+        # le logout exactement une fois à la reconnexion.
+        for url in list(self._registry_pending_logout.keys()):
+            pending = self._registry_pending_logout.get(url)
+            if not pending or agent_name not in pending:
+                continue
+            key = (url, agent_name)
+            if key in self._registry_push_inflight:
+                continue
+            self._registry_push_inflight.add(key)
+            try:
+                await self.logout_registry_to_agent(agent_name, url)
+            finally:
+                self._registry_push_inflight.discard(key)
+            pending.discard(agent_name)
+            if not pending:
+                self._registry_pending_logout.pop(url, None)
+        settings = load_settings()
+        registries = settings.get("registries", []) or []
+        for reg in registries:
+            url = reg.get("url", "")
+            token = reg.get("token", "") or ""
+            username = reg.get("username", "") or ""
+            if not url:
+                continue
+            key = (url, agent_name)
+            if key in self._registry_push_inflight:
+                continue
+            if not token or not username:
+                # Registry removed/cleared while the agent was offline: if it
+                # was previously pushed, log it out exactly once.
+                if agent_name in self._registry_pushed.get(url, {}):
+                    self._registry_push_inflight.add(key)
+                    try:
+                        await self.logout_registry_to_agent(agent_name, url)
+                    finally:
+                        self._registry_push_inflight.discard(key)
+                continue
+            token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+            if self._registry_pushed.get(url, {}).get(agent_name) == token_hash:
+                logger.debug(
+                    "Registre %s: token déjà poussé sur '%s', push de reconnexion ignoré",
+                    url, agent_name,
+                )
+                continue
+            self._registry_push_inflight.add(key)
+            try:
+                result = await self.push_registry_to_agent(agent_name, url)
+                if not result.get("success"):
+                    logger.warning(
+                        "Registre %s: push de reconnexion vers '%s' échoué: %s",
+                        url, agent_name, result.get("error", ""),
+                    )
+            finally:
+                self._registry_push_inflight.discard(key)
+
+    async def get_aggregated_discovered_registries(self, refresh: bool = False) -> Dict[str, Any]:
+        """Aggregate the registries discovered on every agent, cached ~5 min.
+
+        Queries each agent's ``GET /agent/registries`` and unions the
+        ``discovered`` (hosts used by the stacks' composes) and ``stored``
+        (hosts with credentials) lists. The result is cached for 300 s;
+        ``refresh=True`` forces a fresh scan. Returns
+        ``{"discovered": [...], "stored": [...]}`` (sorted, deduplicated).
+        """
+        now = time.time()
+        cache = self._registries_scan_cache
+        if not refresh and cache["data"] is not None and now - cache["timestamp"] < 300:
+            return cache["data"]
+        discovered: set = set()
+        stored: set = set()
+        tasks = [self._request(name, "GET", "/agent/registries") for name in self.agents]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, dict):
+                discovered.update(result.get("discovered", []) or [])
+                stored.update(result.get("stored", []) or [])
+        data = {"discovered": sorted(discovered), "stored": sorted(stored)}
+        cache["data"] = data
+        cache["timestamp"] = now
+        return data
 
     # ------------------------------------------------------------------
     # Ports

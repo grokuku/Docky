@@ -2194,7 +2194,7 @@ body {
 .settings-panel--history  { --tint: #2dd4bf; }
 .settings-panel--security { --tint: #34d399; }
 .settings-panel--mcp      { --tint: #38bdf8; }
-.settings-panel--dockerhub { --tint: #fbbf24; }
+.settings-panel--registries { --tint: #fbbf24; }
 
 /* Inline checkbox (Docker Hub « Activer ») */
 .checkbox-label {
@@ -2553,6 +2553,122 @@ body {
     display: flex;
     gap: 6px;
     flex-shrink: 0;
+}
+
+/* Registres list (multi-registres) */
+.registries-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 300px;
+    overflow-y: auto;
+    padding-right: 2px;
+}
+
+.registries-section-label {
+    font-size: 0.6875rem;   /* 11px */
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #7e7e9e;
+    margin: 4px 0 0;
+}
+
+.registry-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    background: #1d1d36;
+    border: 1px solid #262643;
+    border-radius: 12px;
+    transition: border-color 180ms ease-out, background 180ms ease-out;
+}
+
+.registry-row:hover {
+    border-color: #333352;
+    background: #232344;
+}
+
+.registry-row-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.registry-row-url {
+    font-weight: 600;
+    font-size: 0.875rem;
+    color: #f0f0f8;
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.registry-row-user {
+    font-size: 0.75rem;
+    color: #7e7e9e;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.registry-row-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.registry-row-actions .btn {
+    white-space: nowrap;
+}
+
+/* Registres découverts (non authentifiés) — lignes discrètes */
+.registry-discovered {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 12px;
+    background: rgba(29, 29, 54, 0.5);
+    border: 1px dashed #2c2c4a;
+    border-radius: 10px;
+    cursor: pointer;
+    transition: border-color 180ms ease-out, background 180ms ease-out;
+}
+
+.registry-discovered:hover {
+    border-color: #3a3a5e;
+    background: #1d1d36;
+}
+
+.registry-discovered-url {
+    font-size: 0.8125rem;
+    color: #b4b4cf;
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.registry-discovered-hint {
+    font-size: 0.6875rem;
+    color: #7e7e9e;
+    flex-shrink: 0;
+}
+
+/* Placeholder Tailscale (persisté, sans effet) */
+.tailscale-placeholder {
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.tailscale-placeholder input[type="text"] {
+    margin-top: 8px;
 }
 
 /* Actions */

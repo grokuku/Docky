@@ -173,35 +173,30 @@
             </div>
         </section>
 
-        <!-- Docker Hub -->
-        <section class="panel settings-panel settings-panel--dockerhub settings-card--quarter">
+        <!-- Registres (multi-registres) -->
+        <section class="panel settings-panel settings-panel--registries settings-card--quarter">
             <div class="panel-header settings-header">
                 <div class="settings-header-title">
                     <span class="settings-chip"><i data-lucide="cloud"></i></span>
-                    <h2>Docker Hub</h2>
+                    <h2>Registres</h2>
                 </div>
-                <span id="dockerhub-status" class="status-indicator status-unknown">…</span>
+                <button class="btn btn-sm btn-ghost" onclick="SettingsApp.scanRegistries()">Scanner</button>
             </div>
             <div class="panel-body settings-body">
-                <div class="form-group">
-                    <label class="checkbox-label" for="dockerhub-enabled">
-                        <input type="checkbox" id="dockerhub-enabled">
-                        <span>Activer l'authentification Docker Hub</span>
-                    </label>
+                <div id="registries-list" class="registries-list">
+                    <p class="placeholder-hint">Chargement…</p>
                 </div>
-                <div class="form-group">
-                    <label for="dockerhub-username">Nom d'utilisateur</label>
-                    <input type="text" id="dockerhub-username" placeholder="moncompte" autocomplete="off">
-                </div>
-                <div class="form-group">
-                    <label for="dockerhub-token">Access token</label>
-                    <input type="password" id="dockerhub-token" placeholder="••••••••" autocomplete="new-password" class="form-input input-masked">
-                    <p class="form-hint">Crée un access token sur hub.docker.com (Account Settings → Security) pour éviter le quota anonyme (« toomanyrequests »). Laisser vide pour ne pas changer.</p>
-                </div>
-                <p class="form-hint">Les agents hors ligne recevront la config à leur reconnexion.</p>
                 <div class="settings-actions">
-                    <button class="btn btn-ghost" onclick="SettingsApp.clearDockerhub()">Désactiver</button>
-                    <button class="btn btn-primary" onclick="SettingsApp.saveDockerhubSettings()">Sauvegarder</button>
+                    <button class="btn btn-primary" onclick="SettingsApp.showRegistryForm(null)"><i data-lucide="plus"></i> Ajouter un registre</button>
+                </div>
+                <!-- Placeholder Tailscale (persisté, AUCUN effet — à venir) -->
+                <div class="form-group tailscale-placeholder">
+                    <label class="checkbox-label" for="tailscale-enabled">
+                        <input type="checkbox" id="tailscale-enabled">
+                        <span>Tailscale</span>
+                    </label>
+                    <input type="text" id="tailscale-host" placeholder="tailnet.example.com" autocomplete="off">
+                    <p class="form-hint">À venir — aucune action pour le moment.</p>
                 </div>
             </div>
         </section>

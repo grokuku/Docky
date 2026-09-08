@@ -2,7 +2,7 @@
 
 from fastapi import FastAPI
 
-from agent import dockerhub
+from agent import registries
 from agent.routes import router as agent_router
 from agent.version import get_version
 
@@ -15,15 +15,15 @@ app.include_router(agent_router)
 
 @app.on_event("startup")
 async def startup_event():
-    """Réinjecte la config docker persistée (Docker Hub) au démarrage.
+    """Réinjecte la config docker persistée (registres) au démarrage.
 
     Si ``<data_dir>/.docker/config.json`` existe (credentials poussés par
-    l'orchestrateur lors d'une exécution précédente), ``DOCKER_CONFIG`` est
-    remis dans l'environnement pour que tous les subprocess docker
-    (``docker compose pull``, ``docker pull``…) restent authentifiés après un
-    redémarrage de l'agent. Voir docs/dockerhub-auth.md.
+    l'orchestrateur lors d'une exécution précédente — une clé ``auths`` par
+    registre), ``DOCKER_CONFIG`` est remis dans l'environnement pour que tous
+    les subprocess docker (``docker compose pull``, ``docker pull``…) restent
+    authentifiés après un redémarrage de l'agent. Voir docs/dockerhub-auth.md.
     """
-    dockerhub.apply_persisted_config()
+    registries.apply_persisted_config()
 
 
 @app.get("/")

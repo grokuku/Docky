@@ -14,7 +14,7 @@ import threading
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
-from agent import docker_manager, dockerhub
+from agent import docker_manager, registries
 from agent.auth import require_api_key, verify_api_key_ws
 from agent.version import get_version
 
@@ -914,23 +914,116 @@ async def update_git_history_settings(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# Docker Hub authentication
+# Registry authentication (multi-registres)
+# ---------------------------------------------------------------------------
+
+@router.post("/registry/login")
+async def registry_login(request: Request):
+    """Store credentials for ANY registry (Docker Hub, GHCR, GitLab, Quay…).
+
+    Body JSON: ``{ "registry": str (host, ex. "ghcr.io"), "username": str,
+    "token": str }``. ``registry`` may be empty/omitted → Docker Hub (the
+    implicit default registry).
+
+    Runs ``docker login <host> -u <user> --password-stdin`` with the token
+    passed on STDIN (NEVER in argv), the CLI config written in
+    ``<data_dir>/.docker`` (persistent volume, one ``auths`` key per registry)
+    and ``DOCKER_CONFIG`` exported so all subsequent docker subprocesses
+    (compose/pull) are authenticated. Other registries' credentials are
+    preserved.
+
+    The token is never logged (see agent/registries.py and
+    docs/dockerhub-auth.md).
+    """
+    auth_err = require_api_key(request)
+    if auth_err:
+        return auth_err
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON"})
+
+    username = (data.get("username") or "").strip()
+    token = data.get("token") or ""
+    if not username or not token:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "username et token sont requis"},
+        )
+    host = registries.normalize_registry_host(data.get("registry"))
+    if not registries.is_valid_registry_host(host):
+        return JSONResponse(status_code=400, content={"error": f"registry invalide: {host}"})
+
+    ok, message = await asyncio.to_thread(registries.docker_login, host, username, token)
+    if not ok:
+        return JSONResponse(status_code=502, content={"success": False, "message": message})
+    return {"success": True, "message": message, "registry": host}
+
+
+@router.post("/registry/logout")
+async def registry_logout(request: Request):
+    """Remove the credentials of one registry (Docker Hub by default).
+
+    Body JSON: ``{ "registry": str (host) }`` (empty/omitted → Docker Hub).
+    Only the targeted registry's credentials are removed; other registries'
+    credentials (and ``DOCKER_CONFIG``) are preserved as long as some remain.
+    """
+    auth_err = require_api_key(request)
+    if auth_err:
+        return auth_err
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON"})
+    host = registries.normalize_registry_host(data.get("registry"))
+    ok, message = await asyncio.to_thread(registries.docker_logout, host)
+    return {"success": ok, "message": message, "registry": host}
+
+
+@router.get("/registries")
+async def list_registries(request: Request):
+    """List the known registries of this agent.
+
+    - ``stored``: registry hosts with credentials in the persisted docker CLI
+      config (``<data_dir>/.docker/config.json``), normalized (docker.io
+      family collapsed) and sorted;
+    - ``discovered``: registry hosts used by the stacks' compose files
+      (``image:`` fields, docker's host rule), deduplicated and sorted.
+    """
+    auth_err = require_api_key(request)
+    if auth_err:
+        return auth_err
+    stored, discovered = await asyncio.gather(
+        asyncio.to_thread(registries.list_stored_registries),
+        asyncio.to_thread(registries.scan_registries),
+    )
+    return {"stored": stored, "discovered": discovered}
+
+
+# ---------------------------------------------------------------------------
+# Docker Hub authentication (legacy endpoint — délègue à /agent/registry/*)
 # ---------------------------------------------------------------------------
 
 @router.post("/dockerhub/login")
 async def dockerhub_login(request: Request):
-    """Apply the Docker Hub credentials pushed by the orchestrator.
+    """LEGACY — apply the Docker Hub credentials pushed by the orchestrator.
 
     Body JSON: ``{ "username": str, "token": str, "enabled": bool }``.
+
+    Delegates to :func:`registries.docker_login` / :func:`registries.docker_logout`
+    with the default registry (docker.io):
 
     - ``enabled=true`` + credentials: ``docker login -u <user> --password-stdin``
       with the token passed on STDIN (NEVER in argv), the CLI config written in
       ``<data_dir>/.docker`` (persistent volume) and ``DOCKER_CONFIG`` exported
       so all subsequent docker subprocesses (compose/pull) are authenticated.
-    - ``enabled=false``: ``docker logout`` + removal of the config directory.
+    - ``enabled=false``: ``docker logout`` + removal of the Docker Hub entry
+      (and of the config directory when no other registry's credentials
+      remain).
 
-    The token is never logged (see agent/dockerhub.py and
-    docs/dockerhub-auth.md).
+    The token is never logged (see agent/registries.py and
+    docs/dockerhub-auth.md). The orchestrator should migrate to
+    ``POST /agent/registry/login`` (lot 2).
     """
     auth_err = require_api_key(request)
     if auth_err:
@@ -950,12 +1043,12 @@ async def dockerhub_login(request: Request):
                 status_code=400,
                 content={"error": "username et token sont requis quand enabled=true"},
             )
-        ok, message = await asyncio.to_thread(dockerhub.docker_login, username, token)
+        ok, message = await asyncio.to_thread(registries.docker_login, "", username, token)
         if not ok:
             return JSONResponse(status_code=502, content={"success": False, "message": message})
         return {"success": True, "message": message}
 
-    ok, message = await asyncio.to_thread(dockerhub.docker_logout)
+    ok, message = await asyncio.to_thread(registries.docker_logout, "")
     return {"success": ok, "message": message}
 
 

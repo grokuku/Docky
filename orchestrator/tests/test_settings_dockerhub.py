@@ -460,7 +460,7 @@ async def test_reconnect_push_skipped_when_already_inflight(fresh_agent_manager,
 # ---------------------------------------------------------------------------
 
 async def test_ping_agent_transition_triggers_push(respx_mock, monkeypatch, tmp_path):
-    """An agent going offline→online via ping gets the Docker Hub push."""
+    """An agent going offline→online via ping gets the registries push."""
     monkeypatch.setenv("DOCKY_DATA_DIR", str(tmp_path))
     make_settings(tmp_path)
     _set_dockerhub(tmp_path, token="dckr_pat_ping")
@@ -473,7 +473,7 @@ async def test_ping_agent_transition_triggers_push(respx_mock, monkeypatch, tmp_
     async def _fake_maybe(name):
         pushed.append(name)
 
-    monkeypatch.setattr(manager, "maybe_push_dockerhub_on_online", _fake_maybe)
+    monkeypatch.setattr(manager, "maybe_push_registries_on_online", _fake_maybe)
     respx_mock.get("http://agent:8080/agent/health").mock(
         return_value=httpx.Response(200, json={"status": "ok"})
     )
@@ -490,11 +490,12 @@ async def test_ping_agent_transition_triggers_push(respx_mock, monkeypatch, tmp_
 # Config defaults (ensure_config_files)
 # ---------------------------------------------------------------------------
 
-def test_default_settings_contain_dockerhub_section(tmp_path, monkeypatch):
-    """ensure_config_files writes a disabled dockerhub section by default."""
+def test_default_settings_contain_registries_and_tailscale(tmp_path, monkeypatch):
+    """ensure_config_files writes empty registries + tailscale placeholder by default."""
     import app.config as config
 
     monkeypatch.setattr(config, "get_data_dir", lambda: tmp_path)
     config.ensure_config_files()
     settings = config.load_settings()
-    assert settings["dockerhub"] == {"enabled": False, "username": "", "token": ""}
+    assert settings["registries"] == []
+    assert settings["tailscale"] == {"enabled": False, "host": ""}

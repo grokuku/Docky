@@ -711,3 +711,247 @@ async def api_clear_dockerhub_settings(request: Request):
     # Même convention que le PUT : la réponse porte l'état persisté confirmé
     # (enabled=false, credentials effacés) pour une mise à jour UI fiable.
     return {"success": True, **_dockerhub_status_payload(), **summary}
+
+
+# ---------------------------------------------------------------------------
+# Settings - Registres (multi-registres)
+# ---------------------------------------------------------------------------
+
+_MSG_REGISTRY_URL_ASCII = (
+    "L'URL du registre ne doit contenir que des caractères ASCII"
+)
+_MSG_REGISTRY_USERNAME_ASCII = (
+    "Le nom d'utilisateur du registre ne doit contenir que des caractères ASCII"
+)
+_MSG_REGISTRY_TOKEN_ASCII = (
+    "Le token du registre ne doit contenir que des caractères ASCII"
+)
+_MSG_REGISTRY_URL_INVALID = (
+    "L'URL du registre doit être un hôte valide (ex. docker.io, ghcr.io)"
+)
+
+# Plausible registry host (hostname with optional port), same rule as the
+# agent-side registries module.
+_REGISTRY_HOST_RE = re.compile(
+    r"^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?(?::[0-9]{1,5})?$"
+)
+
+# Docker Hub aliases collapsed to ``docker.io`` (mirrors agent/registries.py).
+_DOCKER_IO_HOSTS = frozenset({
+    "docker.io",
+    "index.docker.io",
+    "registry-1.docker.io",
+    "registry.hub.docker.com",
+    "hub.docker.com",
+})
+
+
+def _normalize_registry_url(url: str) -> str:
+    """Normalize a registry URL to its canonical host form.
+
+    Strips scheme/path and collapses the Docker Hub aliases to ``docker.io``
+    (mirrors ``agent.registries.normalize_registry_host``).
+    """
+    host = (url or "").strip().lower()
+    if not host:
+        return ""
+    if "://" in host:
+        host = host.split("://", 1)[1]
+    host = host.split("/", 1)[0].strip()
+    if host in _DOCKER_IO_HOSTS:
+        return "docker.io"
+    return host
+
+
+def _validate_registry(url: str, username: str, token: str):
+    """Validate a registry's URL, username and token.
+
+    Returns an error message (str) on failure, or ``None`` when valid. ASCII
+    is mandatory (a non-ASCII credential would make httpx fail when building
+    the Authorization header toward the agents) and the URL must be a valid
+    registry host.
+    """
+    if not _is_ascii(url):
+        return _MSG_REGISTRY_URL_ASCII
+    if not _is_ascii(username):
+        return _MSG_REGISTRY_USERNAME_ASCII
+    if not _is_ascii(token):
+        return _MSG_REGISTRY_TOKEN_ASCII
+    host = _normalize_registry_url(url)
+    if not host or not _REGISTRY_HOST_RE.match(host):
+        return _MSG_REGISTRY_URL_INVALID
+    return None
+
+
+def _registry_payload(reg: dict, agent_manager) -> dict:
+    """Build the GET payload for one configured registry (token NEVER exposed)."""
+    url = reg.get("url", "")
+    return {
+        "url": url,
+        "username": reg.get("username", "") or "",
+        "has_token": bool(reg.get("token", "")),
+        "tailscale": bool(reg.get("tailscale", False)),
+        "tailscale_host": reg.get("tailscale_host", "") or "",
+        "push_status": agent_manager.registry_push_status(url),
+    }
+
+
+async def _push_registry_and_summarize(url: str) -> dict:
+    """Push one registry to all agents and summarize the results."""
+    results = await _api().agent_manager.push_registry_all(url)
+    if not isinstance(results, dict):
+        results = {}
+    pushed = sum(
+        1 for r in results.values()
+        if isinstance(r, dict) and r.get("success")
+    )
+    errors = {
+        name: (r.get("error") or ("agent hors ligne (recevra la config à sa reconnexion)" if r.get("offline") else "échec"))
+        for name, r in results.items()
+        if isinstance(r, dict) and not r.get("success")
+    }
+    return {"push": results, "pushed": pushed, "total": len(results), "errors": errors}
+
+
+async def _logout_registry_and_summarize(url: str) -> dict:
+    """Log every agent out of one registry and summarize the results."""
+    results = await _api().agent_manager.logout_registry_all(url)
+    if not isinstance(results, dict):
+        results = {}
+    pushed = sum(
+        1 for r in results.values()
+        if isinstance(r, dict) and r.get("success")
+    )
+    errors = {
+        name: (r.get("error") or ("agent hors ligne (sera déconnecté à sa reconnexion)" if r.get("offline") else "échec"))
+        for name, r in results.items()
+        if isinstance(r, dict) and not r.get("success")
+    }
+    return {"push": results, "pushed": pushed, "total": len(results), "errors": errors}
+
+
+@router.get("/settings/registries")
+async def api_get_registries_settings(request: Request):
+    """Return the configured registries + the aggregated discovered ones.
+
+    - ``registries``: configured entries ``{url, username, has_token,
+      tailscale, tailscale_host, push_status}`` — the token is NEVER returned
+      (neither clear nor masked);
+    - ``discovered``: registry hosts used by the stacks' composes, aggregated
+      from every agent with a ~5 min cache (``?refresh=1`` forces a rescan);
+    - ``tailscale``: the persisted placeholder ``{enabled, host}`` (no effect).
+    """
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    refresh = request.query_params.get("refresh") == "1"
+    agent_manager = _api().agent_manager
+    settings = load_settings()
+    registries = settings.get("registries", []) or []
+    tailscale = settings.get("tailscale", {}) or {}
+    discovered = await agent_manager.get_aggregated_discovered_registries(refresh=refresh)
+    if not isinstance(discovered, dict):
+        discovered = {}
+    return {
+        "registries": [_registry_payload(r, agent_manager) for r in registries],
+        "discovered": discovered.get("discovered", []) or [],
+        "tailscale": {
+            "enabled": bool(tailscale.get("enabled", False)),
+            "host": tailscale.get("host", "") or "",
+        },
+    }
+
+
+@router.put("/settings/registries")
+async def api_update_registries_settings(request: Request):
+    """Upsert a registry (or persist the Tailscale placeholder).
+
+    Registry body JSON: ``{url, username, token, tailscale, tailscale_host}``.
+    - Validation: ``url``/``username``/``token`` MUST be ASCII-only and the
+      URL a valid registry host — ``400`` with a French message otherwise.
+    - A masked/empty token (``****``) preserves the previously stored one.
+    - After persisting, the registry is pushed to every online agent; the
+      per-agent push results are returned in the response.
+
+    Tailscale placeholder body JSON: ``{tailscale: {enabled, host}}`` (no
+    ``url``) — persisted with NO effect (à venir).
+    """
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"detail": "Invalid JSON body"})
+
+    # Tailscale placeholder update (no url) — persisted, no effect.
+    if "tailscale" in data and not data.get("url"):
+        settings = load_settings()
+        ts = data.get("tailscale") or {}
+        settings["tailscale"] = {
+            "enabled": bool(ts.get("enabled", False)),
+            "host": (ts.get("host") or "").strip(),
+        }
+        save_settings(settings)
+        return {"success": True, "tailscale": settings["tailscale"]}
+
+    url = _normalize_registry_url(data.get("url"))
+    hub_username = (data.get("username") or "").strip()
+    token = data.get("token") or ""
+    tailscale = bool(data.get("tailscale", False))
+    tailscale_host = (data.get("tailscale_host") or "").strip()
+
+    if not url:
+        return JSONResponse(status_code=400, content={"detail": "url est requis"})
+    error = _validate_registry(url, hub_username, token)
+    if error:
+        return JSONResponse(status_code=400, content={"detail": error})
+
+    settings = load_settings()
+    registries = settings.get("registries", []) or []
+    found = None
+    for r in registries:
+        if r.get("url") == url:
+            found = r
+            break
+    if found is None:
+        found = {"url": url}
+        registries.append(found)
+    # A masked or empty token keeps the previously stored value.
+    if not token or token.startswith("****"):
+        token = found.get("token", "") or ""
+    found["username"] = hub_username
+    found["token"] = token
+    found["tailscale"] = tailscale
+    found["tailscale_host"] = tailscale_host
+    settings["registries"] = registries
+    save_settings(settings)
+
+    # Pousser vers tous les agents en ligne (le résultat par agent est renvoyé
+    # au frontend pour le toast). L'état persisté (confirmé) est renvoyé avec
+    # les résultats de poussée : le frontend met à jour le pill depuis CETTE
+    # réponse (état backend confirmé), jamais depuis la valeur locale.
+    summary = await _push_registry_and_summarize(url)
+    return {"success": True, "registry": _registry_payload(found, _api().agent_manager), **summary}
+
+
+@router.delete("/settings/registries/{url}")
+async def api_delete_registry_settings(request: Request, url: str):
+    """Remove a configured registry and log every agent out of it.
+
+    Removes the entry from ``settings.yaml`` and pushes ``/agent/registry/logout``
+    to the online agents. Offline agents will be logged out at their next
+    reconnection (see :meth:`AgentManager.maybe_push_registries_on_online`).
+    """
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    settings = load_settings()
+    registries = settings.get("registries", []) or []
+    new_registries = [r for r in registries if r.get("url") != url]
+    if len(new_registries) == len(registries):
+        return JSONResponse(status_code=404, content={"detail": f"Registre '{url}' non trouvé"})
+    settings["registries"] = new_registries
+    save_settings(settings)
+    summary = await _logout_registry_and_summarize(url)
+    return {"success": True, **summary}

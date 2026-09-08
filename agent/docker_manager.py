@@ -18,7 +18,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 import docker
 from docker.errors import DockerException, NotFound, APIError
 
-from agent import dockerhub
+from agent import registries
 from agent.config import get_data_dir
 
 # Modules cohésifs extraits de ce fichier (façade : ré-export dans le namespace
@@ -2050,11 +2050,11 @@ async def _update_compose_container_image(
         pull_result = await _run_compose(project, f"pull {service}")
         if not pull_result.get("success"):
             # Fallback: direct image pull (service not resolvable).
-            # The SDK does not read the docker CLI config: pass the Docker Hub
-            # auth_config explicitly (see agent/dockerhub.get_registry_auth).
+            # The SDK does not read the docker CLI config: pass the auth_config
+            # of the image's registry (see agent/registries.get_registry_auth).
             try:
                 await asyncio.to_thread(
-                    client.images.pull, image_name, auth_config=dockerhub.get_registry_auth()
+                    client.images.pull, image_name, auth_config=registries.get_registry_auth(image_name)
                 )
             except Exception as e:
                 return {"success": False, "error": f"Image pull failed: {e}"}
@@ -2278,11 +2278,11 @@ async def update_container_image(container_id: str) -> Dict[str, Any]:
         # container, never a global down/up).
 
     # 1. Pull the new image
-    # The SDK does not read the docker CLI config: pass the Docker Hub
-    # auth_config explicitly (see agent/dockerhub.get_registry_auth).
+    # The SDK does not read the docker CLI config: pass the auth_config of the
+    # image's registry (see agent/registries.get_registry_auth).
     try:
         await asyncio.to_thread(
-            client.images.pull, image_name, auth_config=dockerhub.get_registry_auth()
+            client.images.pull, image_name, auth_config=registries.get_registry_auth(image_name)
         )
     except Exception as e:
         return {"success": False, "error": f"Image pull failed: {e}"}

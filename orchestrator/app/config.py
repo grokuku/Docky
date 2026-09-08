@@ -61,6 +61,40 @@ def save_settings(settings: Dict[str, Any]):
         yaml.dump(settings, f, default_flow_style=False, sort_keys=False)
 
 
+def migrate_dockerhub_to_registries() -> bool:
+    """One-time migration of the legacy ``dockerhub`` section to ``registries``.
+
+    The lot-1 ``dockerhub: {enabled, username, token}`` section is converted
+    into a ``registries`` entry ``{url: "docker.io", username, token,
+    tailscale, tailscale_host}`` when it was enabled with a token, then the
+    ``dockerhub`` section is removed (so the migration runs exactly once).
+
+    Returns ``True`` when a migration actually happened, ``False`` otherwise
+    (no ``dockerhub`` section, or already migrated). Called at startup from
+    :func:`ensure_config_files` — deliberately NOT from :func:`load_settings`
+    so tests that seed the legacy section directly keep working.
+    """
+    settings = load_settings()
+    dh = settings.get("dockerhub")
+    if not isinstance(dh, dict):
+        return False
+    registries = settings.get("registries", []) or []
+    if dh.get("enabled") and dh.get("token"):
+        existing = [r for r in registries if r.get("url") == "docker.io"]
+        if not existing:
+            registries.append({
+                "url": "docker.io",
+                "username": dh.get("username", "") or "",
+                "token": dh.get("token", "") or "",
+                "tailscale": False,
+                "tailscale_host": "",
+            })
+    settings.pop("dockerhub", None)
+    settings["registries"] = registries
+    save_settings(settings)
+    return True
+
+
 def load_users() -> Dict[str, Any]:
     """Load ``users.yaml`` from the data directory."""
     return _load_yaml(get_data_dir() / "users.yaml")
@@ -141,15 +175,18 @@ def ensure_config_files():
                 "mcp_enabled": True,
                 "mcp_api_key": os.urandom(32).hex(),
             },
-            # Docker Hub (voir app/routes/settings.py,
-            # app/agent_manager/client.py et docs/dockerhub-auth.md) :
-            # credentials poussés vers les agents pour authentifier les pulls
-            # et éviter l'erreur "toomanyrequests". Le token n'est JAMAIS
-            # renvoyé en clair par l'API (has_token seulement).
-            "dockerhub": {
+            # Registres (multi-registres, voir app/routes/settings.py,
+            # app/agent_manager/client.py et docs/registries-auth.md) :
+            # une entrée par registre (Docker Hub, GHCR, GitLab, Quay…). Le
+            # token n'est JAMAIS renvoyé en clair par l'API (has_token
+            # seulement). ``tailscale``/``tailscale_host`` sont un placeholder
+            # persisté sans effet (à venir).
+            "registries": [],
+            # Placeholder Tailscale (checkbox + adresse tailnet) persisté
+            # sans effet — voir docs/registries-auth.md.
+            "tailscale": {
                 "enabled": False,
-                "username": "",
-                "token": "",
+                "host": "",
             },
             "agents": [],
         }
@@ -192,6 +229,12 @@ def ensure_config_files():
             "Ce fichier est la mémoire persistante du LLM.\n",
             encoding="utf-8",
         )
+
+    # Migration one-time : l'ancienne section ``dockerhub`` (lot 1) est
+    # convertie en entrée ``registries`` (docker.io) puis supprimée. Exécutée
+    # au démarrage (ensure_config_files) — jamais dans load_settings, pour ne
+    # pas perturber les tests qui écrivent directement la section dockerhub.
+    migrate_dockerhub_to_registries()
 
     # compose_reference.md — copier depuis l'app si pas dans /data/
     ref_path = data_dir / "compose_reference.md"
