@@ -2143,8 +2143,9 @@ body {
 }
 
 /* Scrollable, centered grid.
-   LLM et Agents pleine largeur (1/-1) ; les 4 cartes compactes du bas
-   (Historique, Sécurité, API MCP, Docker Hub) partagent 4 colonnes égales. */
+   LLM et Agents côte à côte (chacun la moitié de la largeur, ensemble pleine
+   largeur) ; les 4 cartes compactes du bas (Historique, Sécurité, API MCP,
+   Docker Hub) partagent la rangée du dessous en 4 colonnes égales (stretch). */
 .settings-layout {
     flex: 1;
     min-height: 0;
@@ -2159,9 +2160,9 @@ body {
     padding: 28px 32px 40px;
 }
 
-/* Column spans */
-.settings-card--wide { grid-column: 1 / -1; }
-.settings-card--quarter { grid-column: auto; }
+/* Column spans : wide = moitié de la grille (2/4), quarter = 1/4. */
+.settings-card--wide { grid-column: span 2; }
+.settings-card--quarter { grid-column: span 1; }
 
 /* Cards */
 .settings-panel {
@@ -2621,13 +2622,15 @@ body {
     }
 }
 
-/* Responsive : les 4 cartes compactes passent à 2 colonnes puis 1 colonne.
-   LLM et Agents restent pleine largeur (settings-card--wide = 1/-1). */
+/* Responsive : LLM et Agents restent côte à côte (chacun la moitié) jusqu'à
+   1100px, puis s'empilent sous 720px. Les 4 cartes compactes passent à 2
+   colonnes puis 1 colonne. */
 @media (max-width: 1100px) {
     .settings-layout {
         grid-template-columns: repeat(2, 1fr);
         padding: 24px 20px;
     }
+    .settings-card--wide { grid-column: span 1; }
 }
 
 @media (max-width: 720px) {
