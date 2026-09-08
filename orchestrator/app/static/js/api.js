@@ -14,33 +14,6 @@
 
 Object.assign(window.DockyApp, {
     // -------------------------------------------------------
-    // CSRF (double-submit cookie) — voir docs/csrf-protection.md
-    // -------------------------------------------------------
-
-    /**
-     * Lecture brute d'un cookie (parser simple, tolerant aux espaces).
-     * Retourne null si absent ou si document est indisponible.
-     */
-    getCookie(name) {
-        if (typeof document === "undefined" || !document.cookie) return null;
-        const parts = document.cookie.split(/;\s*/);
-        for (let i = 0; i < parts.length; i++) {
-            const eq = parts[i].indexOf("=");
-            if (eq === -1) continue;
-            if (parts[i].slice(0, eq) === name) {
-                const raw = parts[i].slice(eq + 1);
-                try { return decodeURIComponent(raw); } catch (e) { return raw; }
-            }
-        }
-        return null;
-    },
-
-    /** Token CSRF courant (cookie csrf_token posé par le serveur). */
-    csrfToken() {
-        return this.getCookie("csrf_token");
-    },
-
-    // -------------------------------------------------------
     // Utilities
     // -------------------------------------------------------
 

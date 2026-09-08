@@ -96,6 +96,49 @@ Les deux sont mutuellement exclusifs (`errorMessage` prime sur `silent`).
   la brique (qui reprendrait aussi les 5xx). Jamais sur les mutations, jamais
   sur les 4xx/5xx, jamais sur les timeouts (un serveur lent le resterait au
   2ᵉ essai) ni sur une annulation explicite (`opts.signal` déjà aborted).
+
+### Détection réseau structurée (retry ×1)
+
+Le retry réseau de l'adaptateur utilise un test **structuré** (plus de
+comparaison à la chaîne exacte `"erreur réseau"`) :
+
+```js
+function isNetworkError(err) {
+    return isHolafError(err)
+        && err.status === 0
+        && err.message !== "timeout";
+}
+```
+
+**Pourquoi ce test** : la brique signale réseau ET timeout avec le **même
+champ structuré** `HolafFetchError.status === 0` (voir `holaf-fetch.js` :
+`new HolafFetchError("erreur réseau", { status: 0 })` pour un fetch rejeté,
+`new HolafFetchError("timeout", { status: 0 })` pour un `AbortController`).
+Elle les distingue par le **message** (`"erreur réseau"` vs `"timeout"`).
+
+Le test retenu teste donc le champ structuré `status === 0` puis **exclut
+explicitement le timeout** (`message !== "timeout"`) pour ne **jamais** retry
+un serveur lent — sémantique historique préservée (le timeout ne déclenche
+pas de retry). Avantage : ne dépend plus de la chaîne exacte `"erreur réseau"`
+— si la brique changeait ce libellé, le retry réseau resterait opérant tant
+que le timeout garde son message distinct.
+
+**Validé en headless Chromium** : un fetch rejeté (erreur réseau) → 2 appels
+(retry ×1, données retournées) ; un timeout → 1 appel (aucun retry).
+
+### Versions : `brickVersion` vs `adapterVersion`
+
+`DockyFetch` expose deux versions distinctes, sans ambiguïté :
+
+| Propriété | Valeur | Lecture |
+|---|---|---|
+| `DockyFetch.brickVersion` | `HolafFetch.version` (ex. `0.1.1`) | **dynamique** (getter, relu à chaque accès — la brique est un module différé) |
+| `DockyFetch.adapterVersion` | `1.0.0` | statique (version de l'adaptateur) |
+
+L'ancienne propriété `version` (qui prêtait à confusion avec la version de la
+brique) est **supprimée**. `adapterVersion` commence à `1.0.0` pour marquer la
+stabilité du contrat public de l'adaptateur (`request`/`apiRequest`, options
+`silent`/`errorMessage`/`noRedirect401`).
 - **Corps** : sérialisation JSON automatique par la brique (objet →
   `JSON.stringify` + `Content-Type`) ; `settings.js apiPost/apiPut` en
   profitent et ne dupliquent plus la sérialisation manuelle.
@@ -109,7 +152,12 @@ Les deux sont mutuellement exclusifs (`errorMessage` prime sur `silent`).
     l'ancienne implémentation fetch + retry maison est supprimée). **Le
     monkey-patch CSRF global de `window.fetch` a été retiré** : tous les
     `fetch()` directs sont désormais migrés, plus rien ne dépend du wrapper
-    (voir « Migration des derniers fetch directs »).
+    (voir « Migration des derniers fetch directs »). Les helpers morts
+    `getCookie`/`csrfToken` (plus aucun call site depuis le retrait du
+    monkey-patch — l'auth CSRF vient de la brique) ont été **supprimés**.
+  - `static/repro.html`, `static/set.html` — **supprimés** : harness de dev
+    autonomes (mock fetch), non référencés par l'app, servis publiquement via
+    `/static` sans auth (désormais 404).
   - `static/js/settings.js` — la 2ᵉ implémentation `apiFetch` délègue à
     `DockyFetch.apiRequest` (duplication supprimée, y compris le `getCookie`
     local devenu inutile — la page settings ne charge pas `api.js` ; c'est
@@ -273,7 +321,11 @@ cd /projects/holaf-lib && ./scripts/holaf upgrade fetch /projects/Docky/orchestr
 - `node --check` OK sur tous les JS modifiés (+ la brique en `.mjs`).
 - `python -m pytest -q` : **542 verts**.
 - Smoke HTTP authentifié : `/dashboard` 200, `/settings` 200,
-  `/static/vendor/holaf/holaf-fetch.js` 200, `/static/js/holaf-docky-fetch.js` 200.
+  `/static/vendor/holaf/holaf-fetch.js` 200, `/static/js/holaf-docky-fetch.js` 200 ;
+  `/static/repro.html` et `/static/set.html` → **404** (supprimés).
+- **Grep** : plus de `getCookie`/`csrfToken` morts dans `api.js` ; plus de test
+  de chaîne `"erreur réseau"` dans `holaf-docky-fetch.js` (test structuré
+  `status === 0 && message !== "timeout"`).
 - **CSRF serveur** (TestClient, CSRF activé) : mutation `PUT /api/settings/llm`
   sans `X-CSRF-Token` → `403 {'detail':'CSRF'}` ; avec l'en-tête → `200`.
 - Headless Chromium : `/dashboard` charge, les stats passent par le nouveau

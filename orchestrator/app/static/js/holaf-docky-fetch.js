@@ -40,11 +40,11 @@
    Retry réseau — au niveau ADAPTATEUR (pas via l'option retry de
    la brique, qui reprendrait aussi les 5xx) : un seul essai
    supplémentaire après 500 ms, UNIQUEMENT sur erreur réseau
-   (statut 0, message « erreur réseau ») et UNIQUEMENT pour les
-   méthodes sûres (GET/HEAD/OPTIONS). Jamais sur les mutations,
-   jamais sur les 4xx/5xx, jamais sur les timeouts (un serveur
-   lent resterait lent au 2e essai) ni sur une annulation
-   explicite (opts.signal déjà aborted).
+   (statut 0, hors timeout) et UNIQUEMENT pour les méthodes sûres
+   (GET/HEAD/OPTIONS). Jamais sur les mutations, jamais sur les
+   4xx/5xx, jamais sur les timeouts (un serveur lent resterait lent
+   au 2e essai) ni sur une annulation explicite (opts.signal déjà
+   aborted).
 
    Ce module est un script CLASSIQUE (non module) : il lit
    window.HolafFetch au moment de l'appel (jamais au chargement),
@@ -131,10 +131,23 @@
             && err instanceof HolafFetch.HolafFetchError;
     }
 
-    // Erreur réseau "pure" (fetch rejeté) — PAS un timeout (message
-    // « timeout »), PAS une erreur HTTP typée (4xx/5xx).
+    // Erreur réseau "pure" (fetch rejeté) — PAS un timeout, PAS une
+    // erreur HTTP typée (4xx/5xx).
+    //
+    // Test STRUCTURÉ (voir docs/holaf-fetch-adoption.md) : la brique
+    // signale réseau ET timeout avec le même champ structuré
+    // `status === 0` (HolafFetchError.status). Elle les distingue par
+    // le message : « erreur réseau » (fetch a rejeté) vs « timeout »
+    // (AbortController). On teste donc le champ structuré `status === 0`
+    // puis on EXCLUT explicitement le timeout (message « timeout ») pour
+    // ne JAMAIS retry un serveur lent — sémantique historique préservée.
+    // Ne dépend plus de la chaîne exacte « erreur réseau » : si la brique
+    // changeait ce libellé, le retry réseau resterait opérant tant que le
+    // timeout garde son message distinct.
     function isNetworkError(err) {
-        return isHolafError(err) && err.status === 0 && err.message === "erreur réseau";
+        return isHolafError(err)
+            && err.status === 0
+            && err.message !== "timeout";
     }
 
     // ─── Adaptateur fin : request (lève HolafFetchError) ─────────────────────
@@ -206,8 +219,29 @@
         }
     }
 
+    // ─── Versions ────────────────────────────────────────────────────────────
+    // Deux versions distinctes, sans ambiguïté :
+    //   - brickVersion : version de la brique HolafFetch (lecture DYNAMIQUE
+    //     de HolafFetch.version au moment de l'appel — la brique est un
+    //     module différé, pas forcément chargée à l'évaluation de ce script).
+    //   - adapterVersion : version de CET adaptateur (contrat Docky).
+    //     Commence à 1.0.0 pour marquer la stabilité du contrat public
+    //     (request/apiRequest, options silent/errorMessage/noRedirect401).
+    // La propriété `version` ambiguë (qui prêtait à confusion avec la
+    // brique) est supprimée.
+    function readBrickVersion() {
+        if (typeof HolafFetch !== "undefined" && HolafFetch.version) {
+            return HolafFetch.version;
+        }
+        return "unknown";
+    }
+
     window.DockyFetch = {
-        version: "0.1.0",
+        // Getter : lecture DYNAMIQUE à chaque accès (la brique est un
+        // module différé, pas forcément chargée à l'évaluation de ce
+        // script classique).
+        get brickVersion() { return readBrickVersion(); },
+        adapterVersion: "1.0.0",
         DEFAULT_TIMEOUT: DEFAULT_TIMEOUT,
         RETRY_DELAY_MS: RETRY_DELAY_MS,
         request: request,
