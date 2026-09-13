@@ -307,6 +307,17 @@ async def test_ping_agent_online(respx_mock, fresh_agent_manager):
     assert fresh_agent_manager.agents["Test Agent"]["status"] == "online"
 
 
+async def test_ping_agent_caches_version(respx_mock, fresh_agent_manager):
+    """The version advertised by /agent/health is captured and cached."""
+    respx_mock.get("http://agent:8080/agent/health").mock(
+        return_value=httpx.Response(
+            200, json={"status": "ok", "version": "9.9.9", "name": "Test Agent"}
+        )
+    )
+    await fresh_agent_manager.ping_agent("Test Agent")
+    assert fresh_agent_manager.agents["Test Agent"]["version"] == "9.9.9"
+
+
 async def test_ping_agent_non_200_offline(respx_mock, fresh_agent_manager):
     respx_mock.get("http://agent:8080/agent/health").mock(
         return_value=httpx.Response(500)

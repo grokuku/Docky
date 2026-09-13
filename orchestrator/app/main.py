@@ -12,6 +12,11 @@ from app.auth.router import router as auth_router
 from app.auth.csrf import CSRFMiddleware
 from app.routes.dashboard import router as dashboard_router
 from app.routes.api import router as api_router
+from app.routes.integration import (
+    IntegrationAuthError,
+    integration_auth_exception_handler,
+    router as integration_router,
+)
 from app.agent_manager.client import agent_manager
 from app.mcp_server import MCP_HTTP_PATH, get_mcp_http_app, get_mcp_lifespan
 from app.version import get_version
@@ -36,6 +41,13 @@ templates = Jinja2Templates(directory=str(base_dir / "templates"))
 app.include_router(auth_router)
 app.include_router(dashboard_router)
 app.include_router(api_router)
+
+# Façade d'intégration Docky↔Homy (voir app/routes/integration.py et
+# docs/integration-api.md) : surface REST dédiée, versionnée, authentifiée par
+# une clé Bearer dédiée. Les erreurs d'auth sont rendues au format {error, code}
+# via le handler dédié (avant le middleware d'exception par défaut).
+app.include_router(integration_router)
+app.add_exception_handler(IntegrationAuthError, integration_auth_exception_handler)
 
 # MCP (Model Context Protocol) server — Streamable HTTP transport, secured
 # with a Bearer API key (security.mcp_api_key). Voir docs/mcp-server.md.

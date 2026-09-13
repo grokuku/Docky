@@ -1,3 +1,8 @@
+[project]
+name = "docky"
+version = "0.0.4"
+license = "MIT"
+
 [tool.pytest.ini_options]
 # NB: le sous-package agent/docker/ masquerait le SDK docker (site-packages)
 # si le dossier ``agent`` était un chemin sys.path direct. On résout donc

@@ -47,6 +47,17 @@ _AGENT_CACHE_TTL = _cache._AGENT_CACHE_TTL
 # event before httpx would time out and abort the connection.
 STREAM_TIMEOUT = httpx.Timeout(connect=10, read=150, write=30, pool=10)
 
+# Timeout profile for the integration façade (LOT B stats + actions).
+#
+# - ``STATS_TIMEOUT``: a one-shot ``docker stats`` snapshot typically takes a
+#   second; 15 s leaves head-room for a busy daemon.
+# - ``ACTION_TIMEOUT``: must be ABOVE the agent-side Docker stop timeout
+#   (``docker_manager.stop_container`` passes ``timeout=10``) so a normal
+#   stop can finish, while staying below the global 30 s request budget. A
+#   longer action is surfaced as ``504 timeout`` by the façade.
+STATS_TIMEOUT = 15.0
+ACTION_TIMEOUT = 20.0
+
 
 class AgentManager:
     """Manage communication with one or more remote Docky agents."""
@@ -127,6 +138,7 @@ class AgentManager:
                 "api_key": agent["api_key"],
                 "status": "unknown",
                 "last_check": 0,
+                "version": "",
                 "tls_verify": tls_verify,
                 "ca_cert": ca_cert,
             }
@@ -185,6 +197,15 @@ class AgentManager:
                 if resp.status_code == 200:
                     agent["status"] = "online"
                     agent["last_check"] = time.time()
+                    # Capture and cache the agent version advertised by
+                    # ``/agent/health`` (``{status, version, name}``) so the
+                    # integration façade can expose it without an extra call.
+                    try:
+                        payload = resp.json()
+                        if isinstance(payload, dict) and payload.get("version"):
+                            agent["version"] = str(payload["version"])
+                    except Exception:
+                        pass
                     if not was_online:
                         await self.maybe_push_registries_on_online(name)
                     return True
@@ -431,6 +452,37 @@ class AgentManager:
         except Exception as exc:
             logger.warning("get_container_stats failed for agent '%s', container '%s': %s", agent_name, container_id, exc)
             return {}
+
+    async def fetch_containers_stats(self, agent_name: str, refs: List[str], timeout: float = STATS_TIMEOUT) -> Dict[str, Any]:
+        """Batch stats for several refs on ONE agent (one HTTP call).
+
+        Calls the agent's ``POST /agent/containers/stats`` (LOT B) and returns
+        its ``{results: [...]}`` payload. Results preserve the input order.
+        Propagates transport errors / timeouts to the caller.
+        """
+        return await self._request(
+            agent_name,
+            "POST",
+            "/agent/containers/stats",
+            json={"ids": list(refs)},
+            timeout=timeout,
+        )
+
+    async def action_container(self, agent_name: str, container_id: str, action: str, timeout: float = ACTION_TIMEOUT) -> Dict[str, Any]:
+        """Run ``start``/``stop``/``restart`` on an agent container.
+
+        Returns the agent's ``{success: bool}`` payload and propagates
+        transport errors / timeouts (so the façade can map them to
+        ``502``/``504``). The agent's existing endpoints are unchanged.
+        """
+        if action not in ("start", "stop", "restart"):
+            raise ValueError(f"Unsupported container action: {action}")
+        return await self._request(
+            agent_name,
+            "POST",
+            f"/agent/containers/{container_id}/{action}",
+            timeout=timeout,
+        )
 
     async def get_container_logs(self, agent_name: str, container_id: str, tail: int = 100) -> List[Dict]:
         """Return the last *tail* log lines with timestamps and stream info."""

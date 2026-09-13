@@ -200,6 +200,36 @@
                 </div>
             </div>
         </section>
+
+        <!-- API d'intégration (façade REST dédiée Docky↔Homy) -->
+        <section class="panel settings-panel settings-panel--integration settings-card--full">
+            <div class="panel-header settings-header">
+                <div class="settings-header-title">
+                    <span class="settings-chip"><i data-lucide="webhook"></i></span>
+                    <h2>API d'intégration</h2>
+                </div>
+                <span id="integration-status" class="status-indicator status-unknown">…</span>
+            </div>
+            <div class="panel-body settings-body">
+                <p class="form-hint">
+                    Clé Bearer dédiée aux intégrations externes (ex. <strong>Homy</strong>).
+                    Base URL : <code>/api/integration/v1</code> — header
+                    <code>Authorization: Bearer &lt;clé&gt;</code>.
+                </p>
+                <div class="form-group">
+                    <label for="integration-api-key">Clé API d'intégration</label>
+                    <div class="integration-key-row">
+                        <input type="password" id="integration-api-key" class="form-input" readonly autocomplete="off" placeholder="••••••••">
+                        <button type="button" class="btn btn-ghost" id="integration-toggle-btn" onclick="SettingsApp.toggleIntegrationKey()">Afficher</button>
+                        <button type="button" class="btn btn-ghost" onclick="SettingsApp.copyIntegrationKey()">Copier</button>
+                    </div>
+                    <p class="form-hint">La clé est affichée en clair. Ne la partagez qu'avec des intégrations de confiance.</p>
+                </div>
+                <div class="settings-actions">
+                    <button class="btn btn-danger" onclick="SettingsApp.regenerateIntegrationKey()">Régénérer la clé</button>
+                </div>
+            </div>
+        </section>
     </div>
 
     <!-- Agent form modal (migré vers HolafModal — voir settings.js showAgentForm) -->

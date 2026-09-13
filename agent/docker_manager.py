@@ -837,38 +837,104 @@ def get_container_logs_stream(container_id: str, tail: int = 0):
         return
 
 
-def get_container_stats(container_id: str) -> Dict[str, Any]:
-    """Return CPU and RAM stats for a container (one-shot snapshot)."""
-    empty = {"cpu_percent": 0.0, "mem_usage": 0, "mem_limit": 0, "mem_percent": 0.0, "network_rx": 0, "network_tx": 0}
-    try:
-        client = get_docker_client()
-        c = client.containers.get(container_id)
-        stats = c.stats(stream=False)
-    except (NotFound, DockerException, APIError):
-        return empty
+def _empty_container_stats() -> Dict[str, Any]:
+    """Zeroed stats payload (stopped/inaccessible container).
 
-    cpu_delta = 0
-    system_delta = 0
+    Used both as the failure fallback of :func:`get_container_stats` and as
+    the counter block of a ``found:false`` result. ``cpu_count`` defaults to 1
+    so consumers can always divide the (zero) multi-core CPU percentage.
+    """
+    return {
+        "cpu_percent": 0.0,
+        "cpu_count": 1,
+        "mem_usage": 0,
+        "mem_limit": 0,
+        "mem_percent": 0.0,
+        "mem_cache": 0,
+        "network_rx": 0,
+        "network_tx": 0,
+    }
+
+
+def _memory_usage_no_cache(mem_stats: Dict[str, Any]) -> tuple:
+    """Return ``(used_no_cache, cache)`` mirroring ``docker stats``.
+
+    Docker CLI's ``docker stats`` reports container memory as
+    ``usage - inactive_file`` (the page cache is reclaimable and must not
+    count as "used"):
+
+    - cgroup v1 exposes ``total_inactive_file``;
+    - cgroup v2 exposes ``inactive_file``.
+
+    If neither is available (older kernels) the raw ``usage`` is returned with
+    a zero cache. The cache is clamped to ``[0, usage]`` so a malformed value
+    can never produce a negative or inflated usage. The returned *cache* value
+    is exposed to the integration surface (``mem_cache``) for transparency.
+    """
+    try:
+        usage = int(mem_stats.get("usage", 0) or 0)
+    except (TypeError, ValueError):
+        usage = 0
+    stats = mem_stats.get("stats") or {}
+    cache = 0
+    # Mirror docker CLI: prefer cgroup v1 ``total_inactive_file``, then cgroup
+    # v2 ``inactive_file``; only accept a candidate strictly below the usage
+    # (a malformed/larger value is ignored rather than producing negative).
+    for key in ("total_inactive_file", "inactive_file"):
+        raw_cache = stats.get(key)
+        if raw_cache is None:
+            continue
+        try:
+            candidate = int(raw_cache)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= candidate < usage:
+            cache = candidate
+            break
+    return max(0, usage - cache), cache
+
+
+def _container_stats_payload(c) -> Dict[str, Any]:
+    """Compute the stats payload of a docker-py container object.
+
+    ``cpu_percent`` is the **multi-core** percentage returned by the Docker
+    API (``(cpu_delta / system_delta) * cpu_count * 100``, e.g. 0–800 %) and
+    is kept raw here; the integration façade divides it by ``cpu_count`` to
+    expose host 0–100 (decision Q4). ``mem_usage``/``mem_percent`` are based
+    on the same quantity (``usage - cache``), like ``docker stats``; the
+    deducted ``mem_cache`` is exposed for transparency.
+    """
+    try:
+        stats = c.stats(stream=False)
+    except (DockerException, APIError):
+        return _empty_container_stats()
+    if not isinstance(stats, dict):
+        return _empty_container_stats()
+
     cpu_count = 1
     cpu_percent = 0.0
-
-    cpu_stats = stats.get("cpu_stats", {})
-    precpu_stats = stats.get("precpu_stats", {})
-    cpu_delta = cpu_stats.get("cpu_usage", {}).get("total_usage", 0) - precpu_stats.get("cpu_usage", {}).get("total_usage", 0)
-    system_delta = cpu_stats.get("system_cpu_usage", 0) - precpu_stats.get("system_cpu_usage", 0)
+    cpu_stats = stats.get("cpu_stats", {}) or {}
+    precpu_stats = stats.get("precpu_stats", {}) or {}
+    cpu_delta = (
+        (cpu_stats.get("cpu_usage", {}) or {}).get("total_usage", 0)
+        - (precpu_stats.get("cpu_usage", {}) or {}).get("total_usage", 0)
+    )
+    system_delta = cpu_stats.get("system_cpu_usage", 0) - precpu_stats.get(
+        "system_cpu_usage", 0
+    )
     online_cpus = cpu_stats.get("online_cpus")
     if online_cpus:
         cpu_count = online_cpus
     else:
-        per_cpu = cpu_stats.get("cpu_usage", {}).get("percpu_usage", [])
+        per_cpu = (cpu_stats.get("cpu_usage", {}) or {}).get("percpu_usage", [])
         cpu_count = len(per_cpu) if per_cpu else 1
 
     if system_delta > 0 and cpu_delta > 0:
         cpu_percent = (cpu_delta / system_delta) * cpu_count * 100.0
 
-    mem_stats = stats.get("memory_stats", {})
-    mem_usage = mem_stats.get("usage", 0)
-    mem_limit = mem_stats.get("limit", 0)
+    mem_stats = stats.get("memory_stats", {}) or {}
+    mem_usage, mem_cache = _memory_usage_no_cache(mem_stats)
+    mem_limit = mem_stats.get("limit", 0) or 0
     mem_percent = 0.0
     if mem_limit > 0:
         mem_percent = (mem_usage / mem_limit) * 100.0
@@ -883,12 +949,94 @@ def get_container_stats(container_id: str) -> Dict[str, Any]:
 
     return {
         "cpu_percent": round(cpu_percent, 2),
+        "cpu_count": cpu_count,
         "mem_usage": mem_usage,
         "mem_limit": mem_limit,
         "mem_percent": round(mem_percent, 2),
+        "mem_cache": mem_cache,
         "network_rx": network_rx,
         "network_tx": network_tx,
     }
+
+
+def get_container_stats(container_id: str) -> Dict[str, Any]:
+    """Return CPU and RAM stats for a container (one-shot snapshot).
+
+    Keeps its historical signature (counters only, zeros on any failure) so
+    existing callers (``GET /agent/containers/{id}``, browser dashboard) are
+    unchanged. Use :func:`get_container_stats_result` when the caller also
+    needs ``state``/``health``/``found`` (integration façade).
+    """
+    try:
+        client = get_docker_client()
+        c = client.containers.get(container_id)
+    except (NotFound, DockerException, APIError):
+        return _empty_container_stats()
+    return _container_stats_payload(c)
+
+
+def get_container_stats_result(container_id: str) -> Dict[str, Any]:
+    """Return stats enriched with ``state``/``health``/``found``.
+
+    Unlike :func:`get_container_stats`, a missing container is reported
+    explicitly with ``found:false`` and an ``error`` message instead of a
+    silent zeroed payload: the integration façade needs to tell a stopped
+    container (found, counters at 0, real state) from an unknown one (404).
+    """
+    try:
+        client = get_docker_client()
+        c = client.containers.get(container_id)
+    except (NotFound, DockerException, APIError):
+        return {
+            "found": False,
+            "id": "",
+            "name": "",
+            "state": "unknown",
+            "health": None,
+            "error": "Container not found",
+            **_empty_container_stats(),
+        }
+    managed_names = _managed_stack_names()
+    info = _container_to_dict(c, managed_stacks=managed_names)
+    return {
+        "found": True,
+        "id": info.get("id", ""),
+        "name": info.get("name", ""),
+        "state": info.get("state") or info.get("status") or "unknown",
+        "health": info.get("health"),
+        **_container_stats_payload(c),
+    }
+
+
+# Cap on how many containers a single batch stats call may request. Matches
+# the orchestrator façade's MAX_BATCH_TARGETS so the two surfaces stay aligned.
+MAX_BATCH_STATS = 100
+# Bounded fan-out: ``docker stats`` has no native batch API, so each container
+# costs one HTTP round-trip to the daemon. A handful of worker threads keeps
+# the batch responsive without hammering the daemon on a 100-container call.
+STATS_BATCH_MAX_WORKERS = 8
+
+
+def get_containers_stats(refs: List[str]) -> List[Dict[str, Any]]:
+    """Batch stats for a list of container ids/names (≤ :data:`MAX_BATCH_STATS`).
+
+    Cost: there is **no** native batch API in ``docker stats``, so each ref
+    triggers one ``container.stats(stream=False)`` round-trip (plus a lookup).
+    The refs are evaluated in a bounded thread pool
+    (:data:`STATS_BATCH_MAX_WORKERS` workers) to keep the HTTP response fast
+    while limiting daemon pressure. Results preserve input order; an unknown
+    ref yields ``found:false`` + ``error`` in its own slot (never a hard
+    failure). Over-long input is truncated to :data:`MAX_BATCH_STATS` at the
+    route layer.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    refs = [r for r in refs]
+    if not refs:
+        return []
+    workers = max(1, min(STATS_BATCH_MAX_WORKERS, len(refs)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return list(pool.map(get_container_stats_result, refs))
 
 
 def exec_in_container(container_id: str, command: str, tty: bool = False) -> Dict[str, Any]:

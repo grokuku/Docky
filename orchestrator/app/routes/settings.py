@@ -533,6 +533,49 @@ async def api_regenerate_mcp_key(request: Request):
 
 
 # ---------------------------------------------------------------------------
+# Settings - Integration API key (façade Docky↔Homy)
+# ---------------------------------------------------------------------------
+
+@router.get("/settings/integration")
+async def api_get_integration_settings(request: Request):
+    """Return the integration façade status and its dedicated Bearer key.
+
+    The key is returned unmasked so the UI can display / copy it (same pattern
+    as the MCP key). It is generated and persisted on first access so the card
+    always shows a usable key. Only authenticated users can read it.
+    """
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    from app.routes.integration import (
+        get_integration_api_key,
+        integration_auth_enabled,
+    )
+    return {
+        "enabled": integration_auth_enabled(),
+        "api_key": get_integration_api_key(),
+    }
+
+
+@router.post("/settings/integration/regenerate")
+async def api_regenerate_integration_key(request: Request):
+    """Regenerate the integration Bearer key and persist it in settings.yaml.
+
+    A fresh cryptographically-random key is generated and saved under
+    ``security.integration_api_key``. This invalidates every external client
+    currently connected (e.g. Homy), which must reconnect with the new key.
+    """
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    new_key = secrets.token_urlsafe(32)
+    settings = load_settings()
+    settings.setdefault("security", {})["integration_api_key"] = new_key
+    save_settings(settings)
+    return {"success": True, "api_key": new_key}
+
+
+# ---------------------------------------------------------------------------
 # Settings - Git history
 # ---------------------------------------------------------------------------
 

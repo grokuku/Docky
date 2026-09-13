@@ -119,6 +119,8 @@ _ASYNC_METHODS = [
     "get_container_logs",
     "get_container",
     "get_container_stats",
+    "fetch_containers_stats",
+    "action_container",
     "get_container_edit_spec",
     "update_container",
     "stream_update_container_image",

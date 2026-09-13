@@ -58,6 +58,13 @@ FORM_PROTECTED_PATHS = frozenset({"/login", "/change-password"})
 #: docs/csrf-protection.md §3. Add paths here only with a written rationale.
 API_EXEMPT_PATHS: frozenset[str] = frozenset()
 
+#: Path PREFIXES exempted from CSRF. The integration façade
+#: (``/api/integration/v1/*``) authenticates every request with a dedicated
+#: Bearer API key (server-to-server, Homy): it carries no cookie/CSRF material,
+#: so mutating calls (batch health) must not be blocked by the double-submit
+#: check. See ``docs/integration-api.md``.
+API_EXEMPT_PREFIXES: tuple[str, ...] = ("/api/integration/",)
+
 #: Lifetime of the csrf_token cookie (matches the session JWT, seconds).
 CSRF_COOKIE_MAX_AGE = 86400
 
@@ -221,6 +228,8 @@ def check_request_csrf(request: Request) -> JSONResponse | None:
     if not path.startswith(API_PROTECTED_PREFIX):
         return None
     if path in API_EXEMPT_PATHS:
+        return None
+    if any(path.startswith(prefix) for prefix in API_EXEMPT_PREFIXES):
         return None
     if verify_csrf(request):
         return None

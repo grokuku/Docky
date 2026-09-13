@@ -202,3 +202,82 @@ def test_stack_sse_actions(agent_client, api_key_header, monkeypatch, path, stre
 def test_stack_sse_actions_require_auth(agent_client, path):
     resp = agent_client.post(path)
     assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Batch stats (LOT B)
+# ---------------------------------------------------------------------------
+
+def test_batch_stats_requires_auth(agent_client):
+    resp = agent_client.post("/agent/containers/stats", json={"ids": ["web"]})
+    assert resp.status_code == 401
+
+
+def test_batch_stats_returns_results_in_order_with_partial_errors(
+    agent_client, api_key_header, monkeypatch
+):
+    captured = {}
+
+    def _fake(refs):
+        captured["refs"] = list(refs)
+        return [
+            {"found": True, "id": "c1", "name": "web", "state": "running", "cpu_percent": 10.0},
+            {"found": False, "id": "", "name": "", "state": "unknown", "error": "Container not found"},
+        ]
+
+    monkeypatch.setattr(dm, "get_containers_stats", _fake)
+
+    resp = agent_client.post(
+        "/agent/containers/stats",
+        headers=api_key_header,
+        json={"ids": ["web", "missing"]},
+    )
+
+    assert resp.status_code == 200
+    assert captured["refs"] == ["web", "missing"]
+    body = resp.json()
+    assert [r["found"] for r in body["results"]] == [True, False]
+    assert body["results"][0]["state"] == "running"
+    assert body["results"][1]["error"] == "Container not found"
+
+
+def test_batch_stats_accepts_names_alias(agent_client, api_key_header, monkeypatch):
+    captured = {}
+
+    def _fake(refs):
+        captured["refs"] = list(refs)
+        return []
+
+    monkeypatch.setattr(dm, "get_containers_stats", _fake)
+
+    resp = agent_client.post(
+        "/agent/containers/stats",
+        headers=api_key_header,
+        json={"names": ["web"]},
+    )
+
+    assert resp.status_code == 200
+    assert captured["refs"] == ["web"]
+
+
+@pytest.mark.parametrize("payload", [{"ids": "nope"}, {"ids": [1, 2]}, {}, []])
+def test_batch_stats_invalid_body_400(agent_client, api_key_header, payload):
+    resp = agent_client.post("/agent/containers/stats", headers=api_key_header, json=payload)
+    assert resp.status_code == 400
+
+
+def test_batch_stats_too_many_400(agent_client, api_key_header):
+    refs = [f"c{i}" for i in range(dm.MAX_BATCH_STATS + 1)]
+    resp = agent_client.post(
+        "/agent/containers/stats", headers=api_key_header, json={"ids": refs}
+    )
+    assert resp.status_code == 400
+
+
+def test_batch_stats_invalid_json_400(agent_client, api_key_header):
+    resp = agent_client.post(
+        "/agent/containers/stats",
+        headers={**api_key_header, "Content-Type": "application/json"},
+        content=b"{not json",
+    )
+    assert resp.status_code == 400

@@ -10,6 +10,7 @@ const SettingsApp = {
     editingAgentName: null,   // null = add mode, string = edit mode
     pendingDeleteAgent: null,
     mcpKeyVisible: false,     // whether the MCP key is shown in clear
+    integrationKeyVisible: false, // whether the integration key is shown in clear
     dockerhubHasToken: false, // whether a token is already stored server-side
 
     // -------------------------------------------------------
@@ -559,6 +560,75 @@ const SettingsApp = {
     },
 
     // -------------------------------------------------------
+    // API d'intégration (façade Docky↔Homy)
+    // -------------------------------------------------------
+
+    async loadIntegrationSettings() {
+        const data = await this.apiFetch("/api/settings/integration");
+        if (!data) return;
+        const input = document.getElementById("integration-api-key");
+        if (input) {
+            input.value = data.api_key || "";
+            input.type = this.integrationKeyVisible ? "text" : "password";
+        }
+        const status = document.getElementById("integration-status");
+        if (status) {
+            status.className = "status-indicator " + (data.enabled ? "status-online" : "status-offline");
+            status.textContent = data.enabled ? "Activé" : "Désactivé";
+        }
+        const btn = document.getElementById("integration-toggle-btn");
+        if (btn) btn.textContent = this.integrationKeyVisible ? "Masquer" : "Afficher";
+    },
+
+    toggleIntegrationKey() {
+        this.integrationKeyVisible = !this.integrationKeyVisible;
+        const input = document.getElementById("integration-api-key");
+        if (input) input.type = this.integrationKeyVisible ? "text" : "password";
+        const btn = document.getElementById("integration-toggle-btn");
+        if (btn) btn.textContent = this.integrationKeyVisible ? "Masquer" : "Afficher";
+    },
+
+    async copyIntegrationKey() {
+        const input = document.getElementById("integration-api-key");
+        if (!input || !input.value) {
+            this.showToast("Aucune clé à copier.", "error");
+            return;
+        }
+        try {
+            await navigator.clipboard.writeText(input.value);
+            this.showToast("Clé API d'intégration copiée.", "success");
+        } catch (e) {
+            this.showToast("Impossible de copier: " + e.message, "error");
+        }
+    },
+
+    async regenerateIntegrationKey() {
+        const ok = await HolafModal.confirm(
+            "Régénérer la clé d'intégration",
+            "Régénérer la clé API d'intégration ?\n\n" +
+            "Cette action invalide immédiatement toutes les intégrations externes connectées " +
+            "(ex. Homy). Elles devront se reconnecter avec la nouvelle clé.",
+            { danger: true, confirmText: "Régénérer", cancelText: "Annuler" }
+        );
+        if (!ok) return;
+        const data = await this.apiPost("/api/settings/integration/regenerate");
+        if (!data) return;
+        if (data.success) {
+            this.integrationKeyVisible = true;
+            const input = document.getElementById("integration-api-key");
+            if (input) {
+                input.value = data.api_key || "";
+                input.type = "text";
+            }
+            const btn = document.getElementById("integration-toggle-btn");
+            if (btn) btn.textContent = "Masquer";
+            this.showToast("Clé API d'intégration régénérée.", "success");
+        } else {
+            this.showToast(data.detail || "Erreur lors de la régénération.", "error");
+        }
+    },
+
+    // -------------------------------------------------------
     // Registres (multi-registres)
     // -------------------------------------------------------
 
@@ -786,6 +856,7 @@ const SettingsApp = {
         this.loadGitHistorySettings();
         this.loadMcpSettings();
         this.loadRegistries();
+        this.loadIntegrationSettings();
     },
 };
 

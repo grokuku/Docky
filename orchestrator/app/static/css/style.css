@@ -2163,6 +2163,9 @@ body {
 /* Column spans : wide = moitié de la grille (2/4), quarter = 1/4. */
 .settings-card--wide { grid-column: span 2; }
 .settings-card--quarter { grid-column: span 1; }
+/* Pleine largeur : utilisée par la carte « API d'intégration » sous la
+   rangée des 4 cartes compactes (ne casse pas la grille existante). */
+.settings-card--full { grid-column: 1 / -1; }
 
 /* Cards */
 .settings-panel {
@@ -2195,6 +2198,19 @@ body {
 .settings-panel--security { --tint: #34d399; }
 .settings-panel--mcp      { --tint: #38bdf8; }
 .settings-panel--registries { --tint: #fbbf24; }
+.settings-panel--integration { --tint: #f472b6; }
+
+/* Ligne clé + boutons (Afficher / Copier) de la carte API d'intégration. */
+.integration-key-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.integration-key-row .form-input {
+    flex: 1;
+    min-width: 0;
+}
 
 /* Inline checkbox (Docker Hub « Activer ») */
 .checkbox-label {

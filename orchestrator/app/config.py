@@ -174,6 +174,12 @@ def ensure_config_files():
                 # MCP server (voir app/mcp_server.py et docs/mcp-server.md)
                 "mcp_enabled": True,
                 "mcp_api_key": os.urandom(32).hex(),
+                # API d'intégration Docky↔Homy (façade /api/integration/v1,
+                # voir docs/integration-api.md). Clé Bearer DÉDIÉE, générée à
+                # la première demande par
+                # app.routes.integration.get_integration_api_key.
+                "integration_enabled": True,
+                "integration_api_key": "",
             },
             # Registres (multi-registres, voir app/routes/settings.py,
             # app/agent_manager/client.py et docs/registries-auth.md) :

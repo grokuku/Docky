@@ -133,6 +133,51 @@ async def get_container_stats(request: Request, container_id: str):
     return await asyncio.to_thread(docker_manager.get_container_stats, container_id)
 
 
+@router.post("/containers/stats")
+async def batch_container_stats(request: Request):
+    """Batch stats for several containers in one agent round-trip.
+
+    Body: ``{"ids": [...]}`` or ``{"names": [...]}`` (ids/names mixed is
+    tolerated through ``ids``). Answers ``{results: [{id, name, state,
+    health, found, ...stats..., error}]}`` with **results in input order**;
+    an unknown ref yields ``found:false`` + ``error`` in its own slot.
+
+    Cost: ``docker stats`` has no native batch API, so each ref costs one
+    ``stats()`` round-trip; :func:`docker_manager.get_containers_stats`
+    evaluates them in a bounded thread pool. This endpoint exists so the
+    orchestrator can fetch a whole agent's worth of stats in ONE HTTP call
+    (instead of N), which is the only way to keep the batch façade efficient.
+
+    Validation (``400 {"error": "..."}``): invalid JSON, non-object body,
+    ``ids``/``names`` missing or not a list of strings, or more than
+    :data:`docker_manager.MAX_BATCH_STATS` entries.
+    """
+    auth_err = require_api_key(request)
+    if auth_err:
+        return auth_err
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON"})
+    if not isinstance(data, dict):
+        return JSONResponse(status_code=400, content={"error": "Request body must be a JSON object"})
+    refs = data.get("ids")
+    if refs is None:
+        refs = data.get("names")
+    if not isinstance(refs, list) or not all(isinstance(r, str) for r in refs):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Field 'ids' or 'names' must be a list of strings"},
+        )
+    if len(refs) > docker_manager.MAX_BATCH_STATS:
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"Too many containers (max {docker_manager.MAX_BATCH_STATS})"},
+        )
+    results = await asyncio.to_thread(docker_manager.get_containers_stats, refs)
+    return {"results": results}
+
+
 @router.get("/containers/{container_id}/logs")
 async def get_container_logs(request: Request, container_id: str, tail: int = Query(100)):
     auth_err = require_api_key(request)
