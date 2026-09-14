@@ -14,7 +14,7 @@ import threading
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
-from agent import docker_manager, registries
+from agent import docker_manager, registries, stats_stream
 from agent.auth import require_api_key, verify_api_key_ws
 from agent.version import get_version
 
@@ -1128,6 +1128,148 @@ async def system_prune(request: Request):
 # ---------------------------------------------------------------------------
 # Docker Events (WebSocket)
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Real-time container stats (LOT 1 — agent side)
+# ---------------------------------------------------------------------------
+
+
+def _parse_container_refs(data):
+    """Validate a ``{"containers": [str, ...]}`` body; return the list or a 400."""
+    if not isinstance(data, dict):
+        return JSONResponse(status_code=400, content={"error": "Request body must be a JSON object"})
+    containers = data.get("containers")
+    if containers is None:
+        containers = data.get("ids")
+    if not isinstance(containers, list) or not all(isinstance(c, str) for c in containers):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Field 'containers' must be a list of strings"},
+        )
+    return containers
+
+
+@router.post("/stats/watch")
+async def stats_watch(request: Request):
+    """Subscribe containers to the real-time stats stream (idempotent).
+
+    Body: ``{"containers": [id|name, ...]}`` (``ids`` accepted as an alias).
+    Refreshes the TTL of already-watched entries; only the containers in the
+    watch set are streamed. Unknown refs are silently skipped. Returns the
+    canonical short ids actually watched.
+    """
+    auth_err = require_api_key(request)
+    if auth_err:
+        return auth_err
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON"})
+    containers = _parse_container_refs(data)
+    if isinstance(containers, JSONResponse):
+        return containers
+    watched = await asyncio.to_thread(stats_stream.watch, containers)
+    return {"success": True, "watched": watched}
+
+
+@router.post("/stats/unwatch")
+async def stats_unwatch(request: Request):
+    """Remove containers from the real-time stats stream watch set.
+
+    Body: ``{"containers": [id|name, ...]}``. Stopping a container's streamer
+    is implicit: once it leaves the watch set its persistent docker
+    subscription is closed.
+    """
+    auth_err = require_api_key(request)
+    if auth_err:
+        return auth_err
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON"})
+    containers = _parse_container_refs(data)
+    if isinstance(containers, JSONResponse):
+        return containers
+    removed = await asyncio.to_thread(stats_stream.unwatch, containers)
+    return {"success": True, "unwatched": removed, "watched": stats_stream.watched()}
+
+
+@router.get("/stats/watch")
+async def stats_watch_list(request: Request):
+    """Return ``{watched: [...]}`` (observability / debug)."""
+    auth_err = require_api_key(request)
+    if auth_err:
+        return auth_err
+    return {"watched": stats_stream.watched()}
+
+
+@router.get("/containers/{container_id}/stats/history")
+async def container_stats_history(
+    request: Request, container_id: str, window: int = Query(900)
+):
+    """Merged stats history for one container over a supported window.
+
+    ``window`` ∈ ``900 | 3600 | 86400`` seconds (15 min / 1 h / 24 h). Points
+    merge the in-memory ring buffer (fine, ~1 s) with the downsampled persisted
+    points (30 s). 400 on an unsupported window, 404 on an unknown container.
+    """
+    auth_err = require_api_key(request)
+    if auth_err:
+        return auth_err
+    if window not in stats_stream.SUPPORTED_WINDOWS:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": f"Unsupported window: {window}",
+                "supported": list(stats_stream.SUPPORTED_WINDOWS),
+            },
+        )
+    resolved = await asyncio.to_thread(stats_stream.resolve_container, container_id)
+    if resolved is None:
+        return JSONResponse(status_code=404, content={"error": "Container not found"})
+    resolved_id, _name = resolved
+    points = await asyncio.to_thread(stats_stream.get_history, resolved_id, window)
+    return {"container": container_id, "window": window, "points": points}
+
+
+@router.websocket("/stats/stream")
+async def stream_stats(websocket: WebSocket):
+    """WebSocket broadcasting live stats for every watched container.
+
+    Auth via ``verify_api_key_ws`` (Authorization header or ``api_key`` query
+    param). Protocol:
+
+    - on connect, one ``{"type": "snapshot", "samples": [...]}`` message with
+      the last known sample of each watched container (immediate display);
+    - then one ``{"type": "sample", "sample": {...}}`` message per live tick.
+
+    Disconnecting only removes the subscriber; the watch set (and therefore
+    the streamers) keeps running until it expires or is explicitly unwatched.
+    """
+    if not await verify_api_key_ws(websocket):
+        await websocket.close(code=4401)
+        return
+
+    await websocket.accept()
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue(maxsize=200)
+    token = stats_stream.add_subscriber(loop, queue)
+    try:
+        await websocket.send_json({"type": "snapshot", "samples": stats_stream.snapshot()})
+        while True:
+            sample = await queue.get()
+            await websocket.send_json({"type": "sample", "sample": sample})
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        logger.debug("Stats stream ended: %s", exc)
+    finally:
+        stats_stream.remove_subscriber(token)
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 @router.websocket("/events")

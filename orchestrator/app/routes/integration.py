@@ -61,6 +61,7 @@ mapping.
 """
 
 import asyncio
+import contextlib
 import hmac
 import json
 import logging
@@ -94,6 +95,12 @@ STATS_TIMEOUT = 15.0
 #: (``stop_container`` uses ``timeout=10``) so a normal stop can finish,
 #: while staying below the global 30 s request budget (LOT B contract).
 ACTION_TIMEOUT = 20.0
+
+#: Stats history windows (seconds) accepted by the façade — 15 min / 1 h / 24 h.
+SUPPORTED_STATS_WINDOWS = (900, 3600, 86400)
+#: A streamed (hot-set) sample younger than this is served directly by the
+#: stats endpoints instead of paying a live ``docker stats`` round-trip.
+HOT_SAMPLE_MAX_AGE = 2.0
 
 #: Container states considered "stopped" for the ``stop`` idempotence check.
 STOPPED_STATES = frozenset({"exited", "dead", "created"})
@@ -213,6 +220,16 @@ def _api():
 def _manager():
     """Return the (late-resolved) agent manager singleton."""
     return _api().agent_manager
+
+
+def _stats_manager():
+    """Return the (late-resolved) real-time stats stream manager.
+
+    Indirection monkeypatchable by tests (``app.routes.integration.
+    _stats_manager``) so the hot cache can be driven without any network.
+    """
+    from app.agent_manager import stats_stream
+    return stats_stream.get_manager()
 
 
 def _error(status_code: int, error: str, code: str) -> JSONResponse:
@@ -442,6 +459,45 @@ def _stats_found(agent: str, container: str, raw: Dict[str, Any]) -> Dict[str, A
         **_stats_payload(raw),
         "error": None,
     }
+
+
+def _sample_to_stats_raw(sample: Dict[str, Any]) -> Dict[str, Any]:
+    """Map a streamed sample to the ``_stats_payload`` input shape.
+
+    The streamed payload trims ``network_rx``/``network_tx`` to
+    ``net_rx``/``net_tx`` and never carries ``health``; both differences are
+    normalised here so a hot-cache hit produces **exactly** the same response
+    as a live ``docker stats`` snapshot.
+    """
+    return {
+        "state": sample.get("state"),
+        "health": sample.get("health"),
+        "cpu_percent": sample.get("cpu_percent"),
+        "cpu_count": sample.get("cpu_count"),
+        "mem_usage": sample.get("mem_usage"),
+        "mem_limit": sample.get("mem_limit"),
+        "mem_percent": sample.get("mem_percent"),
+        "mem_cache": sample.get("mem_cache"),
+        "network_rx": sample.get("net_rx"),
+        "network_tx": sample.get("net_tx"),
+    }
+
+
+def _checked_at_from_ms(ts: Any) -> str:
+    """Format an epoch-ms timestamp as the façade ISO-8601 ``...Z`` checkedAt."""
+    try:
+        return datetime.fromtimestamp(float(ts) / 1000.0, tz=timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+    except (TypeError, ValueError, OSError, OverflowError):
+        return utc_iso_now()
+
+
+def _stats_found_from_sample(
+    agent: str, container: str, sample: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Build a batch stats success result from a fresh hot-set sample."""
+    return _stats_found(agent, container, _sample_to_stats_raw(sample))
 
 
 def _agent_gate(agent: str):
@@ -675,6 +731,24 @@ async def get_container_stats(agent: str, container: str):
     if err is not None:
         return err
     manager = _manager()
+
+    # Register the request in the Homy hot set (TTL refreshed) and serve from
+    # the streamed cache when a fresh (< 2 s) sample exists. The response
+    # contract is unchanged: a cache hit just makes ``checkedAt`` the sample's
+    # timestamp instead of the request time.
+    stats_manager = _stats_manager()
+    with contextlib.suppress(Exception):
+        await stats_manager.mark_hot_set(agent, [container])
+    with contextlib.suppress(Exception):
+        sample = stats_manager.get_fresh_sample(agent, container, HOT_SAMPLE_MAX_AGE)
+        if sample is not None:
+            return {
+                "agent": agent,
+                "container": container,
+                "checkedAt": _checked_at_from_ms(sample.get("ts")),
+                **_stats_payload(_sample_to_stats_raw(sample)),
+            }
+
     try:
         data = await manager.fetch_containers_stats(agent, [container])
     except httpx.TimeoutException:
@@ -700,6 +774,65 @@ async def get_container_stats(agent: str, container: str):
         "checkedAt": utc_iso_now(),
         **payload,
     }
+
+
+@router.get(
+    "/agents/{agent}/containers/{container}/stats/history",
+    dependencies=[Depends(_check_integration_auth)],
+)
+async def get_container_stats_history(agent: str, container: str, window: int = 900):
+    """Return one container's merged stats history over a supported window.
+
+    Proxies the agent's ``GET /agent/containers/{id}/stats/history`` (merged
+    fine ring buffer + downsampled SQLite points). ``window`` ∈ ``900 | 3600 |
+    86400`` seconds. Payload is passed through unchanged:
+    ``{container, window, points:[{ts, cpu_percent, mem_usage, mem_limit,
+    mem_percent, net_rx, net_tx}, ...]}``.
+
+    Error envelope is the façade ``{error, code}``: unsupported ``window`` →
+    ``400 invalid_request``; unknown agent → ``404 agent_not_found``; offline
+    agent → ``503 agent_offline``; unknown container → ``404 not_found``;
+    unreachable agent → ``502 agent_unreachable``; timeout → ``504 timeout``.
+    """
+    if window not in SUPPORTED_STATS_WINDOWS:
+        return _error(400, f"Unsupported window: {window}", "invalid_request")
+    _info, err = _agent_gate(agent)
+    if err is not None:
+        return err
+    manager = _manager()
+    try:
+        data = await manager._request(
+            agent,
+            "GET",
+            f"/agent/containers/{container}/stats/history",
+            params={"window": window},
+            timeout=STATS_TIMEOUT,
+        )
+    except httpx.TimeoutException:
+        return _error(504, f"History for '{container}' timed out", "timeout")
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code
+        if status_code == 404:
+            return _error(
+                404,
+                f"Container '{container}' not found on agent '{agent}'",
+                "not_found",
+            )
+        if status_code == 400:
+            return _error(400, f"Unsupported window: {window}", "invalid_request")
+        logger.warning(
+            "integration history failed for '%s/%s': HTTP %s",
+            agent,
+            container,
+            status_code,
+        )
+        return _error(502, f"Agent '{agent}' is unreachable", "agent_unreachable")
+    except Exception as exc:
+        logger.warning(
+            "integration history failed for '%s/%s': %s", agent, container, exc
+        )
+        return _error(502, f"Agent '{agent}' is unreachable", "agent_unreachable")
+    return data
 
 
 @router.post("/containers/stats", dependencies=[Depends(_check_integration_auth)])
@@ -767,6 +900,27 @@ async def batch_container_stats(request: Request):
                 valid.append(index)
         if not valid:
             continue
+
+        # Hot-set: register every requested (valid) container for the Homy TTL
+        # and serve fresh samples (< 2 s) straight from the streamed cache.
+        # Only the remaining refs pay a live ``docker stats`` round-trip.
+        stats_manager = _stats_manager()
+        with contextlib.suppress(Exception):
+            await stats_manager.mark_hot_set(agent, [refs[index] for index in valid])
+        fetch_valid: List[int] = []
+        for index in valid:
+            sample = None
+            with contextlib.suppress(Exception):
+                sample = stats_manager.get_fresh_sample(
+                    agent, refs[index], HOT_SAMPLE_MAX_AGE
+                )
+            if sample is not None:
+                results[index] = _stats_found_from_sample(agent, refs[index], sample)
+            else:
+                fetch_valid.append(index)
+        if not fetch_valid:
+            continue
+        valid = fetch_valid
 
         valid_refs = [refs[index] for index in valid]
         try:

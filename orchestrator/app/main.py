@@ -18,6 +18,7 @@ from app.routes.integration import (
     router as integration_router,
 )
 from app.agent_manager.client import agent_manager
+from app.agent_manager import stats_stream
 from app.mcp_server import MCP_HTTP_PATH, get_mcp_http_app, get_mcp_lifespan
 from app.version import get_version
 
@@ -88,12 +89,18 @@ async def startup_event():
     # stacks et ports toutes les 5 secondes (stale-while-revalidate).
     asyncio.create_task(agent_manager.start_background_refresh())
 
+    # Ré-armement du gestionnaire de stream de stats temps réel (LOT 2) : il
+    # démarre son sweeper à la demande, ``start()`` le remet dans un état
+    # propre (utile si le process a déjà servi une session).
+    stats_stream.start()
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Ferme proprement le lifespan du sous-app MCP."""
+    """Ferme proprement le lifespan du sous-app MCP et le stream de stats."""
     if _mcp_lifespan is not None:
         await _mcp_lifespan.__aexit__(None, None, None)
+    stats_stream.stop()
 
 
 # ---------------------------------------------------------------------------#

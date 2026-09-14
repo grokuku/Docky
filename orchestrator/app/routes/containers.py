@@ -8,12 +8,14 @@ comes from ``api_helpers`` (shared with ``_broadcast_agent_event``).
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import urllib.parse
 
 logger = logging.getLogger(__name__)
 
+import httpx
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import JSONResponse
 
@@ -29,11 +31,45 @@ from app.routes.api_helpers import (
 
 router = APIRouter()
 
+#: Supported history windows (seconds) — mirrors the agent contract.
+STATS_HISTORY_WINDOWS = (900, 3600, 86400)
+#: Timeout for the history proxy call toward an agent.
+STATS_HISTORY_TIMEOUT = 15.0
+
 
 def _api():
     """Résolution tardive du namespace app.routes.api (évite tout cycle)."""
     from app.routes import api
     return api
+
+
+def _stats_manager():
+    """Résolution tardive du gestionnaire de stream de stats.
+
+    Indirection monkeypatchable par les tests (``app.routes.containers.
+    _stats_manager``) sans dépendre du singleton global.
+    """
+    from app.agent_manager import stats_stream
+    return stats_stream.get_manager()
+
+
+def _normalize_ws_targets(raw) -> list:
+    """Validate a frontend WS ``targets`` payload into ``[(agent, container)]``.
+
+    Tolerates malformed entries (ignored) so a single bad target never breaks
+    the whole subscription message.
+    """
+    targets = []
+    if not isinstance(raw, list):
+        return targets
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        agent = item.get("agent")
+        container = item.get("container")
+        if isinstance(agent, str) and isinstance(container, str) and agent and container:
+            targets.append((agent, container))
+    return targets
 
 
 @router.get("/containers")
@@ -524,6 +560,137 @@ async def api_container_stats(
     if err is not None:
         return err
     return await _api().agent_manager.get_container_stats(agent_name, container_id)
+
+
+@router.get("/containers/{container_id}/stats/history")
+async def api_container_stats_history(
+    request: Request,
+    container_id: str,
+    agent: str = Query(...),
+    window: int = Query(900),
+):
+    """Proxy the agent's merged stats history (15 min / 1 h / 24 h windows).
+
+    Same JWT auth as the other container routes. Error mapping mirrors the
+    existing proxy behaviour: unsupported window → ``400``, unknown container
+    → ``404``, anything else (transport / agent error) → ``502``.
+    """
+    username = _check_auth(request)
+    if username is None:
+        return _unauthorized()
+    if window not in STATS_HISTORY_WINDOWS:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": f"Unsupported window: {window}",
+                "supported": list(STATS_HISTORY_WINDOWS),
+            },
+        )
+    agent_name, err = _resolve_agent(agent)
+    if err is not None:
+        return err
+    try:
+        data = await _api().agent_manager._request(
+            agent_name,
+            "GET",
+            f"/agent/containers/{urllib.parse.quote(container_id, safe='')}/stats/history",
+            params={"window": window},
+            timeout=STATS_HISTORY_TIMEOUT,
+        )
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code
+        detail = "Container not found" if status_code == 404 else "Invalid history window"
+        if status_code == 404:
+            return JSONResponse(status_code=404, content={"detail": detail})
+        if status_code == 400:
+            return JSONResponse(
+                status_code=400,
+                content={"detail": detail, "supported": list(STATS_HISTORY_WINDOWS)},
+            )
+        return JSONResponse(
+            status_code=502,
+            content={"detail": f"Failed to communicate with agent: {exc}"},
+        )
+    except Exception as exc:
+        return JSONResponse(
+            status_code=502,
+            content={"detail": f"Failed to communicate with agent: {exc}"},
+        )
+    return data
+
+
+@router.websocket("/stats/stream")
+async def ws_stats_stream(websocket: WebSocket):
+    """WebSocket relaying real-time container stats to a browser client.
+
+    Auth via the JWT session cookie (``_check_auth_ws``); CSRF does not apply
+    to WebSocket scopes. Protocol (client → server):
+
+    - ``{"type": "subscribe", "targets": [{"agent": ..., "container": ...}]}``
+    - ``{"type": "unsubscribe", "targets": [...]}``
+
+    Server → client: the same messages as the agent stream —
+    ``{"type": "snapshot", "samples": [...]}`` (sent right after a
+    ``subscribe``, with the latest known samples for those targets) then
+    ``{"type": "sample", "sample": {...}}`` per live tick, plus
+    ``{"type": "error", "message": ...}`` on malformed input. Unknown
+    message types are ignored.
+
+    The orchestrator fans in every agent into a single hub; the client only
+    ever sees the containers it explicitly subscribed to. On disconnect the
+    client's ``ui`` subscriptions are released (source refcount).
+    """
+    if _check_auth_ws(websocket) is None:
+        await websocket.close(code=4401)
+        return
+
+    await websocket.accept()
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue(maxsize=200)
+    manager = _stats_manager()
+    token = manager.add_subscriber(loop, queue)
+
+    async def _sender():
+        while True:
+            message = await queue.get()
+            await websocket.send_json(message)
+
+    sender = asyncio.create_task(_sender())
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                data = json.loads(raw)
+            except (ValueError, TypeError):
+                await websocket.send_json(
+                    {"type": "error", "message": "Invalid JSON message"}
+                )
+                continue
+            if not isinstance(data, dict):
+                continue
+            msg_type = data.get("type")
+            if msg_type == "subscribe":
+                targets = _normalize_ws_targets(data.get("targets"))
+                added = await manager.client_subscribe(token, targets)
+                samples = manager.get_samples_for_targets(added)
+                await websocket.send_json({"type": "snapshot", "samples": samples})
+            elif msg_type == "unsubscribe":
+                targets = _normalize_ws_targets(data.get("targets"))
+                await manager.client_unsubscribe(token, targets)
+            # Unknown message types are intentionally ignored.
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        logger.debug("stats WS client ended: %s", exc)
+    finally:
+        sender.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await sender
+        manager.remove_subscriber(token)
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

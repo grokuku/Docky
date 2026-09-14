@@ -443,7 +443,7 @@ Object.assign(window.DockyApp, {
             const name = this.escapeHtml(c.name);
 
             html += `
-                <div class="container-card" data-id="${this.escapeHtml(c.id)}">
+                <div class="container-card" data-id="${this.escapeHtml(c.id)}" data-container="${this.escapeHtml(c.id)}" data-agent="${this.escapeHtml(agent || '')}" data-status="${this.escapeHtml(c.status || '')}">
                     <div class="container-main">
                         <div class="container-name">
                             <span class="container-name-text">${name}</span>
@@ -492,6 +492,8 @@ Object.assign(window.DockyApp, {
             }
             this.checkUpdate(c.id, agent, this._updateCheckToken);
         }
+        // Réconcilier les abonnements live après le (re)rendu de la vue liste.
+        if (window.DockyStats) DockyStats.reconcile();
     },
 
     // -------------------------------------------------------
@@ -594,7 +596,7 @@ Object.assign(window.DockyApp, {
         // d'action qui peuvent passer sur 2 lignes sur les petites cartes). On
         // garde un minimum raisonnable : les cartes utilisent min-height (hauteur
         // auto) et ne se chevauchent plus sur les lignes suivantes.
-        const cellH = Math.max(cellSize, 172);
+        const cellH = Math.max(cellSize, 190);
         
         // Flow layout boustrophedon
         // Placer tous les containers à la suite, row by row
@@ -706,6 +708,8 @@ Object.assign(window.DockyApp, {
                 this.showStackContextPanel(stack, null);
             }
         }
+        // Réconcilier les abonnements live après le (re)rendu de la grille.
+        if (window.DockyStats) DockyStats.reconcile();
     },
 
     // -------------------------------------------------------
@@ -874,6 +878,8 @@ Object.assign(window.DockyApp, {
                 this.showStackContextPanel(stack, null);
             }
         }
+        // Réconcilier les abonnements live après le (re)rendu du tableau.
+        if (window.DockyStats) DockyStats.reconcile();
     },
 
     renderTableRow(c, agent, borderColor, stackName) {
@@ -887,7 +893,7 @@ Object.assign(window.DockyApp, {
         const escapedName = this.escapeHtml(stackName);
         const ports = (c.ports || []).filter(p => p.host_port).map(p => p.host_port + '→' + p.container).join(", ");
 
-        return '<div class="table-container-row" data-id="' + escapedId + '" data-stack="' + escapedName + '" data-agent="' + this.escapeHtml(agent || '') + '" style="border-left-color:' + borderColor + '" onclick="event.stopPropagation(); DockyApp.selectContainerInGrid(\'' + escapedId + '\', \'' + escapedName + '\', \'' + this.escapeHtml(agent || '') + '\')" oncontextmenu="event.preventDefault(); event.stopPropagation(); DockyApp.openContainerContextMenu(event, \'' + escapedId + '\', \'' + escapedName + '\', \'' + this.escapeHtml(agent || '') + '\')">'
+        return '<div class="table-container-row" data-id="' + escapedId + '" data-container="' + escapedId + '" data-stack="' + escapedName + '" data-agent="' + this.escapeHtml(agent || '') + '" data-status="' + this.escapeHtml(c.status || '') + '" style="border-left-color:' + borderColor + '" onclick="event.stopPropagation(); DockyApp.selectContainerInGrid(\'' + escapedId + '\', \'' + escapedName + '\', \'' + this.escapeHtml(agent || '') + '\')" oncontextmenu="event.preventDefault(); event.stopPropagation(); DockyApp.openContainerContextMenu(event, \'' + escapedId + '\', \'' + escapedName + '\', \'' + this.escapeHtml(agent || '') + '\')">'
             + '<div class="table-row-status">' + statusDot + '</div>'
             + '<div class="table-row-name" title="' + name + '">' + name
             + '<span id="update-' + escapedId + '" class="update-badge ' + this._updateBadgeClass(this._containerUpdateCacheKey(c.id)) + '" title="Mise à jour disponible" onclick="event.stopPropagation();DockyApp.containerAction(\'' + escapedId + '\', \'update-image\', \'' + agt + '\')">' + this.icon('arrow-up') + ' Update</span>'
@@ -1082,7 +1088,7 @@ Object.assign(window.DockyApp, {
         const ports = (c.ports || []).filter(p => p.host_port).map(p => p.host_port + '→' + p.container).join(", ");
         const portsBadge = ports ? '<span class="meta-badge meta-ports grid-card-ports" title="' + this.escapeHtml(ports) + '">' + this.icon('cable') + ' ' + this.escapeHtml(ports) + '</span>' : '';
 
-        return '<div class="grid-container-card" data-id="' + escapedId + '" data-stack="' + this.escapeHtml(stackName) + '" data-agent="' + this.escapeHtml(agent || '') + '" style="left:' + left + 'px;top:' + top + 'px;width:' + width + 'px;min-height:' + height + 'px;z-index:3;background-color:' + bgColor + ';border-color:' + borderColor + '"'
+        return '<div class="grid-container-card" data-id="' + escapedId + '" data-container="' + escapedId + '" data-stack="' + this.escapeHtml(stackName) + '" data-agent="' + this.escapeHtml(agent || '') + '" data-status="' + this.escapeHtml(c.status || '') + '" style="left:' + left + 'px;top:' + top + 'px;width:' + width + 'px;min-height:' + height + 'px;z-index:3;background-color:' + bgColor + ';border-color:' + borderColor + '"'
             + ' onclick="event.stopPropagation(); DockyApp.selectContainerInGrid(\'' + escapedId + '\', \'' + this.escapeHtml(stackName) + '\', \'' + this.escapeHtml(agent || '') + '\')"'
             + ' oncontextmenu="event.preventDefault(); event.stopPropagation(); DockyApp.openContainerContextMenu(event, \'' + escapedId + '\', \'' + this.escapeHtml(stackName) + '\', \'' + this.escapeHtml(agent || '') + '\')">'
             + '<div class="grid-card-top"><span class="grid-card-name" title="' + name + '">' + name + '</span>' + statusDot + '</div>'
@@ -1335,7 +1341,7 @@ Object.assign(window.DockyApp, {
             // _pendingFetches restait true et le container n'était plus
             // rafraîchi). 401 → redirection /login via le hook de l'adaptateur.
             const data = await window.DockyFetch.request(url, { timeout: 10000 });
-            this.renderStats(containerId, data);
+            this.renderStats(containerId, data, agent);
         } catch (e) {
             // Ignorer les erreurs (réseau, timeout, annulation…) : le
             // prochain cycle de polling retentera (logique conservée).
@@ -1344,13 +1350,49 @@ Object.assign(window.DockyApp, {
         }
     },
 
-    renderStats(containerId, stats) {
-        // Cache les stats pour le tri CPU/RAM
-        this._statsCache[containerId] = stats;
-        const cpuPct = Math.min(stats.cpu_percent, 100);
-        const memPct = Math.min(stats.mem_percent, 100);
+    renderStats(containerId, stats, agent) {
+        if (!stats) return;
+        // Quand le streaming temps réel est actif pour cette cible, le polling
+        // ne doit PAS écraser les valeurs live (anti-clignotement). En pause,
+        // on gèle volontairement la dernière valeur affichée.
+        if (window.DockyStats && DockyStats.shouldSuppressPolling(agent, containerId)) return;
 
-        // Grid mode: #resources-{id} container
+        const cpuCount = Number(stats.cpu_count) > 0 ? Number(stats.cpu_count) : 1;
+        const cpuRaw = Number(stats.cpu_percent) || 0;
+        // Cache brut (pour le tri CPU/RAM) + horodatage anti-régression.
+        this._statsCache[containerId] = Object.assign({}, stats, { _ts: Date.now() });
+        this.applyStatsDom(containerId, {
+            cpuNorm: cpuRaw / cpuCount,
+            cpuRaw: cpuRaw,
+            cpuCount: cpuCount,
+            memUsage: stats.mem_usage,
+            memLimit: stats.mem_limit,
+            memPercent: stats.mem_percent,
+        });
+    },
+
+    /**
+     * Applique des valeurs de stats normalisées au DOM (jauges grille/liste et
+     * tableau). Partagé par le polling (renderStats) et le streaming live
+     * (stats.js) : une seule logique de rendu, pas de divergence possible.
+     *
+     * @param {string} containerId
+     * @param {{cpuNorm:number, cpuRaw:number, cpuCount:number,
+     *          memUsage:number, memLimit:number, memPercent:number}} s
+     */
+    applyStatsDom(containerId, s) {
+        if (!s) return;
+        const cpuNorm = Math.max(0, Math.min(100, Number(s.cpuNorm) || 0));
+        const cpuRaw = Number(s.cpuRaw) || 0;
+        const cpuCount = Number(s.cpuCount) > 0 ? Number(s.cpuCount) : 1;
+        const memPct = Math.max(0, Math.min(100, Number(s.memPercent) || 0));
+        const cpuText = cpuNorm.toFixed(1) + "%";
+        const cpuTitle = cpuRaw.toFixed(1) + "% brut · " + cpuCount +
+            " cœur" + (cpuCount > 1 ? "s" : "");
+        const memText = this.formatBytes(s.memUsage) + " / " + this.formatBytes(s.memLimit);
+        const memTitle = memText + " (" + memPct.toFixed(1) + "%)";
+
+        // Grille + liste : #resources-{id} (CPU/RAM en .resource-line).
         const target = document.getElementById("resources-" + containerId);
         if (target) {
             const cpuFill = target.querySelector(".resource-line:nth-child(1) .progress-fill");
@@ -1358,22 +1400,22 @@ Object.assign(window.DockyApp, {
             const memFill = target.querySelector(".resource-line:nth-child(2) .progress-fill");
             const memVal = target.querySelector(".resource-line:nth-child(2) .resource-value");
 
-            if (cpuFill) cpuFill.style.width = cpuPct + "%";
-            if (cpuVal) cpuVal.textContent = stats.cpu_percent.toFixed(1) + "%";
+            if (cpuFill) cpuFill.style.width = cpuNorm + "%";
+            if (cpuVal) { cpuVal.textContent = cpuText; cpuVal.title = cpuTitle; }
             if (memFill) memFill.style.width = memPct + "%";
-            if (memVal) memVal.textContent = this.formatBytes(stats.mem_usage) + " / " + this.formatBytes(stats.mem_limit);
+            if (memVal) { memVal.textContent = memText; memVal.title = memTitle; }
         }
 
-        // Table mode: #stats-cpu-{id} and #stats-ram-{id} elements
+        // Tableau : #stats-cpu-{id} / #stats-ram-{id}.
         const cpuFill = document.getElementById("stats-cpu-" + containerId);
         const cpuVal = document.getElementById("stats-cpu-val-" + containerId);
         const memFill = document.getElementById("stats-ram-" + containerId);
         const memVal = document.getElementById("stats-ram-val-" + containerId);
 
-        if (cpuFill) cpuFill.style.width = cpuPct + "%";
-        if (cpuVal) cpuVal.textContent = stats.cpu_percent.toFixed(1) + "%";
+        if (cpuFill) cpuFill.style.width = cpuNorm + "%";
+        if (cpuVal) { cpuVal.textContent = cpuText; cpuVal.title = cpuTitle; }
         if (memFill) memFill.style.width = memPct + "%";
-        if (memVal) memVal.textContent = this.formatBytes(stats.mem_usage) + " / " + this.formatBytes(stats.mem_limit);
+        if (memVal) { memVal.textContent = memText; memVal.title = memTitle; }
     },
 
     // -------------------------------------------------------

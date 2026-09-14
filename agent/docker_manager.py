@@ -894,20 +894,20 @@ def _memory_usage_no_cache(mem_stats: Dict[str, Any]) -> tuple:
     return max(0, usage - cache), cache
 
 
-def _container_stats_payload(c) -> Dict[str, Any]:
-    """Compute the stats payload of a docker-py container object.
+def _stats_from_raw(stats: Dict[str, Any]) -> Dict[str, Any]:
+    """Compute the stats payload from a raw Docker ``/stats`` dict.
 
-    ``cpu_percent`` is the **multi-core** percentage returned by the Docker
-    API (``(cpu_delta / system_delta) * cpu_count * 100``, e.g. 0–800 %) and
-    is kept raw here; the integration façade divides it by ``cpu_count`` to
-    expose host 0–100 (decision Q4). ``mem_usage``/``mem_percent`` are based
-    on the same quantity (``usage - cache``), like ``docker stats``; the
-    deducted ``mem_cache`` is exposed for transparency.
+    Shared by the one-shot :func:`_container_stats_payload` and the real-time
+    streamer (``agent.stats_stream``) so both surfaces apply the **exact same**
+    CPU/memory/network formulas without duplicating them. ``cpu_percent`` is
+    the **multi-core** percentage returned by the Docker API
+    (``(cpu_delta / system_delta) * cpu_count * 100``, e.g. 0–800 %) and is
+    kept raw here; the integration façade divides it by ``cpu_count`` to expose
+    host 0–100 (decision Q4). ``mem_usage``/``mem_percent`` are based on the
+    same quantity (``usage - cache``), like ``docker stats``; the deducted
+    ``mem_cache`` is exposed for transparency. A non-dict input (or a
+    malformed one) yields the zeroed :func:`_empty_container_stats` payload.
     """
-    try:
-        stats = c.stats(stream=False)
-    except (DockerException, APIError):
-        return _empty_container_stats()
     if not isinstance(stats, dict):
         return _empty_container_stats()
 
@@ -957,6 +957,19 @@ def _container_stats_payload(c) -> Dict[str, Any]:
         "network_rx": network_rx,
         "network_tx": network_tx,
     }
+
+
+def _container_stats_payload(c) -> Dict[str, Any]:
+    """Compute the stats payload of a docker-py container object.
+
+    One-shot wrapper around :func:`_stats_from_raw` (same formulas); any Docker
+    failure or malformed response yields the zeroed payload.
+    """
+    try:
+        stats = c.stats(stream=False)
+    except (DockerException, APIError):
+        return _empty_container_stats()
+    return _stats_from_raw(stats)
 
 
 def get_container_stats(container_id: str) -> Dict[str, Any]:

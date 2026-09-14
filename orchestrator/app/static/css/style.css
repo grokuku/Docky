@@ -3499,3 +3499,167 @@ body {
 
 .icon-sm { width: 14px; height: 14px; }
 .icon-lg { width: 20px; height: 20px; }
+/* ============================================================
+   LOT 3 — Streaming de stats temps réel
+   ------------------------------------------------------------
+   Contrôle d'intervalle (panel header), indicateur de connexion,
+   jauges live (réseau + sparklines SVG) et vue graphique modale.
+   Toutes les règles sont scopées (.stats-*, .docky-*) : aucune
+   modification des composants existants.
+   ============================================================ */
+
+/* --- Réglage de l'intervalle (à côté de l'auto-refresh) --- */
+.stats-interval {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.stats-interval-select {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    padding: 3px 6px;
+    color: var(--text-primary);
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: border-color var(--transition);
+}
+
+.stats-interval-select:hover { border-color: var(--accent); }
+.stats-interval-select:focus { outline: none; border-color: var(--accent); }
+
+/* --- Indicateur discret d'état du flux --- */
+.stats-live-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    background: var(--text-muted);
+    transition: background var(--transition), box-shadow var(--transition);
+}
+.stats-live-dot.stats-live-live {
+    background: var(--success);
+    box-shadow: 0 0 5px rgba(74, 222, 128, 0.6);
+}
+.stats-live-dot.stats-live-fallback {
+    background: var(--warning);
+    box-shadow: 0 0 5px rgba(251, 191, 36, 0.5);
+}
+.stats-live-dot.stats-live-paused { background: var(--text-muted); }
+
+/* --- Bloc live injecté dans chaque tuile (réseau + sparklines) --- */
+.docky-live {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-top: 2px;
+    width: 100%;
+    min-width: 0;
+}
+
+.docky-net {
+    display: flex;
+    gap: 8px;
+    font-size: 0.58rem;
+    color: #9090b0;
+    white-space: nowrap;
+    overflow: hidden;
+    justify-content: flex-end;
+}
+
+.docky-net-item { overflow: hidden; text-overflow: ellipsis; }
+.docky-net-rx { color: #7dd3fc; }
+.docky-net-tx { color: #c084fc; }
+
+.docky-spark {
+    display: block;
+    width: 100%;
+    height: 14px;
+    overflow: visible;
+}
+
+/* En mode tableau, la zone ressources est une rangée flex : le bloc live y
+   reste compact pour ne pas écraser les jauges CPU/RAM. */
+.table-row-resources .docky-live {
+    width: 118px;
+    flex-shrink: 0;
+}
+
+.table-row-resources .docky-net { font-size: 0.55rem; }
+
+/* --- Vue graphique (modale HolafModal) --- */
+.docky-graph {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.docky-graph-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.docky-graph-legend {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 0.75rem;
+}
+
+.docky-graph-legend-cpu { color: #ff7a90; }
+.docky-graph-legend-ram { color: #7dd3fc; }
+
+.docky-graph-window {
+    background: var(--hm-bg-input, #1d1d36);
+    border: 1px solid var(--hm-border, #262643);
+    border-radius: 6px;
+    padding: 4px 8px;
+    color: var(--hm-text, #f0f0f8);
+    font-size: 0.8rem;
+    cursor: pointer;
+}
+
+.docky-graph-plot {
+    position: relative;
+    border: 1px solid var(--hm-border, #262643);
+    border-radius: 10px;
+    background: rgba(0, 0, 0, 0.18);
+    padding: 4px;
+}
+
+.docky-graph-svg {
+    display: block;
+    width: 100%;
+    height: 240px;
+}
+
+.docky-graph-tip {
+    position: absolute;
+    top: 6px;
+    transform: translateX(-10%);
+    background: var(--hm-bg, #151527);
+    border: 1px solid var(--hm-border, #262643);
+    border-radius: 8px;
+    padding: 5px 8px;
+    font-size: 0.7rem;
+    color: var(--hm-text, #f0f0f8);
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    pointer-events: none;
+    white-space: nowrap;
+    box-shadow: 0 6px 18px rgba(5, 5, 16, 0.45);
+    z-index: 2;
+}
+
+.docky-graph-state {
+    font-size: 0.72rem;
+    color: var(--text-muted, #8888a0);
+}

@@ -2,7 +2,7 @@
 
 from fastapi import FastAPI
 
-from agent import registries
+from agent import registries, stats_stream
 from agent.routes import router as agent_router
 from agent.version import get_version
 
@@ -22,8 +22,20 @@ async def startup_event():
     registre), ``DOCKER_CONFIG`` est remis dans l'environnement pour que tous
     les subprocess docker (``docker compose pull``, ``docker pull``…) restent
     authentifiés après un redémarrage de l'agent. Voir docs/dockerhub-auth.md.
+
+    Démarre aussi l'infrastructure de streaming des stats (writer SQLite +
+    sweeper du watch set). Aucun watch n'est restauré au boot : les streamers
+    ne reprennent que si un orchestrateur se reconnecte (voir
+    docs/stats-streaming.md).
     """
     registries.apply_persisted_config()
+    stats_stream.start()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Arrêt propre : ferme les streamers stats, le sweeper et la persistance."""
+    stats_stream.shutdown()
 
 
 @app.get("/")

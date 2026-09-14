@@ -193,8 +193,13 @@ Limites (sinon `400 {"error": "...", "code": "invalid_request"}`) :
   brut incluait le cache, ce qui surestimait l'occupation).
 - **Disque (Q6)** : non disponible via `docker stats` → `disk_usage`,
   `disk_limit`, `disk_percent` sont **toujours `null`**.
-- Stats **jamais cachées** : chaque appel interroge vraiment le démon Docker
-  (fraîcheur réelle).
+- **Hot set / cache chaud** : chaque appel stats (unitaire ou batch) enregistre
+  les conteneurs demandés dans le **hot set Homy** (TTL 60 s, rafraîchi à
+  chaque appel) géré par `app.agent_manager.stats_stream`. Un échantillon
+  chaud de **moins de ~2 s** est servi directement depuis le cache (même
+  normalisation, `checkedAt` = horodatage de l'échantillon) ; sinon le
+  comportement live historique s'applique. Le contrat et les formes de réponse
+  sont **inchangés** (un cache froid retombe toujours sur `docker stats`).
 
 ### `GET /api/integration/v1/agents/{agent}/containers/{container}/stats`
 
@@ -269,12 +274,46 @@ indisponible), `timeout`, `invalid_request`.
   nombreuses.
 - Limites (sinon `400 invalid_request`) : `targets` non-liste, JSON invalide,
   **> 100 cibles**, corps **> 256 Kio**.
-- **Coût / perf** : les stats ne sont pas cachées (fraîcheur). Côté agent,
-  `docker stats` n'a **pas** d'API batch : chaque conteneur coûte un `stats()`
-  au démon (`agent/docker_manager.py::get_containers_stats`), exécuté dans un
-  pool à **concurrence bornée** (8 workers max). Pour 100 conteneurs sur un
-  même agent, compter 100 allers-retours Docker (sérialisés par groupes de 8),
-  d'où le plafond de 100 cibles.
+- **Coût / perf** : côté agent, `docker stats` n'a **pas** d'API batch :
+  chaque conteneur coûte un `stats()` au démon
+  (`agent/docker_manager.py::get_containers_stats`), exécuté dans un pool à
+  **concurrence bornée** (8 workers max). Pour 100 conteneurs sur un même
+  agent, compter 100 allers-retours Docker (sérialisés par groupes de 8),
+  d'où le plafond de 100 cibles. Les conteneurs demandés via l'API
+  d'intégration rejoignent le hot set (TTL 60 s) : les appels suivants à moins
+  de ~2 s sont servis depuis le flux temps réel, sans aller-retour Docker.
+
+### `GET /api/integration/v1/agents/{agent}/containers/{container}/stats/history`
+
+Proxy de l'historique fusionné de l'agent (ring buffer fin ~1 s + points
+SQLite downsampleés 30 s). `{container}` accepte le nom OU l'id Docker.
+Fenêtres supportées : `window` ∈ `900 | 3600 | 86400` (15 min / 1 h / 24 h).
+
+```json
+{
+  "container": "web",
+  "window": 3600,
+  "points": [
+    {"ts": 1700000000000, "cpu_percent": 42.1, "mem_usage": 600,
+     "mem_limit": 10000, "mem_percent": 6.0,
+     "net_rx": 1234, "net_tx": 5678}
+  ]
+}
+```
+
+Payload transmis **tel quel** par l'agent (les points ne portent que les 7
+champs ci-dessus). `cpu_percent` est ici le **brut multi-cœurs** (c'est une
+série temporelle historique ; la normalisation 0–100 ne s'applique qu'aux
+endpoints stats instantanés).
+
+| Cas | Statut | `code` |
+|-----|--------|--------|
+| Fenêtre non supportée | `400` | `invalid_request` |
+| Agent inconnu | `404` | `agent_not_found` |
+| Conteneur inconnu | `404` | `not_found` |
+| Agent hors ligne | `503` | `agent_offline` |
+| Agent injoignable | `502` | `agent_unreachable` |
+| Timeout agent | `504` | `timeout` |
 
 ### Endpoint agent support
 
@@ -321,6 +360,7 @@ l'action ; un `restart` peut brièvement donner `running` + `starting`/`none`) :
 | `GET /api/agents/{agent}/containers` | `GET /api/integration/v1/agents/{agent}/containers` |
 | `GET /api/agents/{agent}/containers/{container}` | `GET /api/integration/v1/agents/{agent}/containers/{container}` |
 | `GET /api/agents/{agent}/containers/{container}/stats` | `GET /api/integration/v1/agents/{agent}/containers/{container}/stats` |
+| `GET /api/agents/{agent}/containers/{container}/stats/history` | `GET /api/integration/v1/agents/{agent}/containers/{container}/stats/history` |
 | `POST /api/containers/health` (batch) | `POST /api/integration/v1/containers/health` |
 | `POST /api/containers/stats` (batch) | `POST /api/integration/v1/containers/stats` |
 | `POST /api/agents/{agent}/containers/{container}/start` | `POST /api/integration/v1/agents/{agent}/containers/{container}/start` |
@@ -336,8 +376,8 @@ Seule la base URL change côté Homy : pointer sur
 
 ## 6. Reste à faire
 
-Le **contrat Lot B est couvert à 100 %** : stats unitaires + batch, actions
-`start`/`stop`/`restart`, codes HTTP et enveloppe `{error, code}`. Les
+Le **contrat Lot B est couvert à 100 %** : stats unitaires + batch, historique,
+actions `start`/`stop`/`restart`, codes HTTP et enveloppe `{error, code}`. Les
 évolutions optionnelles, non demandées à ce stade :
 
 - **Actions `update` (image)** — non implémentée dans la façade (l'agent

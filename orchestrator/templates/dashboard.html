@@ -87,6 +87,16 @@
                             <input type="checkbox" id="auto-refresh" checked>
                             <span>Auto-refresh</span>
                         </label>
+                        <label class="stats-interval" title="Fréquence de rafraîchissement des stats live (indépendant de l'auto-refresh)">
+                            <span>Stats</span>
+                            <select id="stats-interval-select" class="stats-interval-select">
+                                <option value="1000">1 s</option>
+                                <option value="2000">2 s</option>
+                                <option value="5000">5 s</option>
+                                <option value="pause">Pause</option>
+                            </select>
+                        </label>
+                        <span id="stats-live-indicator" class="stats-live-dot stats-live-paused" title="Stats live"></span>
                         <button class="btn btn-sm" onclick="DockyApp.refreshStacks()">Rafraîchir</button>
                     </div>
                 </div>
@@ -212,5 +222,9 @@
     <script src="/static/js/editor.js"></script>
     <script src="/static/js/chat.js"></script>
     <script src="/static/js/modals.js"></script>
+    <!-- Streaming de stats temps réel (LOT 3) : expose window.DockyStats.
+         Chargé en dernier : il s'accroche au DOMContentLoaded et consomme les
+         APIs des modules précédents (DockyFetch, DockyApp, HolafModal). -->
+    <script src="/static/js/stats.js"></script>
 </body>
 </html>
